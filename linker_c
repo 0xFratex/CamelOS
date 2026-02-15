@@ -1,0 +1,25 @@
+/* linker_cdl.ld */
+OUTPUT_FORMAT(binary)
+ENTRY(cdl_main)
+
+SECTIONS
+{
+    . = 0;
+    .text : {
+        *(.text.entry) /* Ensure cdl_main is first */
+        *(.text)
+        *(.text.*)
+    }
+    .data : { 
+        *(.data)
+        *(.data.*)
+    }
+    .rodata : { 
+        *(.rodata)
+        *(.rodata.*)
+    }
+    .bss : { 
+        *(.bss)
+        *(.bss.*)
+        *(COMMON)
+    }

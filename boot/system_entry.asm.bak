@@ -1,0 +1,93 @@
+; boot/system_entry.asm
+; This is the entry point for the system *after* being loaded by the MBR.
+; The MBR loads this file (as part of system.bin) to 0x1000 and calls it.
+; We are already in 32-bit Protected Mode.
+
+[bits 32]
+
+global _start       ; The linker script will use this as the entry point
+extern kernel_main  ; The C function from system/kernel.c
+
+section .text
+_start:
+    ; The MBR (mbr.asm) already set up GDT and Protected Mode.
+    ; We just need to set up our segment registers and a new stack.
+    
+    ; 0x10 was the DATA_SEG from mbr.asm
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    
+    ; Set up the stack
+    ; We'll place it at 0x90000 (growing down), same as in the MBR.
+    mov ebp, stack_top
+    mov esp, ebp
+
+    ; We are ready to call our C kernel_main function
+    call kernel_main
+
+    ; If kernel_main ever returns, halt the CPU
+.hang:
+    cli
+    hlt
+    jmp .hang
+
+; --- Assembly functions needed by CPU drivers ---
+
+; GDT flush function
+global gdt_flush
+gdt_flush:
+    lgdt [esp+4]  ; Load GDT from parameter
+    ret
+
+; IDT flush function  
+global idt_flush
+idt_flush:
+    lidt [esp+4]  ; Load IDT from parameter
+    ret
+
+; ISR stub functions (basic interrupt handlers)
+global isr_timer
+isr_timer:
+    ; Timer interrupt handler
+    ; For now, just send EOI to PIC and return
+    pushad
+    ; Send EOI to PIC
+    mov al, 0x20
+    out 0x20, al
+    popad
+    iret
+
+global isr_keyboard  
+isr_keyboard:
+    ; Keyboard interrupt handler
+    pushad
+    ; Read scancode from keyboard controller
+    in al, 0x60
+    ; Send EOI to PIC
+    mov al, 0x20
+    out 0x20, al
+    popad
+    iret
+
+global isr_mouse
+isr_mouse:
+    ; Mouse interrupt handler
+    pushad
+    ; Read mouse data
+    in al, 0x60
+    ; Send EOI to PIC
+    mov al, 0x20
+    out 0xA0, al  ; Send to slave PIC
+    mov al, 0x20
+    out 0x20, al  ; Send to master PIC
+    popad
+    iret
+
+section .bss
+align 16
+stack_bottom:
+    resb 16384  ; 16 KB stack

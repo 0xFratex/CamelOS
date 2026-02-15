@@ -1,0 +1,162 @@
+# Makefile - Camel OS v0.4 Professional
+# 3-Component Architecture: MBR, System, Installer
+
+CC = gcc
+AS = nasm
+LD = ld
+
+# Flags
+CFLAGS = -m32 -fno-stack-protector -fno-builtin -nostdinc -O2 -Icommon -fno-pic -fno-pie -mregparm=3 -fomit-frame-pointer -ffreestanding
+# Note: We REMOVED LDFLAGS here because we specify them per target now
+
+# --- 1. BOOTLOADER (MBR) ---
+mbr.bin: boot/mbr.asm
+	$(AS) -f bin boot/mbr.asm -o mbr.bin
+	@echo "✓ MBR bootloader built"
+
+# --- 2. TARGET SYSTEM (For the HDD) ---
+# Uses system_entry.asm + linker_system.ld + system_main()
+system/entry.o: boot/system_entry.asm
+	$(AS) -f elf32 boot/system_entry.asm -o system/entry.o
+
+# Include common directory (which includes fs subdirectory), but exclude duplicate drivers
+SYS_SRC = system/kernel.c $(wildcard common/*.c) $(wildcard common/fs/*.c) \
+          drivers/keyboard.c drivers/mouse.c drivers/sound.c drivers/vga.c \
+          kernel/shell.c
+SYS_OBJ = $(SYS_SRC:.c=.o) system/entry.o
+
+system.elf: $(SYS_OBJ)
+	$(LD) -m elf_i386 -T linker_system.ld -o system.elf $(SYS_OBJ)
+	@echo "✓ Target system (system.elf) built"
+
+system.bin: system.elf
+	objcopy -O binary system.elf system.bin
+	@echo "✓ Target system binary extracted"
+
+# --- 3. INSTALLER (For the ISO/USB) ---
+# Uses multiboot.asm + linker_installer.ld + main()
+INST_SRC = installer/installer_main.c $(wildcard common/*.c) $(wildcard common/fs/*.c) \
+           drivers/mouse.c drivers/sound.c drivers/vga.c
+INST_OBJ = $(INST_SRC:.c=.o) installer/payload.o installer/entry.o
+
+installer/entry.o: boot/multiboot.asm
+	$(AS) -f elf32 boot/multiboot.asm -o installer/entry.o
+
+installer/payload.o: installer/payload.asm system.bin mbr.bin
+	$(AS) -f elf32 installer/payload.asm -o installer/payload.o
+
+installer.bin: $(INST_OBJ)
+	# Important: Use linker_installer.ld to enforce Multiboot header location
+	$(LD) -m elf_i386 -T linker_installer.ld -o installer.bin $(INST_OBJ)
+	@echo "✓ Installer (installer.bin) built with embedded payloads"
+
+# --- 4. ISO GENERATION ---
+camel_install.iso: installer.bin
+	mkdir -p iso/boot/grub
+	cp installer.bin iso/boot/
+	printf 'set timeout=0\nmenuentry "Camel OS Installer" {\n  multiboot /boot/installer.bin\n  boot\n}' > iso/boot/grub/grub.cfg
+	grub-mkrescue -o camel_install.iso iso
+	rm -rf iso
+	@echo "✓ Installation ISO created: camel_install.iso"
+
+# --- 5. DISK IMAGE ---
+disk.img:
+	dd if=/dev/zero of=disk.img bs=1M count=100 2>/dev/null
+	@echo "✓ Disk image created: disk.img (100MB)"
+
+# --- BUILD ALL COMPONENTS ---
+all: mbr.bin system.bin installer.bin camel_install.iso disk.img
+	@echo ""
+	@echo "╔════════════════════════════════════════════════════════╗"
+	@echo "║        CAMEL OS v0.4 PROFESSIONAL - BUILD COMPLETE     ║"
+	@echo "╚════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "📁 Generated Files:"
+	@echo "   ├─ mbr.bin           (Hard Drive Bootloader)"
+	@echo "   ├─ system.bin        (Target Operating System)"
+	@echo "   ├─ installer.bin     (Installation Tool)"
+	@echo "   ├─ camel_install.iso (Bootable Installation Media)"
+	@echo "   └─ disk.img          (Installation Target - 100MB)"
+	@echo ""
+	@echo "🚀 Installation Process:"
+	@echo "   1. make install     → Boot installer from ISO/USB"
+	@echo "   2. make run         → Boot installed system from disk"
+	@echo "   3. make clean       → Remove all build artifacts"
+
+# --- COMMANDS ---
+
+# Installation mode: Boots the ISO that performs the installation
+# This simulates real-world USB installation
+install: camel_install.iso disk.img
+	@echo "🔧 Starting Camel OS Installer..."
+	@echo "   📀 Installation Media: camel_install.iso"
+	@echo "   💾 Target Disk: disk.img (100MB)"
+	@echo ""
+	@echo "💡 Tip: To test real USB installation, flash camel_install.iso to USB:"
+	@echo "   sudo dd if=camel_install.iso of=/dev/sdX bs=4M status=progress"
+	@echo ""
+	# Installer runs from CD/ISO (-cdrom), simulates USB
+	qemu-system-x86_64 -cdrom camel_install.iso -hda disk.img -serial stdio
+
+# Production mode: Boot directly from the installed hard disk
+run: disk.img
+	@echo "🚀 Starting Camel OS (Installed Version)..."
+	@echo "   💾 Boot Device: disk.img"
+	@echo ""
+	@echo "💡 This simulates booting from the installed hard drive"
+	@echo "   after running the installer."
+	@echo ""
+	# Production run from HDD (-hda)
+	qemu-system-x86_64 -hda disk.img -serial stdio
+
+# Development mode: Test individual components
+test-system: system.elf
+	@echo "🧪 Testing Target System (standalone)..."
+	@echo "   📄 File: system.elf"
+	@echo ""
+	qemu-system-x86_64 -kernel system.elf -serial stdio
+
+test-installer: installer.bin
+	@echo "🧪 Testing Installer (standalone)..."
+	@echo "   📄 File: installer.bin"
+	@echo ""
+	qemu-system-x86_64 -kernel installer.bin -serial stdio
+
+# Compilation rules
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Clean build artifacts
+clean:
+	@echo "🧹 Cleaning build artifacts..."
+	rm -f *.o *.bin *.iso
+	rm -f common/*.o system/*.o installer/*.o boot/*.o drivers/*.o kernel/*.o
+	rm -f system/entry.o installer/entry.o installer/payload.o
+	rm -rf iso
+	rm -f disk.img mbr.bin
+	@echo "✓ Clean complete"
+
+# Print build information
+info:
+	@echo "🔧 Camel OS v0.4 Professional Build System"
+	@echo "=========================================="
+	@echo ""
+	@echo "📁 Project Structure:"
+	@echo "   ├── boot/          (Bootloaders)"
+	@echo "   ├── common/        (Shared drivers)"
+	@echo "   ├── system/        (Target OS)"
+	@echo "   ├── installer/     (Installation tool)"
+	@echo "   └── Makefile       (Build system)"
+	@echo ""
+	@echo "🏗️  Build Components:"
+	@echo "   • MBR bootloader (512 bytes) → mbr.bin"
+	@echo "   • Target system (installed OS) → system.bin"
+	@echo "   • Professional installer → installer.bin"
+	@echo "   • Bootable ISO → camel_install.iso"
+	@echo ""
+	@echo "🚀 Key Features:"
+	@echo "   • Serial debugging output"
+	@echo "   • ATA device detection"
+	@echo "   • Professional installer with drive selection"
+	@echo "   • Professional panic screen with register dumps"
+	@echo "   • USB bootable installation media"
