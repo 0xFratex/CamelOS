@@ -22,13 +22,13 @@ void firewall_init(void) {
     fw_state.log_allowed = 0;
     fw_state.rule_count = 0;
     
-    s_printf("[FIREWALL] Initialized (disabled by default)\n");
+    printk("[FIREWALL] Initialized (disabled by default)\n");
 }
 
 // Enable/disable firewall
 void firewall_enable(int enable) {
     fw_state.enabled = enable ? 1 : 0;
-    s_printf("[FIREWALL] %s\n", enable ? "Enabled" : "Disabled");
+    printk("[FIREWALL] %s\n", enable ? "Enabled" : "Disabled");
 }
 
 int firewall_is_enabled(void) {
@@ -70,7 +70,7 @@ int firewall_add_rule(firewall_rule_t* rule) {
     
     int slot = find_free_rule_slot();
     if (slot < 0) {
-        s_printf("[FIREWALL] Error: No free rule slots\n");
+        printk("[FIREWALL] Error: No free rule slots\n");
         return -1;
     }
     
@@ -88,7 +88,7 @@ int firewall_add_rule(firewall_rule_t* rule) {
     
     fw_state.rule_count++;
     
-    s_printf("[FIREWALL] Added rule %d: %s\n", rule->id, rule->description);
+    printk("[FIREWALL] Added rule %d: %s\n", rule->id, rule->description);
     return rule->id;
 }
 
@@ -102,7 +102,7 @@ int firewall_remove_rule(int rule_id) {
     fw_state.rules[slot].enabled = 0;
     fw_state.rule_count--;
     
-    s_printf("[FIREWALL] Removed rule %d\n", rule_id);
+    printk("[FIREWALL] Removed rule %d\n", rule_id);
     return 0;
 }
 
@@ -133,7 +133,7 @@ void firewall_clear_rules(void) {
         fw_state.rules[i].enabled = 0;
     }
     fw_state.rule_count = 0;
-    s_printf("[FIREWALL] All rules cleared\n");
+    printk("[FIREWALL] All rules cleared\n");
 }
 
 // Get rule count
@@ -299,7 +299,7 @@ void firewall_log_packet(const char* direction, uint32_t src_ip, uint16_t src_po
     
     const char* action_str = action == FW_ACTION_ALLOW ? "ALLOW" : "BLOCK";
     
-    s_printf("[FIREWALL] %s %s %s:%d -> %s:%d (%s) %s\n",
+    printk("[FIREWALL] %s %s %s:%d -> %s:%d (%s) %s\n",
              direction, action_str, src_str, src_port, dst_str, dst_port,
              proto_str, action_str);
 }
@@ -380,7 +380,7 @@ void firewall_preset_secure(void) {
     firewall_set_default_policy(FW_DIR_INCOMING, FW_ACTION_BLOCK);
     firewall_set_default_policy(FW_DIR_OUTGOING, FW_ACTION_ALLOW);
     
-    s_printf("[FIREWALL] Applied secure preset\n");
+    printk("[FIREWALL] Applied secure preset\n");
 }
 
 // Preset: Permissive (allow all, log only)
@@ -394,7 +394,7 @@ void firewall_preset_permissive(void) {
     fw_state.log_allowed = 1;
     fw_state.log_blocked = 1;
     
-    s_printf("[FIREWALL] Applied permissive preset\n");
+    printk("[FIREWALL] Applied permissive preset\n");
 }
 
 // Preset: Balanced (allow outgoing, block incoming except DNS/DHCP)
@@ -438,5 +438,5 @@ void firewall_preset_balanced(void) {
     firewall_set_default_policy(FW_DIR_INCOMING, FW_ACTION_BLOCK);
     firewall_set_default_policy(FW_DIR_OUTGOING, FW_ACTION_ALLOW);
     
-    s_printf("[FIREWALL] Applied balanced preset\n");
+    printk("[FIREWALL] Applied balanced preset\n");
 }
