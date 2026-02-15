@@ -1,4 +1,4 @@
-// core/http.c - Optimized HTTP client implementation with async support and TLS
+// core/http.c - Optimized HTTP client implementation with async support, TLS, and loading animations
 #include "http.h"
 #include "socket.h"
 #include "string.h"
@@ -6,8 +6,10 @@
 #include "dns.h"
 #include "net.h"
 #include "tls.h"
+#include "firewall.h"
 #include "window_server.h"
 #include "../hal/video/gfx_hal.h"
+#include "../hal/video/loading_animation.h"
 #include "../usr/framework.h"
 
 #define HTTP_BUFFER_SIZE 8192
@@ -27,9 +29,89 @@ extern int atoi(const char* str);
 // TLS session for HTTPS connections
 static tls_session_t* current_tls_session = NULL;
 
+// Global loading state for UI feedback
+static http_loading_state_t http_loading_state = {
+    .is_loading = 0,
+    .phase = HTTP_PHASE_IDLE,
+    .bytes_received = 0,
+    .total_bytes = 0,
+    .status_text = "",
+    .progress_callback = NULL,
+    .user_data = NULL
+};
+
 // Forward declaration for internal request function
 static int http_get_internal(const char* url, char* response, int response_size,
-                             const char** headers, int header_count, int redirect_count);
+                             const char** headers, int header_count, int redirect_count,
+                             http_progress_cb progress_cb, void* user_data);
+
+// Get the current loading state
+http_loading_state_t* http_get_loading_state(void) {
+    return &http_loading_state;
+}
+
+// Draw a loading overlay on the window content area
+static void draw_loading_overlay(int x, int y, int w, int h) {
+    // Semi-transparent overlay background
+    uint32_t overlay_bg = 0x80FFFFFF;  // 50% transparent white
+    
+    // Draw overlay
+    for (int py = y; py < y + h; py++) {
+        for (int px = x; px < x + w; px++) {
+            uint32_t* buf = gfx_get_active_buffer();
+            if (buf) {
+                int idx = py * 1024 + px;  // Assuming 1024 width
+                uint32_t bg = buf[idx];
+                // Alpha blend
+                uint8_t bg_r = (bg >> 16) & 0xFF;
+                uint8_t bg_g = (bg >> 8) & 0xFF;
+                uint8_t bg_b = bg & 0xFF;
+                
+                uint8_t r = (bg_r * 128 + 0xFF * 127) / 255;
+                uint8_t g = (bg_g * 128 + 0xFF * 127) / 255;
+                uint8_t b = (bg_b * 128 + 0xFF * 127) / 255;
+                
+                buf[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+    
+    // Draw spinner in center
+    int center_x = x + w / 2;
+    int center_y = y + h / 2;
+    int radius = 20;
+    
+    // Spinning animation
+    static int spinner_frame = 0;
+    spinner_frame = (spinner_frame + 1) % 12;
+    
+    draw_spinner(center_x, center_y, radius, 0xFF4A90D9, spinner_frame);
+    
+    // Draw status text below spinner
+    if (http_loading_state.status_text[0]) {
+        int text_y = center_y + radius + 20;
+        gfx_draw_string(center_x - strlen(http_loading_state.status_text) * 4, text_y, 
+                       http_loading_state.status_text, 0xFF333333);
+    }
+    
+    // Draw progress bar if we have content length
+    if (http_loading_state.total_bytes > 0) {
+        int bar_width = w / 2;
+        int bar_height = 8;
+        int bar_x = center_x - bar_width / 2;
+        int bar_y = center_y + radius + 40;
+        
+        draw_progress_bar(bar_x, bar_y, bar_width, bar_height,
+                         http_loading_state.bytes_received, http_loading_state.total_bytes,
+                         0xFF4A90D9, 0xFFE0E0E0);
+        
+        // Draw percentage
+        char percent_text[16];
+        int percent = (http_loading_state.bytes_received * 100) / http_loading_state.total_bytes;
+        snprintf(percent_text, sizeof(percent_text), "%d%%", percent);
+        gfx_draw_string(center_x - strlen(percent_text) * 4, bar_y + 12, percent_text, 0xFF666666);
+    }
+}
 
 // Full event processing during HTTP requests - redraws window and swaps buffers
 static void http_process_events(void) {
@@ -41,9 +123,22 @@ static void http_process_events(void) {
         extern void compositor_draw_window(window_t* w);
         compositor_draw_window(active_win);
         
-        // Then draw content
-        typedef void (*pcb)(int,int,int,int);
-        ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30, active_win->width, active_win->height - 30);
+        // Draw content area with loading overlay if loading
+        if (http_loading_state.is_loading) {
+            // First draw the content
+            typedef void (*pcb)(int,int,int,int);
+            ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30, 
+                                              active_win->width, active_win->height - 30);
+            
+            // Then draw loading overlay
+            draw_loading_overlay(active_win->x, active_win->y + 30, 
+                               active_win->width, active_win->height - 30);
+        } else {
+            // Just draw the content
+            typedef void (*pcb)(int,int,int,int);
+            ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30, 
+                                              active_win->width, active_win->height - 30);
+        }
         
         // Swap buffers to show the update
         gfx_swap_buffers();
@@ -124,12 +219,22 @@ static uint32_t http_inet_addr(const char* ip_str) {
 // HTTP GET request - Supports both HTTP and HTTPS with redirect handling
 int http_get(const char* url, char* response, int response_size,
              const char** headers, int header_count) {
-    return http_get_internal(url, response, response_size, headers, header_count, 0);
+    return http_get_internal(url, response, response_size, headers, header_count, 0, NULL, NULL);
 }
 
-// Internal HTTP GET with redirect tracking
+// Cancel current request
+void http_cancel_request(void) {
+    http_loading_state.is_loading = 0;
+    http_loading_state.phase = HTTP_PHASE_IDLE;
+    http_loading_state.bytes_received = 0;
+    http_loading_state.total_bytes = 0;
+    http_loading_state.status_text[0] = 0;
+}
+
+// Internal HTTP GET with redirect tracking and loading state
 static int http_get_internal(const char* url, char* response, int response_size,
-                             const char** headers, int header_count, int redirect_count) {
+                             const char** headers, int header_count, int redirect_count,
+                             http_progress_cb progress_cb, void* user_data) {
     char host[256];
     char path[256];
     uint16_t port;
@@ -137,23 +242,59 @@ static int http_get_internal(const char* url, char* response, int response_size,
 
     // Check redirect limit
     if (redirect_count > HTTP_MAX_REDIRECTS) {
+        http_loading_state.phase = HTTP_PHASE_ERROR;
+        strcpy(http_loading_state.status_text, "Too many redirects");
         return -1;
     }
 
+    // Set loading state
+    http_loading_state.is_loading = 1;
+    http_loading_state.phase = HTTP_PHASE_DNS;
+    http_loading_state.bytes_received = 0;
+    http_loading_state.total_bytes = 0;
+    strcpy(http_loading_state.status_text, "Resolving host...");
+    http_loading_state.progress_callback = progress_cb;
+    http_loading_state.user_data = user_data;
+
     is_https = http_parse_url(url, host, path, &port);
     if (is_https < 0) {
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
         return -1;
     }
+
+    // Update status with host name
+    snprintf(http_loading_state.status_text, sizeof(http_loading_state.status_text), 
+             "Connecting to %s...", host);
 
     // Resolve hostname
     char ip_str[32];
     if (dns_resolve(host, ip_str, sizeof(ip_str)) < 0) {
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
+        strcpy(http_loading_state.status_text, "DNS lookup failed");
         return -1;
     }
+
+    // Check firewall for outgoing connection
+    uint32_t dst_ip = http_inet_addr(ip_str);
+    if (firewall_is_enabled()) {
+        if (firewall_check_outgoing(net_get_ip(), 0, dst_ip, port, FW_PROTO_TCP) == FW_ACTION_BLOCK) {
+            http_loading_state.is_loading = 0;
+            http_loading_state.phase = HTTP_PHASE_ERROR;
+            strcpy(http_loading_state.status_text, "Blocked by firewall");
+            return -1;
+        }
+    }
+
+    http_loading_state.phase = HTTP_PHASE_CONNECTING;
+    http_process_events();
 
     // Create socket
     int sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
         return -1;
     }
 
@@ -162,19 +303,28 @@ static int http_get_internal(const char* url, char* response, int response_size,
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
-    server_addr.sin_addr = http_inet_addr(ip_str);
+    server_addr.sin_addr = dst_ip;
 
     if (k_connect(sockfd, &server_addr) < 0) {
         k_close(sockfd);
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
+        strcpy(http_loading_state.status_text, "Connection failed");
         return -1;
     }
 
     // TLS handshake for HTTPS
     tls_session_t* tls_session = NULL;
     if (is_https) {
+        http_loading_state.phase = HTTP_PHASE_TLS_HANDSHAKE;
+        strcpy(http_loading_state.status_text, "Establishing secure connection...");
+        http_process_events();
+        
         tls_session = tls_create_session();
         if (!tls_session) {
             k_close(sockfd);
+            http_loading_state.is_loading = 0;
+            http_loading_state.phase = HTTP_PHASE_ERROR;
             return -1;
         }
         
@@ -190,14 +340,22 @@ static int http_get_internal(const char* url, char* response, int response_size,
             k_close(sockfd);
             
             // Fallback: try HTTP on port 80
+            http_loading_state.phase = HTTP_PHASE_CONNECTING;
+            strcpy(http_loading_state.status_text, "Falling back to HTTP...");
+            http_process_events();
+            
             sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
             if (sockfd < 0) {
+                http_loading_state.is_loading = 0;
+                http_loading_state.phase = HTTP_PHASE_ERROR;
                 return -1;
             }
             
             server_addr.sin_port = htons(80);
             if (k_connect(sockfd, &server_addr) < 0) {
                 k_close(sockfd);
+                http_loading_state.is_loading = 0;
+                http_loading_state.phase = HTTP_PHASE_ERROR;
                 return -1;
             }
             
@@ -209,14 +367,19 @@ static int http_get_internal(const char* url, char* response, int response_size,
     }
 
     // Build HTTP request - use HTTP/1.1 for better compatibility
+    http_loading_state.phase = HTTP_PHASE_SENDING_REQUEST;
+    strcpy(http_loading_state.status_text, "Sending request...");
+    http_process_events();
+    
     char request[1024];
     int len = snprintf(request, sizeof(request),
                       "GET %s HTTP/1.1\r\n"
                       "Host: %s\r\n"
-                      "User-Agent: Mozilla/5.0 (compatible; CamelOS/1.0)\r\n"
+                      "User-Agent: Mozilla/5.0 (compatible; CamelOS/1.0; +https://camelos.org)\r\n"
                       "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
                       "Accept-Language: en-US,en;q=0.5\r\n"
                       "Accept-Encoding: identity\r\n"
+                      "Cache-Control: max-age=0\r\n"
                       "Connection: close\r\n", path, host);
 
     // Add custom headers
@@ -237,6 +400,9 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if (send_result < 0) {
         if (tls_session) tls_destroy_session(tls_session);
         k_close(sockfd);
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
+        strcpy(http_loading_state.status_text, "Failed to send request");
         return -1;
     }
 
@@ -250,10 +416,21 @@ static int http_get_internal(const char* url, char* response, int response_size,
     char headers_buffer[4096];
     int headers_len = 0;
 
+    http_loading_state.phase = HTTP_PHASE_RECEIVING_HEADERS;
+    strcpy(http_loading_state.status_text, "Receiving headers...");
+    
     // Use larger buffer for faster reads
     char buffer[2048];
     
     while (total_received < response_size - 1) {
+        // Update loading state and process events
+        http_loading_state.bytes_received = total_received;
+        if (content_length > 0) {
+            http_loading_state.total_bytes = content_length;
+            snprintf(http_loading_state.status_text, sizeof(http_loading_state.status_text),
+                     "Loading %d/%d bytes", total_received, content_length);
+        }
+        
         // Process events to prevent UI freeze
         http_process_events();
         
@@ -286,6 +463,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
             char* body_start = strstr(buffer, "\r\n\r\n");
             if (body_start) {
                 in_body = 1;
+                http_loading_state.phase = HTTP_PHASE_RECEIVING_BODY;
                 char* body = body_start + 4;
                 int body_len = received - (body - buffer);
 
@@ -315,6 +493,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
                 if (!cl_header) cl_header = strstr(buffer, "content-length:");
                 if (cl_header) {
                     content_length = atoi(cl_header + 15);
+                    http_loading_state.total_bytes = content_length;
                 }
 
                 // Copy body to response
@@ -333,6 +512,11 @@ static int http_get_internal(const char* url, char* response, int response_size,
             memcpy(response_ptr, buffer, copy_len);
             response_ptr += copy_len;
             total_received += copy_len;
+        }
+
+        // Call progress callback if set
+        if (progress_cb) {
+            progress_cb(total_received, content_length > 0 ? content_length : total_received, user_data);
         }
 
         // Stop if we have all content
@@ -356,8 +540,13 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if ((status_code == 301 || status_code == 302 || status_code == 303 || 
          status_code == 307 || status_code == 308) && redirect_url[0]) {
         // Follow redirect
-        return http_get_internal(redirect_url, response, response_size, headers, header_count, redirect_count + 1);
+        return http_get_internal(redirect_url, response, response_size, headers, header_count, redirect_count + 1, progress_cb, user_data);
     }
+
+    // Mark complete
+    http_loading_state.is_loading = 0;
+    http_loading_state.phase = HTTP_PHASE_COMPLETE;
+    strcpy(http_loading_state.status_text, "Done");
 
     return total_received;
 }
