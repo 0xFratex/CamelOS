@@ -47,9 +47,9 @@ HAL_SRC = hal/drivers/vga.c hal/drivers/ata.c hal/drivers/serial.c \
 	  hal/drivers/usb_xhci.c hal/drivers/usb.c hal/drivers/wifi_rtl.c \
 	  hal/drivers/rtc.c hal/drivers/sb16.c \
 	  hal/cpu/apic.c hal/cpu/idt.c hal/cpu/isr.c hal/cpu/gdt.c hal/cpu/timer.c hal/cpu/paging.c \
-	  hal/video/gfx_hal.c hal/video/compositor.c hal/video/animation.c
+	  hal/video/gfx_hal.c hal/video/compositor.c hal/video/animation.c hal/video/loading_animation.c
 	          
-CORE_SRC = core/kernel.c core/panic.c sys/api.c core/string.c core/memory.c core/task.c core/cdl_loader.c core/window_server.c core/net.c core/net_if.c core/net_dhcp.c core/socket.c core/tcp.c core/http.c core/tls.c core/tls_ca_store.c core/app_switcher.c core/dns.c core/debug.c core/arp.c core/scheduler.c
+CORE_SRC = core/kernel.c core/panic.c sys/api.c core/string.c core/memory.c core/task.c core/cdl_loader.c core/window_server.c core/net.c core/net_if.c core/net_dhcp.c core/socket.c core/tcp.c core/http.c core/tls.c core/tls_ca_store.c core/app_switcher.c core/dns.c core/debug.c core/arp.c core/scheduler.c core/firewall.c
 ASSETS_SRC = kernel/assets.c
 FS_SRC = fs/pfs32.c fs/disk.c
 USR_SRC = usr/shell.c usr/bubbleview.c usr/desktop.c usr/framework.c usr/dock.c usr/clipboard.c usr/lib/camel_framework.c usr/lib/camel_ui.c
