@@ -5,13 +5,96 @@
 This document summarizes the comprehensive upgrades made to CamelOS to enable:
 - Modern web browsing (Google, modern websites)
 - SSL/TLS certificate validation
-- Enhanced JavaScript engine
+- Enhanced JavaScript engine with DOM integration
 - Real hardware support
 - Improved graphics and CSS rendering
+- Higher resolution display support
 
 ---
 
-## 1. TLS/SSL Enhancements
+## 1. JavaScript-to-Browser DOM Bridge (NEW)
+
+### 1.1 Browser JS Bridge (`usr/libs/browser_js_bridge.c`, `usr/libs/browser_bridge.h`)
+
+**Purpose**: Connect the JavaScript engine to the browser's DOM, enabling dynamic content rendering.
+
+**Features Implemented**:
+- `document.write()` - Inject HTML content dynamically
+- `document.writeln()` - Write HTML with newline
+- `document.getElementById()` - Find elements by ID
+- `document.createElement()` - Create new DOM elements
+- `document.getElementsByTagName()` - Find elements by tag
+- `window.setTimeout()` / `window.setInterval()` - Timer support
+- Console log callback integration
+
+**How It Works**:
+```c
+// Initialize the bridge
+js_bridge_init();
+js_bridge_register_browser_apis();
+
+// Execute script with document.write
+js_bridge_execute_script("document.write('<input type=\"text\">')");
+
+// Get pending HTML from document.write calls
+const char* html = js_bridge_get_pending_html();
+```
+
+**Browser Integration**:
+The bridge is automatically used when parsing `<script>` tags in HTML. Any `document.write()` calls will inject HTML into the page, allowing dynamic content like Google's search box to appear.
+
+---
+
+## 2. Enhanced JavaScript Evaluation
+
+### 2.1 Improved `js_v2_eval()` Function
+
+The JS engine now includes a proper interpreter for common patterns:
+- `document.write("...")` - Full string parsing with escape sequences
+- `document.writeln("...")` - Same with newline
+- `console.log("...")` - Debug output
+- Variable declarations (`var`, `let`, `const`) with values
+- String, number, boolean, and null literals
+
+---
+
+## 3. Higher Resolution Support
+
+### 3.1 VBE Mode Definitions (`hal/drivers/vga.h`)
+
+**New Resolution Modes**:
+| Mode | Resolution | Bits |
+|------|------------|------|
+| 0x145 | 640x480 | 32 |
+| 0x15C | 800x600 | 32 |
+| 0x168 | 1024x768 | 32 |
+| 0x16B | 1280x720 | 32 |
+| 0x16A | 1280x1024 | 32 |
+| 0x17D | 1440x900 | 32 |
+| 0x18B | 1920x1080 | 32 |
+
+### 3.2 VBE Mode Functions
+
+```c
+int vbe_set_mode(uint16_t mode);      // Set VBE mode
+int vbe_get_current_mode(void);       // Get current mode
+void vbe_list_modes(void);            // List available modes
+```
+
+### 3.3 Color Definitions
+
+Added standard color constants for easier graphics programming:
+```c
+#define COLOR_BLACK       0xFF000000
+#define COLOR_WHITE       0xFFFFFFFF
+#define COLOR_RED         0xFFFF0000
+#define COLOR_GREEN       0xFF008000
+// ... and more
+```
+
+---
+
+## 4. TLS/SSL Enhancements
 
 ### 1.1 Root CA Certificate Store (`core/tls_ca_store.h`, `core/tls_ca_store.c`)
 

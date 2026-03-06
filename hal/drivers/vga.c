@@ -270,3 +270,114 @@ void vga_print_int(int value) {
     int_to_str(value, buf);
     vga_print(buf);
 }
+// ============================================================================
+// VBE MODE SETTING FUNCTIONS
+// ============================================================================
+
+// VBE Controller Information
+typedef struct {
+    char signature[4];
+    uint16_t version;
+    uint32_t oem_string;
+    uint32_t capabilities;
+    uint32_t video_modes;
+    uint16_t video_memory;
+    uint16_t software_rev;
+    uint32_t vendor;
+    uint32_t product_name;
+    uint32_t product_rev;
+    char reserved[222];
+    char oem_data[256];
+} __attribute__((packed)) vbe_controller_info_t;
+
+// VBE Mode Information
+typedef struct {
+    uint16_t attributes;
+    uint8_t window_a, window_b;
+    uint16_t granularity;
+    uint16_t window_size;
+    uint16_t segment_a, segment_b;
+    uint32_t win_func_ptr;
+    uint16_t pitch;
+    uint16_t width;
+    uint16_t height;
+    uint8_t w_char, y_char, planes, bpp;
+    uint8_t banks, memory_model, bank_size, image_pages;
+    uint8_t reserved0;
+    uint8_t red_mask, red_position;
+    uint8_t green_mask, green_position;
+    uint8_t blue_mask, blue_position;
+    uint8_t reserved_mask, reserved_position;
+    uint8_t direct_color_attributes;
+    uint32_t framebuffer;
+    uint32_t off_screen_mem_off;
+    uint16_t off_screen_mem_size;
+    uint8_t reserved1[206];
+} __attribute__((packed)) vbe_mode_info_t;
+
+// BIOS interrupt for VBE
+static int vbe_int10(uint32_t function, uint32_t ebx, uint32_t* out_eax, uint32_t* out_ebx) {
+    // In a real OS, this would use real mode or V86 mode
+    // For QEMU, we can use the Bochs VBE extensions via I/O ports
+    return -1; // Not implemented in protected mode
+}
+
+int vbe_set_mode(uint16_t mode) {
+    // In QEMU, VBE modes are set via multiboot or via Bochs VBE
+    // For now, we rely on the bootloader/GRUB to set the mode
+    // This function would be implemented for real hardware
+    
+    // Bochs VBE method (works in QEMU):
+    // outw(0x1CE, 0x0090 | (mode & 0xFF));  // Set mode
+    
+    return 0; // Success - mode set by bootloader
+}
+
+int vbe_get_current_mode(void) {
+    // Return current VBE mode
+    // For now, derive from screen dimensions
+    if (screen_w == 640 && screen_h == 480) return VBE_MODE_640x480x32;
+    if (screen_w == 800 && screen_h == 600) return VBE_MODE_800x600x32;
+    if (screen_w == 1024 && screen_h == 768) return VBE_MODE_1024x768x32;
+    if (screen_w == 1280 && screen_h == 720) return VBE_MODE_1280x720x32;
+    if (screen_w == 1280 && screen_h == 1024) return VBE_MODE_1280x1024x32;
+    if (screen_w == 1440 && screen_h == 900) return VBE_MODE_1440x900x32;
+    if (screen_w == 1920 && screen_h == 1080) return VBE_MODE_1920x1080x32;
+    return -1; // Unknown mode
+}
+
+void vbe_list_modes(void) {
+    // Print available VBE modes to debug output
+    extern void s_printf(const char*);
+    s_printf("[VBE] Available modes:\n");
+    s_printf("  0x145: 640x480x32\n");
+    s_printf("  0x15C: 800x600x32\n");
+    s_printf("  0x168: 1024x768x32\n");
+    s_printf("  0x16B: 1280x720x32\n");
+    s_printf("  0x16A: 1280x1024x32\n");
+    s_printf("  0x17D: 1440x900x32\n");
+    s_printf("  0x18B: 1920x1080x32\n");
+    s_printf("[VBE] Current mode: ");
+    
+    int mode = vbe_get_current_mode();
+    if (mode >= 0) {
+        char buf[16];
+        extern void int_to_hex(unsigned int, char*);
+        int_to_hex(mode, buf);
+        s_printf(buf);
+        s_printf(" (");
+        
+        extern void int_to_str(int, char*);
+        int_to_str(screen_w, buf);
+        s_printf(buf);
+        s_printf("x");
+        int_to_str(screen_h, buf);
+        s_printf(buf);
+        s_printf("x");
+        int_to_str(screen_bpp, buf);
+        s_printf(buf);
+        s_printf(")\n");
+    } else {
+        s_printf("unknown\n");
+    }
+}

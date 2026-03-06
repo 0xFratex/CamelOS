@@ -24,6 +24,36 @@ enum Colors {
     WHITE = 15,
 };
 
+// ============================================================================
+// VBE MODE DEFINITIONS
+// ============================================================================
+#define VBE_MODE_640x480x32    0x145
+#define VBE_MODE_800x600x32    0x15C
+#define VBE_MODE_1024x768x32   0x168
+#define VBE_MODE_1280x720x32   0x16B
+#define VBE_MODE_1280x1024x32  0x16A
+#define VBE_MODE_1440x900x32   0x17D
+#define VBE_MODE_1920x1080x32  0x18B
+
+// ============================================================================
+// COLOR DEFINITIONS (32-bit ARGB)
+// ============================================================================
+#define COLOR_BLACK       0xFF000000
+#define COLOR_WHITE       0xFFFFFFFF
+#define COLOR_RED         0xFFFF0000
+#define COLOR_GREEN       0xFF008000
+#define COLOR_BLUE        0xFF0000FF
+#define COLOR_CYAN        0xFF00FFFF
+#define COLOR_MAGENTA     0xFFFF00FF
+#define COLOR_YELLOW      0xFFFFFF00
+#define COLOR_GRAY        0xFF808080
+#define COLOR_LIGHT_GRAY  0xFFC0C0C0
+#define COLOR_DARK_GRAY   0xFF404040
+#define COLOR_ORANGE      0xFFFFA500
+#define COLOR_PINK        0xFFFFC0CB
+#define COLOR_PURPLE      0xFF800080
+#define COLOR_BROWN       0xFFA52A2A
+
 // Global Video State
 extern uint32_t* gfx_mem; // Pointer to Linear Framebuffer (Video RAM)
 extern int screen_w;
@@ -37,6 +67,11 @@ extern uint32_t* gfx_get_active_buffer();
 
 void init_vga_multiboot(void* mboot_ptr);
 void init_vga_graphics();
+
+// VBE mode setting
+int vbe_set_mode(uint16_t mode);
+int vbe_get_current_mode(void);
+void vbe_list_modes(void);
 
 // New drawing primitives for 32-bit color
 void gfx_put_pixel(int x, int y, uint32_t color);

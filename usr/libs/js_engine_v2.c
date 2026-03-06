@@ -1150,8 +1150,219 @@ js_v2_value_t* js_v2_call(js_v2_engine_t* engine, js_v2_value_t* fn, js_v2_value
 js_v2_value_t* js_v2_eval(js_v2_engine_t* engine, const char* code) {
     if (!engine || !code) return js_v2_new_undefined(engine);
     
-    // This would require a full lexer/parser/interpreter
-    // For now, return undefined as a placeholder
+    // Simple JavaScript interpreter for document.write support
+    // This handles basic patterns like: document.write("...")
+    
+    const char* p = code;
+    
+    // Skip whitespace
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    
+    if (!*p) return js_v2_new_undefined(engine);
+    
+    // Check for common patterns
+    // Pattern: document.write("...")
+    if (strncmp(p, "document.write(", 15) == 0) {
+        p += 15; // Skip "document.write("
+        
+        // Find the string argument
+        while (*p == ' ' || *p == '\t') p++;
+        
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            char buffer[4096];
+            int buf_idx = 0;
+            
+            // Extract string content
+            while (*p && *p != quote && buf_idx < 4095) {
+                if (*p == '\\' && *(p+1)) {
+                    p++;
+                    switch (*p) {
+                        case 'n': buffer[buf_idx++] = '\n'; break;
+                        case 't': buffer[buf_idx++] = '\t'; break;
+                        case 'r': buffer[buf_idx++] = '\r'; break;
+                        case '\\': buffer[buf_idx++] = '\\'; break;
+                        case '"': buffer[buf_idx++] = '"'; break;
+                        case '\'': buffer[buf_idx++] = '\''; break;
+                        default: buffer[buf_idx++] = *p; break;
+                    }
+                    p++;
+                } else {
+                    buffer[buf_idx++] = *p++;
+                }
+            }
+            buffer[buf_idx] = 0;
+            
+            // Call document.write with the string
+            js_v2_value_t* arg = js_v2_new_string(engine, buffer);
+            js_v2_value_t* args[1] = { arg };
+            
+            // Find the document.write function and call it
+            js_v2_value_t* doc = engine->document_object;
+            if (doc && doc->type == JS_V2_TYPE_OBJECT && doc->data.object) {
+                for (int i = 0; i < doc->data.object->property_count; i++) {
+                    if (strcmp(doc->data.object->properties[i].key, "write") == 0) {
+                        js_v2_value_t* write_fn = doc->data.object->properties[i].value;
+                        if (write_fn && write_fn->type == JS_V2_TYPE_FUNCTION && 
+                            write_fn->data.function && write_fn->data.function->native_fn) {
+                            return write_fn->data.function->native_fn(1, args, engine);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Pattern: document.writeln("...")
+    if (strncmp(p, "document.writeln(", 17) == 0) {
+        p += 17;
+        
+        while (*p == ' ' || *p == '\t') p++;
+        
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            char buffer[4096];
+            int buf_idx = 0;
+            
+            while (*p && *p != quote && buf_idx < 4095) {
+                if (*p == '\\' && *(p+1)) {
+                    p++;
+                    switch (*p) {
+                        case 'n': buffer[buf_idx++] = '\n'; break;
+                        case 't': buffer[buf_idx++] = '\t'; break;
+                        case 'r': buffer[buf_idx++] = '\r'; break;
+                        case '\\': buffer[buf_idx++] = '\\'; break;
+                        case '"': buffer[buf_idx++] = '"'; break;
+                        case '\'': buffer[buf_idx++] = '\''; break;
+                        default: buffer[buf_idx++] = *p; break;
+                    }
+                    p++;
+                } else {
+                    buffer[buf_idx++] = *p++;
+                }
+            }
+            buffer[buf_idx] = 0;
+            
+            js_v2_value_t* arg = js_v2_new_string(engine, buffer);
+            js_v2_value_t* args[1] = { arg };
+            
+            js_v2_value_t* doc = engine->document_object;
+            if (doc && doc->type == JS_V2_TYPE_OBJECT && doc->data.object) {
+                for (int i = 0; i < doc->data.object->property_count; i++) {
+                    if (strcmp(doc->data.object->properties[i].key, "writeln") == 0) {
+                        js_v2_value_t* writeln_fn = doc->data.object->properties[i].value;
+                        if (writeln_fn && writeln_fn->type == JS_V2_TYPE_FUNCTION && 
+                            writeln_fn->data.function && writeln_fn->data.function->native_fn) {
+                            return writeln_fn->data.function->native_fn(1, args, engine);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Pattern: console.log("...")
+    if (strncmp(p, "console.log(", 12) == 0) {
+        p += 12;
+        
+        while (*p == ' ' || *p == '\t') p++;
+        
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            char buffer[4096];
+            int buf_idx = 0;
+            
+            while (*p && *p != quote && buf_idx < 4095) {
+                if (*p == '\\' && *(p+1)) {
+                    p++;
+                    switch (*p) {
+                        case 'n': buffer[buf_idx++] = '\n'; break;
+                        case 't': buffer[buf_idx++] = '\t'; break;
+                        default: buffer[buf_idx++] = *p; break;
+                    }
+                    p++;
+                } else {
+                    buffer[buf_idx++] = *p++;
+                }
+            }
+            buffer[buf_idx] = 0;
+            
+            if (engine->log_callback) {
+                engine->log_callback(buffer);
+            }
+            return js_v2_new_undefined(engine);
+        }
+    }
+    
+    // Pattern: variable assignment var x = ...
+    if (strncmp(p, "var ", 4) == 0 || strncmp(p, "let ", 4) == 0 || strncmp(p, "const ", 6) == 0) {
+        // Skip to variable name
+        const char* var_start = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        while (*p == ' ' || *p == '\t') p++;
+        
+        // Get variable name
+        char var_name[64];
+        int var_idx = 0;
+        while (*p && *p != ' ' && *p != '\t' && *p != '=' && *p != ';' && var_idx < 63) {
+            var_name[var_idx++] = *p++;
+        }
+        var_name[var_idx] = 0;
+        
+        // Skip to value
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '=') {
+            p++;
+            while (*p == ' ' || *p == '\t') p++;
+            
+            // Parse value
+            js_v2_value_t* value = js_v2_new_undefined(engine);
+            
+            if (*p == '"' || *p == '\'') {
+                // String value
+                char quote = *p++;
+                char buffer[1024];
+                int buf_idx = 0;
+                while (*p && *p != quote && buf_idx < 1023) {
+                    if (*p == '\\' && *(p+1)) {
+                        p++;
+                        switch (*p) {
+                            case 'n': buffer[buf_idx++] = '\n'; break;
+                            case 't': buffer[buf_idx++] = '\t'; break;
+                            default: buffer[buf_idx++] = *p++; continue;
+                        }
+                        p++;
+                    } else {
+                        buffer[buf_idx++] = *p++;
+                    }
+                }
+                buffer[buf_idx] = 0;
+                value = js_v2_new_string(engine, buffer);
+            } else if (*p >= '0' && *p <= '9') {
+                // Number value
+                int num = 0;
+                while (*p >= '0' && *p <= '9') {
+                    num = num * 10 + (*p - '0');
+                    p++;
+                }
+                value = js_v2_new_number(engine, num);
+            } else if (strncmp(p, "true", 4) == 0) {
+                value = js_v2_new_boolean(engine, 1);
+            } else if (strncmp(p, "false", 5) == 0) {
+                value = js_v2_new_boolean(engine, 0);
+            } else if (strncmp(p, "null", 4) == 0) {
+                value = js_v2_new_null(engine);
+            }
+            
+            // Set the variable
+            js_v2_declare_variable(engine, var_name, 0, 0);
+            js_v2_variable_t* var = js_v2_find_variable(engine, var_name);
+            if (var) var->value = value;
+        }
+        
+        return js_v2_new_undefined(engine);
+    }
+    
     return js_v2_new_undefined(engine);
 }
 
@@ -1593,4 +1804,48 @@ void js_v2_register_modern_builtins(js_v2_engine_t* engine) {
     js_v2_object_set(engine, performance, "now", js_v2_new_function(engine, "now"));
     js_v2_object_set(engine, performance, "timeOrigin", js_v2_new_number(engine, 0));
     js_v2_set_global(engine, "performance", performance);
+}
+
+// ============================================================================
+// ADDITIONAL HELPER FUNCTIONS FOR BROWSER BRIDGE
+// ============================================================================
+
+js_v2_value_t* js_v2_new_boolean(js_v2_engine_t* engine, int value) {
+    return js_v2_new_boolean(engine, value);
+}
+
+js_v2_value_t* js_v2_new_null(js_v2_engine_t* engine) {
+    return js_v2_new_null(engine);
+}
+
+js_v2_value_t* js_v2_new_undefined(js_v2_engine_t* engine) {
+    return js_v2_new_undefined(engine);
+}
+
+js_v2_variable_t* js_v2_find_variable(js_v2_engine_t* engine, const char* name) {
+    js_v2_scope_t* scope = engine->current_scope;
+    
+    while (scope) {
+        for (int i = 0; i < scope->variable_count; i++) {
+            if (strcmp(scope->variables[i].name, name) == 0) {
+                return &scope->variables[i];
+            }
+        }
+        scope = scope->parent;
+    }
+    
+    return NULL;
+}
+
+void js_v2_declare_variable(js_v2_engine_t* engine, const char* name, int is_const, int is_let) {
+    if (!engine->current_scope) return;
+    
+    js_v2_scope_t* scope = engine->current_scope;
+    if (scope->variable_count >= JS_V2_MAX_VARIABLES) return;
+    
+    js_v2_variable_t* var = &scope->variables[scope->variable_count++];
+    strncpy(var->name, name, 63);
+    var->value = js_v2_new_undefined(engine);
+    var->is_const = is_const;
+    var->is_let = is_let;
 }
