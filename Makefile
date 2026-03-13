@@ -243,13 +243,11 @@ textedit.cdl:   usr/apps/textedit_cdl.c usr/lib/camel_framework.c
         $(LD)   $(CDL_LDFLAGS)  -o      textedit.cdl    textedit.o      camel_framework.o
 
 #       Browser App
-#       Full    browser with    JS      engine  v2      and     bridge  for     document.write  support
-browser.cdl:    usr/apps/browser_cdl.c  usr/lib/camel_framework.c       usr/libs/js_engine_v2.c usr/libs/browser_js_bridge.c
+#       Simple browser with basic document.write support
+browser.cdl:    usr/apps/browser_cdl.c  usr/lib/camel_framework.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/apps/browser_cdl.c  -o      browser.o
         $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/libs/js_engine_v2.c -o      jsengine_v2.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/libs/browser_js_bridge.c    -o      browser_bridge.o
-        $(LD)   $(CDL_LDFLAGS)  -o      browser.cdl     browser.o       camel_framework.o       jsengine_v2.o   browser_bridge.o
+        $(LD)   $(CDL_LDFLAGS)  -o      browser.cdl     browser.o       camel_framework.o
 #       Settings        App
 settings.cdl:   usr/apps/settings_cdl.c usr/lib/camel_framework.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/apps/settings_cdl.c -o      settings.o
