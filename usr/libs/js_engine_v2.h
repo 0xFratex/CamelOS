@@ -53,6 +53,7 @@ typedef struct js_v2_object js_v2_object_t;
 typedef struct js_v2_array js_v2_array_t;
 typedef struct js_v2_function js_v2_function_t;
 typedef struct js_v2_promise js_v2_promise_t;
+typedef struct js_v2_engine js_v2_engine_t;
 
 // Property descriptor (for getters/setters)
 typedef struct {
@@ -88,7 +89,7 @@ struct js_v2_function {
     int param_count;
     char* body;
     int body_len;
-    js_v2_value_t* (*native_fn)(int argc, js_v2_value_t** args, void* engine);
+    js_v2_value_t* (*native_fn)(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
     int is_native;
     int is_arrow;              // Arrow function
     int is_async;              // Async function
@@ -147,7 +148,7 @@ struct js_v2_scope {
 // ============================================================================
 // ENGINE STATE
 // ============================================================================
-typedef struct {
+struct js_v2_engine {
     // Value pool
     js_v2_value_t values[1024];
     int value_count;
@@ -199,7 +200,7 @@ typedef struct {
     void (*dom_update_callback)(void* element, const char* property, js_v2_value_t* value);
     void (*dom_query_callback)(const char* selector, void* result);
     
-} js_v2_engine_t;
+};
 
 // ============================================================================
 // ENGINE API
@@ -217,7 +218,7 @@ js_v2_value_t* js_v2_eval_module(js_v2_engine_t* engine, const char* code);
 js_v2_value_t* js_v2_new_undefined(js_v2_engine_t* engine);
 js_v2_value_t* js_v2_new_null(js_v2_engine_t* engine);
 js_v2_value_t* js_v2_new_boolean(js_v2_engine_t* engine, int value);
-js_v2_value_t* js_v2_new_number(js_v2_engine_t* engine, double value);
+js_v2_value_t* js_v2_new_number(js_v2_engine_t* engine, int64_t value);
 js_v2_value_t* js_v2_new_string(js_v2_engine_t* engine, const char* value);
 js_v2_value_t* js_v2_new_object(js_v2_engine_t* engine);
 js_v2_value_t* js_v2_new_array(js_v2_engine_t* engine);

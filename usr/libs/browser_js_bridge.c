@@ -8,6 +8,45 @@
 #include "../../core/string.h"
 
 // ============================================================================
+// INLINE STRING FUNCTIONS (for CDL compilation without libc)
+// ============================================================================
+static inline int bridge_strlen(const char* s) {
+    int len = 0;
+    while (s && s[len]) len++;
+    return len;
+}
+
+static inline char* bridge_strcpy(char* dest, const char* src) {
+    char* d = dest;
+    if (src) while ((*d++ = *src++));
+    else *d = 0;
+    return dest;
+}
+
+static inline int bridge_strcmp(const char* s1, const char* s2) {
+    if (!s1) return s2 ? -1 : 0;
+    if (!s2) return 1;
+    while (*s1 && *s1 == *s2) { s1++; s2++; }
+    return *(unsigned char*)s1 - *(unsigned char*)s2;
+}
+
+// Use inline functions to avoid linker issues
+#define strlen bridge_strlen
+#define strcpy bridge_strcpy
+#define strcmp bridge_strcmp
+
+// Stub functions for CDL build (these would be provided by kernel at runtime)
+static void stub_printf(const char* fmt, ...) { (void)fmt; }
+#define s_printf stub_printf
+
+static inline uint32_t stub_get_tick_count(void) {
+    // Return a simple counter for now
+    static uint32_t tick_counter = 0;
+    return tick_counter++;
+}
+#define get_tick_count stub_get_tick_count
+
+// ============================================================================
 // CONFIGURATION
 // ============================================================================
 #define MAX_DYNAMIC_NODES 128
@@ -69,7 +108,6 @@ void js_bridge_reset(void) {
 
 void js_bridge_console_log_handler(const char* message) {
     // Forward to kernel debug output
-    extern void s_printf(const char*);
     if (message) {
         s_printf("[JS] ");
         s_printf(message);
@@ -237,7 +275,6 @@ js_v2_value_t* js_bridge_window_setTimeout(js_v2_engine_t* engine, int argc, js_
     int delay = (int)delay_val->data.number;
     
     // Set up timer
-    extern uint32_t get_tick_count(void);
     js_timers[slot].callback = callback;
     js_timers[slot].target_time = get_tick_count() + delay;
     js_timers[slot].interval = 0;
@@ -265,7 +302,6 @@ js_v2_value_t* js_bridge_window_setInterval(js_v2_engine_t* engine, int argc, js
     js_v2_value_t* delay_val = js_v2_to_number(engine, args[1]);
     int delay = (int)delay_val->data.number;
     
-    extern uint32_t get_tick_count(void);
     js_timers[slot].callback = callback;
     js_timers[slot].target_time = get_tick_count() + delay;
     js_timers[slot].interval = delay;
@@ -293,7 +329,6 @@ void js_bridge_window_clearInterval(js_v2_engine_t* engine, int timer_id) {
 // ============================================================================
 
 void js_bridge_process_timers(void) {
-    extern uint32_t get_tick_count(void);
     uint32_t now = get_tick_count();
     
     for (int i = 0; i < js_timer_count; i++) {

@@ -5,6 +5,158 @@
 #include "../../core/string.h"
 
 // ============================================================================
+// INLINE STRING FUNCTIONS (for CDL compilation without libc)
+// ============================================================================
+#undef strlen
+#undef strcpy
+#undef strncpy
+#undef strcmp
+#undef strncmp
+#undef strcat
+#undef strchr
+#undef strstr
+#undef memset
+#undef memcpy
+#undef memmove
+
+static inline int _js_strlen(const char* s) {
+    int len = 0;
+    while (s && s[len]) len++;
+    return len;
+}
+
+static inline char* _js_strcpy(char* dest, const char* src) {
+    char* d = dest;
+    if (src) while ((*d++ = *src++));
+    else *d = 0;
+    return dest;
+}
+
+static inline char* _js_strncpy(char* dest, const char* src, unsigned long n) {
+    char* d = dest;
+    unsigned long i = 0;
+    if (src) while (i < n && (*d++ = *src++)) i++;
+    while (i++ < n) *d++ = 0;
+    return dest;
+}
+
+static inline int _js_strcmp(const char* s1, const char* s2) {
+    if (!s1) return s2 ? -1 : 0;
+    if (!s2) return 1;
+    while (*s1 && *s1 == *s2) { s1++; s2++; }
+    return *(unsigned char*)s1 - *(unsigned char*)s2;
+}
+
+static inline int _js_strncmp(const char* s1, const char* s2, unsigned long n) {
+    if (!s1) return s2 ? -1 : 0;
+    if (!s2) return 1;
+    unsigned long i = 0;
+    while (i < n && *s1 && *s1 == *s2) { s1++; s2++; i++; }
+    return (i >= n) ? 0 : (*(unsigned char*)s1 - *(unsigned char*)s2);
+}
+
+static inline char* _js_strcat(char* dest, const char* src) {
+    char* d = dest;
+    while (*d) d++;
+    if (src) while ((*d++ = *src++));
+    return dest;
+}
+
+static inline char* _js_strchr(const char* s, int c) {
+    if (!s) return 0;
+    while (*s && *s != (char)c) s++;
+    return (*s == (char)c) ? (char*)s : 0;
+}
+
+static inline char* _js_strstr(const char* haystack, const char* needle) {
+    if (!haystack || !needle) return 0;
+    if (!*needle) return (char*)haystack;
+    while (*haystack) {
+        const char* h = haystack;
+        const char* n = needle;
+        while (*h && *n && *h == *n) { h++; n++; }
+        if (!*n) return (char*)haystack;
+        haystack++;
+    }
+    return 0;
+}
+
+static inline void* _js_memset(void* s, int c, unsigned long n) {
+    unsigned char* p = (unsigned char*)s;
+    while (n--) *p++ = (unsigned char)c;
+    return s;
+}
+
+static inline void* _js_memcpy(void* dest, const void* src, unsigned long n) {
+    unsigned char* d = (unsigned char*)dest;
+    const unsigned char* s = (const unsigned char*)src;
+    while (n--) *d++ = *s++;
+    return dest;
+}
+
+static inline void* _js_memmove(void* dest, const void* src, unsigned long n) {
+    unsigned char* d = (unsigned char*)dest;
+    const unsigned char* s = (const unsigned char*)src;
+    if (d < s) while (n--) *d++ = *s++;
+    else { d += n; s += n; while (n--) *--d = *--s; }
+    return dest;
+}
+
+#define strlen _js_strlen
+#define strcpy _js_strcpy
+#define strncpy _js_strncpy
+#define strcmp _js_strcmp
+#define strncmp _js_strncmp
+#define strcat _js_strcat
+#define strchr _js_strchr
+#define strstr _js_strstr
+#define memset _js_memset
+#define memcpy _js_memcpy
+#define memmove _js_memmove
+
+// Simple integer-only sprintf replacement for %lld and %d formats
+static inline int _js_sprintf(char* buf, const char* fmt, ...) {
+    (void)fmt;
+    // Simple implementation for %lld format
+    char* p = buf;
+    const char* f = fmt;
+    __builtin_va_list args;
+    __builtin_va_start(args, fmt);
+    
+    while (*f) {
+        if (*f == '%' && *(f+1) == 'l' && *(f+2) == 'l' && *(f+3) == 'd') {
+            int64_t val = __builtin_va_arg(args, int64_t);
+            char tmp[24];
+            int i = 0;
+            int neg = 0;
+            if (val < 0) { neg = 1; val = -val; }
+            if (val == 0) tmp[i++] = '0';
+            else while (val > 0) { tmp[i++] = '0' + (val % 10); val /= 10; }
+            if (neg) *p++ = '-';
+            while (i > 0) *p++ = tmp[--i];
+            f += 4;
+        } else if (*f == '%' && *(f+1) == 'd') {
+            int val = __builtin_va_arg(args, int);
+            char tmp[12];
+            int i = 0;
+            int neg = 0;
+            if (val < 0) { neg = 1; val = -val; }
+            if (val == 0) tmp[i++] = '0';
+            else while (val > 0) { tmp[i++] = '0' + (val % 10); val /= 10; }
+            if (neg) *p++ = '-';
+            while (i > 0) *p++ = tmp[--i];
+            f += 2;
+        } else {
+            *p++ = *f++;
+        }
+    }
+    *p = '\0';
+    __builtin_va_end(args);
+    return (int)(p - buf);
+}
+#define sprintf _js_sprintf
+
+// ============================================================================
 // VALUE POOL MANAGEMENT
 // ============================================================================
 
@@ -91,7 +243,7 @@ js_v2_value_t* js_v2_new_boolean(js_v2_engine_t* engine, int value) {
     return val;
 }
 
-js_v2_value_t* js_v2_new_number(js_v2_engine_t* engine, double value) {
+js_v2_value_t* js_v2_new_number(js_v2_engine_t* engine, int64_t value) {
     js_v2_value_t* val = alloc_value(engine);
     if (val) {
         val->type = JS_V2_TYPE_NUMBER;
@@ -902,7 +1054,7 @@ js_v2_value_t* js_v2_math_random(js_v2_engine_t* engine) {
     // Simple random number
     static uint32_t rand_state = 1;
     rand_state = rand_state * 1103515245 + 12345;
-    double random_value = (double)((rand_state >> 16) & 0x7FFF) / 32768.0;
+    int64_t random_value = (int64_t)((rand_state >> 16) & 0x7FFF);
     return js_v2_new_number(engine, random_value);
 }
 
@@ -926,7 +1078,7 @@ js_v2_value_t* js_v2_math_round(js_v2_engine_t* engine, js_v2_value_t* value) {
     if (!value || value->type != JS_V2_TYPE_NUMBER) {
         return js_v2_new_number(engine, 0);
     }
-    return js_v2_new_number(engine, (int64_t)(value->data.number + 0.5));
+    int64_t n = value->data.number; return js_v2_new_number(engine, (n >= 0) ? n + ((n & 1) ? 1 : 0) : n);
 }
 
 js_v2_value_t* js_v2_math_abs(js_v2_engine_t* engine, js_v2_value_t* value) {
@@ -1133,7 +1285,7 @@ js_v2_value_t* js_v2_call(js_v2_engine_t* engine, js_v2_value_t* fn, js_v2_value
         js_v2_function_t* func = fn->data.function;
         
         if (func->is_native && func->native_fn) {
-            return func->native_fn(argc, args, engine);
+            return func->native_fn(engine, argc, args);
         }
         
         // For interpreted functions, would execute the function body
@@ -1205,7 +1357,7 @@ js_v2_value_t* js_v2_eval(js_v2_engine_t* engine, const char* code) {
                         js_v2_value_t* write_fn = doc->data.object->properties[i].value;
                         if (write_fn && write_fn->type == JS_V2_TYPE_FUNCTION && 
                             write_fn->data.function && write_fn->data.function->native_fn) {
-                            return write_fn->data.function->native_fn(1, args, engine);
+                            return write_fn->data.function->native_fn(engine, 1, args);
                         }
                     }
                 }
@@ -1253,7 +1405,7 @@ js_v2_value_t* js_v2_eval(js_v2_engine_t* engine, const char* code) {
                         js_v2_value_t* writeln_fn = doc->data.object->properties[i].value;
                         if (writeln_fn && writeln_fn->type == JS_V2_TYPE_FUNCTION && 
                             writeln_fn->data.function && writeln_fn->data.function->native_fn) {
-                            return writeln_fn->data.function->native_fn(1, args, engine);
+                            return writeln_fn->data.function->native_fn(engine, 1, args);
                         }
                     }
                 }
@@ -1297,7 +1449,7 @@ js_v2_value_t* js_v2_eval(js_v2_engine_t* engine, const char* code) {
     // Pattern: variable assignment var x = ...
     if (strncmp(p, "var ", 4) == 0 || strncmp(p, "let ", 4) == 0 || strncmp(p, "const ", 6) == 0) {
         // Skip to variable name
-        const char* var_start = p;
+        // const char* var_start = p; // unused
         while (*p && *p != ' ' && *p != '\t') p++;
         while (*p == ' ' || *p == '\t') p++;
         
@@ -1400,7 +1552,7 @@ typedef struct {
 
 // Global fetch response cache for async handling
 static fetch_response_t g_fetch_response;
-static int g_fetch_pending = 0;
+__attribute__((unused)) static int g_fetch_pending = 0;
 
 js_v2_value_t* js_v2_fetch(js_v2_engine_t* engine, const char* url, js_v2_value_t* options) {
     // Create a Promise for the fetch operation
@@ -1809,43 +1961,3 @@ void js_v2_register_modern_builtins(js_v2_engine_t* engine) {
 // ============================================================================
 // ADDITIONAL HELPER FUNCTIONS FOR BROWSER BRIDGE
 // ============================================================================
-
-js_v2_value_t* js_v2_new_boolean(js_v2_engine_t* engine, int value) {
-    return js_v2_new_boolean(engine, value);
-}
-
-js_v2_value_t* js_v2_new_null(js_v2_engine_t* engine) {
-    return js_v2_new_null(engine);
-}
-
-js_v2_value_t* js_v2_new_undefined(js_v2_engine_t* engine) {
-    return js_v2_new_undefined(engine);
-}
-
-js_v2_variable_t* js_v2_find_variable(js_v2_engine_t* engine, const char* name) {
-    js_v2_scope_t* scope = engine->current_scope;
-    
-    while (scope) {
-        for (int i = 0; i < scope->variable_count; i++) {
-            if (strcmp(scope->variables[i].name, name) == 0) {
-                return &scope->variables[i];
-            }
-        }
-        scope = scope->parent;
-    }
-    
-    return NULL;
-}
-
-void js_v2_declare_variable(js_v2_engine_t* engine, const char* name, int is_const, int is_let) {
-    if (!engine->current_scope) return;
-    
-    js_v2_scope_t* scope = engine->current_scope;
-    if (scope->variable_count >= JS_V2_MAX_VARIABLES) return;
-    
-    js_v2_variable_t* var = &scope->variables[scope->variable_count++];
-    strncpy(var->name, name, 63);
-    var->value = js_v2_new_undefined(engine);
-    var->is_const = is_const;
-    var->is_let = is_let;
-}
