@@ -3,9 +3,91 @@
 //               new HTML tags, improved script execution, setTimeout/setInterval support
 #include "../../sys/cdl_defs.h"
 #include "../../include/types.h"
-#include "../libs/js_engine_v2.h"
+// NOTE: JS engine v2 functions are stubbed inline below until proper linking is set up
 
 static kernel_api_t* sys = 0;
+
+// ============================================================================
+// JS ENGINE V2 STUB IMPLEMENTATIONS
+// These are minimal stubs to allow compilation. Full JS support requires linking
+// with js_engine_v2.c library.
+// ============================================================================
+
+typedef struct js_v2_value js_v2_value_t;
+typedef struct js_v2_engine js_v2_engine_t;
+
+// JS value type constants (stub)
+#define JS_V2_TYPE_UNDEFINED 0
+#define JS_V2_TYPE_NULL 1
+#define JS_V2_TYPE_NUMBER 2
+#define JS_V2_TYPE_STRING 3
+#define JS_V2_TYPE_OBJECT 4
+#define JS_V2_TYPE_FUNCTION 5
+
+struct js_v2_value {
+    int type;
+    char data_string[512];
+    int data_number;
+    int ref_count;
+};
+
+struct js_v2_engine {
+    js_v2_value_t* window_object;
+    js_v2_value_t* document_object;
+    void (*log_callback)(const char*);
+    int has_error;
+    char error_msg[256];
+};
+
+static js_v2_engine_t js_engine;
+static int js_engine_initialized = 0;
+
+// Stub implementations - these do nothing but prevent linker errors
+static void js_v2_init(js_v2_engine_t* e) {
+    sys->memset(e, 0, sizeof(js_v2_engine_t));
+}
+
+static void js_v2_clear_error(js_v2_engine_t* e) {
+    if (e) e->has_error = 0;
+}
+
+static js_v2_value_t* js_v2_new_object(js_v2_engine_t* e) {
+    js_v2_value_t* v = (js_v2_value_t*)sys->malloc(sizeof(js_v2_value_t));
+    if (v) sys->memset(v, 0, sizeof(js_v2_value_t));
+    return v;
+}
+
+static js_v2_value_t* js_v2_new_string(js_v2_engine_t* e, const char* s) {
+    js_v2_value_t* v = (js_v2_value_t*)sys->malloc(sizeof(js_v2_value_t));
+    if (v) {
+        sys->memset(v, 0, sizeof(js_v2_value_t));
+        if (s) {
+            int len = 0; while (s[len] && len < 511) len++;
+            sys->memcpy(v->data_string, s, len);
+            v->data_string[len] = 0;
+        }
+    }
+    return v;
+}
+
+static void js_v2_object_set(js_v2_engine_t* e, js_v2_value_t* obj, const char* key, js_v2_value_t* val) {
+    // Stub - do nothing
+    (void)e; (void)obj; (void)key; (void)val;
+}
+
+static js_v2_value_t* js_v2_eval(js_v2_engine_t* e, const char* code) {
+    // Stub - just log that we would execute JS
+    if (e && e->log_callback && code && code[0]) {
+        e->log_callback("JS execution stubbed");
+    }
+    return 0;
+}
+
+static js_v2_value_t* js_v2_call(js_v2_engine_t* e, js_v2_value_t* fn, js_v2_value_t* this_val, int argc, js_v2_value_t** args) {
+    // Stub - do nothing
+    (void)e; (void)fn; (void)this_val; (void)argc; (void)args;
+    return 0;
+}
 
 // ============================================================================
 // CONFIGURATION
@@ -275,8 +357,7 @@ static int loading_dots    = 0;
 // ============================================================================
 // JS ENGINE STATE (v3.0)
 // ============================================================================
-static js_v2_engine_t js_engine;
-static int js_engine_initialized = 0;
+// Note: js_engine and js_engine_initialized are defined in the stub section above
 
 // Script collection for deferred execution
 #define MAX_SCRIPTS 16
@@ -404,7 +485,9 @@ static void js_console_log_callback(const char* message) {
         console_log_buffer[console_log_len] = 0;
     }
     // Also output to debug
-    sys->printf("[JS] %s\n", message);
+    sys->print("[JS] ");
+    sys->print(message);
+    sys->print("\n");
 }
 
 // Initialize JS engine
@@ -464,15 +547,11 @@ static dom_node_t* find_dom_node_by_id(const char* id) {
                 return node;
             }
         }
-        // Push children
-        dom_node_t* child = node->last_child;
+        // Push children (in reverse order so first_child is processed first)
+        dom_node_t* child = node->first_child;
         while (child) {
             stack[stack_top++] = child;
-            child = child->previous_sibling; // We need to add this field or use another approach
-            break; // Simple approach: just check first_child and iterate
-        }
-        if (node->first_child) {
-            stack[stack_top++] = node->first_child;
+            child = child->next_sibling;
         }
     }
     return 0;
@@ -754,7 +833,6 @@ static void decode_html_entities(char* text) {
         }
 
         // Find the semicolon terminator (max 10 chars ahead)
-        const char* amp = src;
         const char* semi = src + 1;
         int found_semi = 0;
         for (int i = 0; i < 10 && *semi; i++, semi++) {
@@ -996,9 +1074,11 @@ static void parse_inline_style(const char* style_str, css_style_t* style) {
             while(*vp==' ')vp++;
             style->border_width=parse_size(vp);
             style->border_top=style->border_right=style->border_bottom=style->border_left=style->border_width;
-            while(*vp&&*vp!=' ')vp++; while(*vp==' ')vp++;
+            while(*vp && *vp!=' ') vp++;
+            while(*vp==' ') vp++;
             style->border_style=parse_border_style(vp);
-            while(*vp&&*vp!=' ')vp++; while(*vp==' ')vp++;
+            while(*vp && *vp!=' ') vp++;
+            while(*vp==' ') vp++;
             if(*vp) style->border_color=parse_color(vp);
         }
         else if (str_casecmp(prop,"line-height")==0) {
@@ -1111,8 +1191,9 @@ static void parse_inline_style(const char* style_str, css_style_t* style) {
                 while(*bsp==' ')bsp++;
                 int neg=0; if(*bsp=='-'){neg=1;bsp++;}
                 while(*bsp>='0'&&*bsp<='9'){vals[vi]=vals[vi]*10+(*bsp-'0');bsp++;}
-                if(neg)vals[vi]=-vals[vi]; vi++;
-                while(*bsp&&*bsp!='-'&&(*bsp<'0'||*bsp>'9'))bsp++;
+                if(neg) vals[vi]=-vals[vi];
+                vi++;
+                while(*bsp && *bsp!='-' && (*bsp<'0' || *bsp>'9')) bsp++;
             }
             style->box_shadow_x=vals[0]; style->box_shadow_y=vals[1];
             style->box_shadow_blur=vals[2]; style->box_shadow_spread=vals[3];
@@ -1127,8 +1208,9 @@ static void parse_inline_style(const char* style_str, css_style_t* style) {
                 while(*tsp==' ')tsp++;
                 int neg=0; if(*tsp=='-'){neg=1;tsp++;}
                 while(*tsp>='0'&&*tsp<='9'){vals[vi]=vals[vi]*10+(*tsp-'0');tsp++;}
-                if(neg)vals[vi]=-vals[vi]; vi++;
-                while(*tsp&&*tsp!='-'&&(*tsp<'0'||*tsp>'9'))tsp++;
+                if(neg) vals[vi]=-vals[vi];
+                vi++;
+                while(*tsp && *tsp!='-' && (*tsp<'0' || *tsp>'9')) tsp++;
             }
             style->text_shadow_x=vals[0]; style->text_shadow_y=vals[1]; style->text_shadow_blur=vals[2];
         }
