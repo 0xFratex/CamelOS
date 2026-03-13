@@ -557,6 +557,230 @@ static dom_node_t* find_dom_node_by_id(const char* id) {
     return 0;
 }
 
+// ============================================================================
+// DOM MANIPULATION API (for JS bridge)
+// ============================================================================
+
+// Create a new DOM element node
+dom_node_t* dom_create_element(const char* tag_name) {
+    if (dom_node_count >= MAX_DOM_NODES) return NULL;
+    if (!tag_name || !tag_name[0]) return NULL;
+    
+    dom_node_t* node = &dom_nodes[dom_node_count++];
+    sys->memset(node, 0, sizeof(dom_node_t));
+    node->type = DOM_ELEMENT;
+    
+    // Map tag name to element type
+    int len = 0; while (tag_name[len] && len < 31) len++;
+    for (int i = 0; i < len; i++) {
+        char c = tag_name[i];
+        node->tag_name[i] = (c >= 'A' && c <= 'Z') ? (c + 32) : c;
+    }
+    node->tag_name[len] = 0;
+    
+    // Set element type
+    if (sys->strcmp(node->tag_name, "div") == 0) node->elem_type = ELEM_DIV;
+    else if (sys->strcmp(node->tag_name, "span") == 0) node->elem_type = ELEM_SPAN;
+    else if (sys->strcmp(node->tag_name, "p") == 0) node->elem_type = ELEM_P;
+    else if (sys->strcmp(node->tag_name, "a") == 0) node->elem_type = ELEM_A;
+    else if (sys->strcmp(node->tag_name, "img") == 0) node->elem_type = ELEM_IMG;
+    else if (sys->strcmp(node->tag_name, "input") == 0) node->elem_type = ELEM_INPUT;
+    else if (sys->strcmp(node->tag_name, "button") == 0) node->elem_type = ELEM_BUTTON;
+    else if (sys->strcmp(node->tag_name, "form") == 0) node->elem_type = ELEM_FORM;
+    else if (sys->strcmp(node->tag_name, "script") == 0) node->elem_type = ELEM_SCRIPT;
+    else if (sys->strcmp(node->tag_name, "style") == 0) node->elem_type = ELEM_STYLE;
+    else if (sys->strcmp(node->tag_name, "body") == 0) node->elem_type = ELEM_BODY;
+    else if (sys->strcmp(node->tag_name, "html") == 0) node->elem_type = ELEM_HTML;
+    else if (sys->strcmp(node->tag_name, "head") == 0) node->elem_type = ELEM_HEAD;
+    else if (sys->strcmp(node->tag_name, "title") == 0) node->elem_type = ELEM_TITLE;
+    else if (sys->strcmp(node->tag_name, "h1") == 0) node->elem_type = ELEM_H1;
+    else if (sys->strcmp(node->tag_name, "h2") == 0) node->elem_type = ELEM_H2;
+    else if (sys->strcmp(node->tag_name, "h3") == 0) node->elem_type = ELEM_H3;
+    else if (sys->strcmp(node->tag_name, "ul") == 0) node->elem_type = ELEM_UL;
+    else if (sys->strcmp(node->tag_name, "ol") == 0) node->elem_type = ELEM_OL;
+    else if (sys->strcmp(node->tag_name, "li") == 0) node->elem_type = ELEM_LI;
+    else if (sys->strcmp(node->tag_name, "table") == 0) node->elem_type = ELEM_TABLE;
+    else if (sys->strcmp(node->tag_name, "tr") == 0) node->elem_type = ELEM_TR;
+    else if (sys->strcmp(node->tag_name, "td") == 0) node->elem_type = ELEM_TD;
+    else if (sys->strcmp(node->tag_name, "th") == 0) node->elem_type = ELEM_TH;
+    else node->elem_type = ELEM_UNKNOWN;
+    
+    // Copy default style
+    sys->memcpy(&node->style, &default_style, sizeof(css_style_t));
+    
+    return node;
+}
+
+// Create a text node
+dom_node_t* dom_create_text_node(const char* text) {
+    if (dom_node_count >= MAX_DOM_NODES) return NULL;
+    
+    dom_node_t* node = &dom_nodes[dom_node_count++];
+    sys->memset(node, 0, sizeof(dom_node_t));
+    node->type = DOM_TEXT;
+    
+    if (text && text[0]) {
+        int len = 0; while (text[len] && len < 1023) len++;
+        node->text_content = (char*)sys->malloc(len + 1);
+        if (node->text_content) {
+            sys->memcpy(node->text_content, text, len);
+            node->text_content[len] = 0;
+            node->text_len = len;
+        }
+    }
+    
+    return node;
+}
+
+// Append a child to a parent node
+void dom_append_child(dom_node_t* parent, dom_node_t* child) {
+    if (!parent || !child) return;
+    if (parent->type != DOM_ELEMENT) return;
+    
+    child->parent = parent;
+    
+    if (!parent->first_child) {
+        parent->first_child = child;
+        parent->last_child = child;
+    } else {
+        parent->last_child->next_sibling = child;
+        parent->last_child = child;
+    }
+}
+
+// Set an attribute on a node
+void dom_set_attribute(dom_node_t* node, const char* name, const char* value) {
+    if (!node || !name || !name[0]) return;
+    
+    int name_len = 0; while (name[name_len] && name_len < 63) name_len++;
+    
+    if (sys->strncmp(name, "id", 2) == 0 && name_len == 2) {
+        int vlen = 0; while (value && value[vlen] && vlen < 63) vlen++;
+        if (value) sys->memcpy(node->id, value, vlen);
+        node->id[vlen] = 0;
+    }
+    else if (sys->strncmp(name, "class", 5) == 0 && name_len == 5) {
+        int vlen = 0; while (value && value[vlen] && vlen < 63) vlen++;
+        if (value) sys->memcpy(node->class_name, value, vlen);
+        node->class_name[vlen] = 0;
+    }
+    else if (sys->strncmp(name, "href", 4) == 0 && name_len == 4) {
+        int vlen = 0; while (value && value[vlen] && vlen < 255) vlen++;
+        if (value) sys->memcpy(node->href, value, vlen);
+        node->href[vlen] = 0;
+    }
+    else if (sys->strncmp(name, "src", 3) == 0 && name_len == 3) {
+        int vlen = 0; while (value && value[vlen] && vlen < 255) vlen++;
+        if (value) sys->memcpy(node->src, value, vlen);
+        node->src[vlen] = 0;
+    }
+    else if (sys->strncmp(name, "style", 5) == 0 && name_len == 5) {
+        int vlen = 0; while (value && value[vlen] && vlen < 255) vlen++;
+        if (value) sys->memcpy(node->style_attr, value, vlen);
+        node->style_attr[vlen] = 0;
+        // Parse inline style
+        parse_inline_style(node->style_attr, &node->style);
+    }
+    else if (sys->strncmp(name, "type", 4) == 0 && name_len == 4) {
+        int vlen = 0; while (value && value[vlen] && vlen < 31) vlen++;
+        if (value) sys->memcpy(node->type_attr, value, vlen);
+        node->type_attr[vlen] = 0;
+    }
+    else if (sys->strncmp(name, "target", 6) == 0 && name_len == 6) {
+        int vlen = 0; while (value && value[vlen] && vlen < 15) vlen++;
+        if (value) sys->memcpy(node->target, value, vlen);
+        node->target[vlen] = 0;
+    }
+    else if (sys->strncmp(name, "alt", 3) == 0 && name_len == 3) {
+        int vlen = 0; while (value && value[vlen] && vlen < 127) vlen++;
+        if (value) sys->memcpy(node->alt, value, vlen);
+        node->alt[vlen] = 0;
+    }
+}
+
+// Query selector - simplified (ID, class, or tag)
+dom_node_t* dom_query_selector(dom_node_t* root, const char* selector) {
+    if (!root || !selector || !selector[0]) return NULL;
+    
+    // ID selector: #id
+    if (selector[0] == '#') {
+        return find_dom_node_by_id(selector + 1);
+    }
+    
+    // Class selector: .class (find first match)
+    if (selector[0] == '.') {
+        dom_node_t* stack[MAX_DOM_NODES];
+        int stack_top = 0;
+        stack[stack_top++] = root;
+        
+        while (stack_top > 0) {
+            dom_node_t* node = stack[--stack_top];
+            if (node->type == DOM_ELEMENT && node->class_name[0]) {
+                // Check if class matches (simplified: exact match)
+                if (sys->strcmp(node->class_name, selector + 1) == 0) {
+                    return node;
+                }
+            }
+            dom_node_t* child = node->first_child;
+            while (child) {
+                stack[stack_top++] = child;
+                child = child->next_sibling;
+            }
+        }
+        return NULL;
+    }
+    
+    // Tag selector: div, span, etc.
+    dom_node_t* stack[MAX_DOM_NODES];
+    int stack_top = 0;
+    stack[stack_top++] = root;
+    
+    while (stack_top > 0) {
+        dom_node_t* node = stack[--stack_top];
+        if (node->type == DOM_ELEMENT && node->tag_name[0]) {
+            if (sys->strcmp(node->tag_name, selector) == 0) {
+                return node;
+            }
+        }
+        dom_node_t* child = node->first_child;
+        while (child) {
+            stack[stack_top++] = child;
+            child = child->next_sibling;
+        }
+    }
+    
+    return NULL;
+}
+
+// Set innerHTML (parse and append children)
+void dom_set_inner_html(dom_node_t* node, const char* html) {
+    if (!node || !html || !html[0]) return;
+    
+    // Clear existing children
+    node->first_child = NULL;
+    node->last_child = NULL;
+    
+    // Store the HTML for rendering (simplified - just store as text for now)
+    // A full implementation would parse and create child nodes
+    int len = 0; while (html[len] && len < 1023) len++;
+    if (node->text_content) sys->free(node->text_content);
+    node->text_content = (char*)sys->malloc(len + 1);
+    if (node->text_content) {
+        sys->memcpy(node->text_content, html, len);
+        node->text_content[len] = 0;
+        node->text_len = len;
+    }
+}
+
+// Get the document root (for JS bridge)
+dom_node_t* dom_get_document(void) {
+    return document;
+}
+
+// ============================================================================
+// END DOM MANIPULATION API
+// ============================================================================
+
 // Register browser APIs with JS engine
 static void register_browser_apis(void) {
     if (!js_engine_initialized) init_js_engine();

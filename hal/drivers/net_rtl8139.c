@@ -139,15 +139,29 @@ void rtl8139_receive_packets() {
         uint16_t status = header_val & 0xFFFF;
         uint16_t length = (header_val >> 16) & 0xFFFF;
 
+        // RTL8139 receive status bits:
+        // Bit 0: ROK - Receive OK
+        // Bit 1: FAE - Frame Alignment Error
+        // Bit 2: CRC - CRC Error
+        // Bit 3: LONG - Long packet (>4KB)
+        // Bit 4: RUNT - Runt packet (<64 bytes)
+        // Bit 5: ISE - Invalid Symbol Error
+        // Bit 6: BAR - Broadcast address received
+        // Bit 7: PAM - Physical address matched
+        // Bit 8: MAR - Multicast address received
+        
+        // Check for runt or error packets by status
+        int is_error = (status & 0x3E);  // Check error bits (1-5)
+        
         // Sanity check - RTL8139 length includes:
         // - Packet data (64-1514 bytes for Ethernet)
         // - 4 bytes CRC (added by hardware)
         // - Does NOT include the 4-byte header
-        // Valid range is 64-1520 bytes (with CRC)
-        // Allow some tolerance: 60-1524 for edge cases
-        if (length < 60 || length > 1524) {
+        // Valid range is 60-1522 bytes (with CRC for standard frames)
+        // Allow some tolerance: 60-1536 for VLAN and jumbo tolerance
+        if (length < 60 || length > 1536 || is_error) {
 #if RTL_DEBUG_ERRORS
-            s_printf("[RTL8139] RX: Bad length, skipping\n");
+            s_printf("[RTL8139] RX: Bad packet (len=%d, status=0x%04x), skipping\n", length, status);
 #endif
             consecutive_rx_errors++;
             stat_rx_errors++;
@@ -158,7 +172,7 @@ void rtl8139_receive_packets() {
                 s_printf("[RTL8139] Too many errors, resetting RX\n");
 #endif
                 outb(rtl_dev.io_base + RTL_REG_CMD, 0x04);  // Disable RX
-                for(volatile int i = 0; i < 10000; i++) asm volatile("pause");
+                for(volatile int i = 0; i < 100000; i++) asm volatile("pause");
                 outw(rtl_dev.io_base + RTL_REG_CAPR, 0);
                 current_packet_ptr = 0;
                 memset(rx_buffer_aligned, 0, RX_BUF_SIZE);
@@ -167,8 +181,16 @@ void rtl8139_receive_packets() {
                 return;
             }
             
-            // Try to recover by advancing to next potential packet boundary
-            current_packet_ptr = ((current_packet_ptr + 4 + 3) & ~3) % 8192;
+            // Skip this packet - try to find next valid header
+            // Advance by at least the header + minimum frame size to avoid infinite loop
+            // This is more aggressive than before
+            if (length == 0 || length > 1536) {
+                // Completely bogus length - skip just the header
+                current_packet_ptr = (current_packet_ptr + 4) % 8192;
+            } else {
+                // Length might be partially valid - skip the whole frame
+                current_packet_ptr = ((current_packet_ptr + length + 4 + 3) & ~3) % 8192;
+            }
             outw(rtl_dev.io_base + RTL_REG_CAPR, current_packet_ptr - 16);
             continue;
         }
@@ -211,7 +233,7 @@ void rtl8139_receive_packets() {
             }
         } else {
 #if RTL_DEBUG_ERRORS
-            s_printf("[RTL8139] RX Error: Bad status\n");
+            s_printf("[RTL8139] RX Error: Bad status (ROK=0)\n");
 #endif
             stat_rx_errors++;
         }

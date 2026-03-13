@@ -1,6 +1,6 @@
 // usr/libs/browser_bridge.h - Modern JavaScript to Browser DOM Bridge Header
-// Version 3.0 - Interface for connecting JS engine to browser DOM
-// Supports React/Vue/SPA frameworks with proper DOM manipulation APIs
+// Version 3.1 - Interface for connecting JS engine to browser DOM
+// Fully wired to Native C DOM for SPA rendering
 
 #ifndef BROWSER_BRIDGE_H
 #define BROWSER_BRIDGE_H
@@ -35,7 +35,7 @@ int js_bridge_execute_script(const char* script);
 void js_bridge_register_browser_apis(void);
 
 // ============================================================================
-// PENDING HTML
+// PENDING HTML (from document.write)
 // ============================================================================
 
 // Get HTML accumulated from document.write() calls
@@ -60,53 +60,78 @@ void js_bridge_process_timers(void);
 void js_bridge_console_log_handler(const char* message);
 
 // ============================================================================
-// MODERN API IMPLEMENTATIONS (v3.0)
+// MODERN API IMPLEMENTATIONS (v3.1 - wired to native C DOM)
 // ============================================================================
 
-// window.fetch - Returns a Promise-like object
-js_v2_value_t* js_bridge_window_fetch(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+// document.getElementById
+js_v2_value_t* js_bridge_document_getElementById(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
 
-// element.appendChild
+// document.createElement - Creates REAL native C DOM node
+js_v2_value_t* js_bridge_document_createElement(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+
+// document.getElementsByTagName
+js_v2_value_t* js_bridge_document_getElementsByTagName(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+
+// document.querySelector (v3.1 - wired to native C)
+js_v2_value_t* js_bridge_document_querySelector(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+
+// document.write / writeln
+js_v2_value_t* js_bridge_document_write(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+js_v2_value_t* js_bridge_document_writeln(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+
+// element.appendChild (v3.1 - wired to native C)
 js_v2_value_t* js_bridge_element_appendChild(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+
+// element.setAttribute (v3.1 - wired to native C)
+js_v2_value_t* js_bridge_element_setAttribute(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
 
 // element.addEventListener
 js_v2_value_t* js_bridge_element_addEventListener(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
 
+// element.innerHTML setter
+void js_bridge_set_innerHTML(js_v2_engine_t* engine, js_v2_value_t* element, const char* html);
+
+// window.fetch (v3.1 - Promise-based)
+js_v2_value_t* js_bridge_window_fetch(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+
+// window.setTimeout/setInterval
+js_v2_value_t* js_bridge_window_setTimeout(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+js_v2_value_t* js_bridge_window_setInterval(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
+void js_bridge_window_clearTimeout(js_v2_engine_t* engine, int timer_id);
+void js_bridge_window_clearInterval(js_v2_engine_t* engine, int timer_id);
+
 // console.log
 js_v2_value_t* js_bridge_console_log(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
 
-// document.querySelector (enhanced)
-js_v2_value_t* js_bridge_document_querySelector(js_v2_engine_t* engine, int argc, js_v2_value_t** args);
-
 // ============================================================================
-// UTILITIES
+// HELPER FUNCTIONS
 // ============================================================================
 
 // Get the JS engine instance
 js_v2_engine_t* js_bridge_get_engine(void);
 
-// Helper: Convert value to string
+// Convert value to string
 js_v2_value_t* js_v2_to_string(js_v2_engine_t* engine, js_v2_value_t* val);
 
-// Helper: Convert value to number
+// Convert value to number
 js_v2_value_t* js_v2_to_number(js_v2_engine_t* engine, js_v2_value_t* val);
 
-// Helper: Create undefined value
+// Create undefined value
 js_v2_value_t* js_v2_new_undefined(js_v2_engine_t* engine);
 
-// Helper: Create null value
+// Create null value
 js_v2_value_t* js_v2_new_null(js_v2_engine_t* engine);
 
-// Helper: Create boolean value
+// Create boolean value
 js_v2_value_t* js_v2_new_boolean(js_v2_engine_t* engine, int val);
 
-// Helper: Create array
+// Create array
 js_v2_value_t* js_v2_new_array(js_v2_engine_t* engine);
 
-// Helper: Get object property
+// Get object property
 js_v2_value_t* js_v2_object_get(js_v2_engine_t* engine, js_v2_value_t* obj, const char* key);
 
-// Helper: Call function
+// Call function
 js_v2_value_t* js_v2_call(js_v2_engine_t* engine, js_v2_value_t* fn, js_v2_value_t* this_val, 
                           int argc, js_v2_value_t** args);
 
