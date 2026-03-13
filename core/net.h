@@ -75,6 +75,5 @@ int dhcp_discover(void);
 void ip_to_str(uint32_t ip, char* out);
 uint32_t ip_parse(const char* str);
 void mac_to_str(uint8_t* mac, char* str);
-void int_to_hex(uint32_t n, char* buf);
 
 #endif

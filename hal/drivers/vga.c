@@ -2,6 +2,7 @@
 #include "vga.h"
 #include "../core/memory.h"
 #include "../common/font.h"
+#include "../../include/string.h"
 
 // Import from gfx_hal.c
 extern void gfx_put_pixel(int x, int y, uint32_t color);
@@ -358,16 +359,14 @@ void vbe_list_modes(void) {
     s_printf("  0x17D: 1440x900x32\n");
     s_printf("  0x18B: 1920x1080x32\n");
     s_printf("[VBE] Current mode: ");
-    
+
     int mode = vbe_get_current_mode();
     if (mode >= 0) {
         char buf[16];
-        extern void int_to_hex(unsigned int, char*);
         int_to_hex(mode, buf);
         s_printf(buf);
         s_printf(" (");
-        
-        extern void int_to_str(int, char*);
+
         int_to_str(screen_w, buf);
         s_printf(buf);
         s_printf("x");

@@ -78,12 +78,7 @@ void mac_to_str(uint8_t* mac, char* str) {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-void int_to_hex(uint32_t n, char* buf) {
-    char* c = "0123456789ABCDEF";
-    buf[0] = '0'; buf[1] = 'x';
-    for(int i=0; i<8; i++) buf[2+i] = c[(n >> ((7-i)*4)) & 0xF];
-    buf[10] = 0;
-}
+// int_to_hex moved to core/string.c
 
 void net_register_interface(net_if_t* interface) {
 #if NET_DEBUG_INIT
