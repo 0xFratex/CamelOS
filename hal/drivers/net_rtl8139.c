@@ -161,7 +161,7 @@ void rtl8139_receive_packets() {
         // Allow some tolerance: 60-1536 for VLAN and jumbo tolerance
         if (length < 60 || length > 1536 || is_error) {
 #if RTL_DEBUG_ERRORS
-            s_printf("[RTL8139] RX: Bad packet (len=%d, status=0x%04x), skipping\n", length, status);
+            s_printf("[RTL8139] RX: Bad packet, skipping\n");
 #endif
             consecutive_rx_errors++;
             stat_rx_errors++;
