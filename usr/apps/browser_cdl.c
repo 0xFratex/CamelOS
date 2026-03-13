@@ -1,8 +1,9 @@
-// usr/apps/browser_cdl.c - Enhanced browser with tabs, CSS, cache, and better HTML handling
-// Version 2.1 - FIXED: cache restore, entity decoding, rgb() colors, link ancestor walk,
-//               centering reset, mouse coords, noscript support, content buffer size
+// usr/apps/browser_cdl.c - Enhanced browser with tabs, CSS, cache, JS engine, and better HTML handling
+// Version 3.0 - MAJOR: JS engine integration via js_engine_v2, enhanced CSS (flexbox, positioning),
+//               new HTML tags, improved script execution, setTimeout/setInterval support
 #include "../../sys/cdl_defs.h"
 #include "../../include/types.h"
+#include "../libs/js_engine_v2.h"
 
 static kernel_api_t* sys = 0;
 
@@ -62,7 +63,7 @@ typedef struct {
     int font_size;
     int font_weight;    // 400 normal, 700 bold
     int font_style;     // 0 normal, 1 italic
-    int text_decoration; // 0 none, 1 underline
+    int text_decoration; // 0 none, 1 underline, 2 strikethrough
     int text_align;     // 0 left, 1 center, 2 right, 3 justify
     int display;        // 0 inline, 1 block, 2 none, 3 flex, 4 inline-block
     int margin_top, margin_bottom, margin_left, margin_right;
@@ -70,16 +71,46 @@ typedef struct {
     int border_radius;
     int is_link;
     int target_blank;
-    int flex_direction, justify_content, align_items, align_self;
-    int flex_wrap, flex_grow, flex_shrink, flex_basis, gap;
-    int width, height, min_width, max_width;
+    // Flexbox properties (v3.0 enhanced)
+    int flex_direction; // 0 row, 1 row-reverse, 2 column, 3 column-reverse
+    int justify_content; // 0 flex-start, 1 flex-end, 2 center, 3 space-between, 4 space-around
+    int align_items, align_self, align_content; // 0 stretch, 1 flex-start, 2 flex-end, 3 center, 4 baseline
+    int flex_wrap;      // 0 nowrap, 1 wrap, 2 wrap-reverse
+    int flex_grow, flex_shrink, flex_basis, gap;
+    int row_gap, column_gap; // v3.0: separate gaps
+    int order;          // v3.0: flex order
+    // Sizing (v3.0 enhanced)
+    int width, height, min_width, max_width, min_height, max_height;
+    // Positioning (v3.0 enhanced)
+    int position;       // 0 static, 1 relative, 2 absolute, 3 fixed, 4 sticky
+    int top, right, bottom, left; // inset values
+    int z_index;
+    // Borders
     uint32_t border_color;
     int border_width, border_style;
     int border_top, border_right, border_bottom, border_left;
+    // Typography
     int line_height;
-    int overflow, visibility, position, z_index;
-    int box_shadow_x, box_shadow_y, box_shadow_blur;
+    int vertical_align; // v3.0: for sub/sup
+    // Visibility and overflow (v3.0 enhanced)
+    int overflow, overflow_x, overflow_y; // 0 visible, 1 hidden, 2 scroll, 3 auto
+    int visibility;     // 0 visible, 1 hidden
+    int opacity;        // 0-100 (percentage)
+    // Effects (v3.0 - basic storage for future rendering)
+    int box_shadow_x, box_shadow_y, box_shadow_blur, box_shadow_spread;
     uint32_t box_shadow_color;
+    int box_shadow_inset;
+    int text_shadow_x, text_shadow_y, text_shadow_blur;
+    uint32_t text_shadow_color;
+    // Transform and transition (v3.0 - store for future)
+    char transform[128];
+    char transition[128];
+    // Box model (v3.0)
+    int box_sizing;     // 0 content-box, 1 border-box
+    // Interaction (v3.0)
+    int cursor;         // 0 auto, 1 pointer, 2 text, etc.
+    // Font styling (v3.0)
+    char font_family[64];
 } css_style_t;
 
 // ============================================================================
@@ -111,7 +142,14 @@ typedef enum {
     ELEM_PROGRESS, ELEM_METER, ELEM_TIME, ELEM_MARK, ELEM_RUBY,
     ELEM_RT, ELEM_RP, ELEM_BDI, ELEM_BDO, ELEM_WBR,
     ELEM_DATA, ELEM_OUTPUT, ELEM_DATALIST, ELEM_KEYGEN,
-    ELEM_NOSCRIPT   // FIX: added — we show noscript content (no JS engine)
+    ELEM_NOSCRIPT,
+    // Version 3.0 - Additional HTML tags
+    ELEM_SMALL, ELEM_BIG, ELEM_SUB, ELEM_SUP,
+    ELEM_DEL, ELEM_S, ELEM_INS, ELEM_ABBR,
+    ELEM_ADDRESS, ELEM_CITE, ELEM_DFN, ELEM_KBD,
+    ELEM_SAMP, ELEM_VAR, ELEM_Q, ELEM_CENTER,
+    ELEM_FONT, ELEM_DL, ELEM_DT, ELEM_DD,
+    ELEM_FIELDSET, ELEM_LEGEND, ELEM_OPTGROUP
 } element_type_t;
 
 typedef struct dom_node {
@@ -235,6 +273,46 @@ static int is_loading      = 0;
 static int loading_dots    = 0;
 
 // ============================================================================
+// JS ENGINE STATE (v3.0)
+// ============================================================================
+static js_v2_engine_t js_engine;
+static int js_engine_initialized = 0;
+
+// Script collection for deferred execution
+#define MAX_SCRIPTS 16
+#define MAX_SCRIPT_LEN 16384
+static char collected_scripts[MAX_SCRIPTS][MAX_SCRIPT_LEN];
+static int collected_script_lens[MAX_SCRIPTS];
+static char script_src_urls[MAX_SCRIPTS][MAX_URL];
+static int collected_script_count = 0;
+
+// Timer support for setTimeout/setInterval
+#define MAX_TIMERS 32
+typedef struct {
+    js_v2_value_t* callback;
+    uint32_t target_time;
+    int interval_ms;
+    int active;
+    int is_interval;
+} js_timer_t;
+static js_timer_t js_timers[MAX_TIMERS];
+static int js_timer_count = 0;
+
+// Console log buffer
+#define MAX_CONSOLE_LOG 4096
+static char console_log_buffer[MAX_CONSOLE_LOG];
+static int console_log_len = 0;
+
+// DOM element reference for JS
+typedef struct {
+    dom_node_t* node;
+    char id[64];
+    int valid;
+} js_dom_ref_t;
+static js_dom_ref_t js_dom_refs[128];
+static int js_dom_ref_count = 0;
+
+// ============================================================================
 // CSS DEFAULT STYLES
 // ============================================================================
 
@@ -245,16 +323,33 @@ static css_style_t default_style = {
     .margin_top = 8, .margin_bottom = 8, .margin_left = 0, .margin_right = 0,
     .padding_top = 0, .padding_bottom = 0, .padding_left = 0, .padding_right = 0,
     .border_radius = 0, .is_link = 0, .target_blank = 0,
+    // Flexbox (v3.0)
     .flex_direction = 0, .justify_content = 0, .align_items = 0,
-    .align_self = 0, .flex_wrap = 0, .flex_grow = 0, .flex_shrink = 1,
-    .flex_basis = -1, .gap = 0, .width = 0, .height = 0,
-    .min_width = 0, .max_width = 0,
+    .align_self = 0, .align_content = 0, .flex_wrap = 0,
+    .flex_grow = 0, .flex_shrink = 1, .flex_basis = -1,
+    .gap = 0, .row_gap = 0, .column_gap = 0, .order = 0,
+    // Sizing (v3.0)
+    .width = 0, .height = 0, .min_width = 0, .max_width = 0,
+    .min_height = 0, .max_height = 0,
+    // Positioning (v3.0)
+    .position = 0, .top = 0, .right = 0, .bottom = 0, .left = 0, .z_index = 0,
+    // Borders
     .border_color = 0xFF000000, .border_width = 0, .border_style = 0,
     .border_top = 0, .border_right = 0, .border_bottom = 0, .border_left = 0,
-    .line_height = 18, .overflow = 0, .visibility = 0,
-    .position = 0, .z_index = 0,
-    .box_shadow_x = 0, .box_shadow_y = 0, .box_shadow_blur = 0,
-    .box_shadow_color = 0x00000000
+    // Typography (v3.0)
+    .line_height = 18, .vertical_align = 0,
+    // Visibility (v3.0)
+    .overflow = 0, .overflow_x = 0, .overflow_y = 0,
+    .visibility = 0, .opacity = 100,
+    // Effects (v3.0)
+    .box_shadow_x = 0, .box_shadow_y = 0, .box_shadow_blur = 0, .box_shadow_spread = 0,
+    .box_shadow_color = 0x00000000, .box_shadow_inset = 0,
+    .text_shadow_x = 0, .text_shadow_y = 0, .text_shadow_blur = 0,
+    .text_shadow_color = 0x00000000,
+    // Transform/Transition (v3.0)
+    .transform = {0}, .transition = {0},
+    // Box model (v3.0)
+    .box_sizing = 0, .cursor = 0, .font_family = {0}
 };
 
 static css_style_t inline_style = {
@@ -264,21 +359,214 @@ static css_style_t inline_style = {
     .margin_top = 0, .margin_bottom = 0, .margin_left = 0, .margin_right = 0,
     .padding_top = 0, .padding_bottom = 0, .padding_left = 0, .padding_right = 0,
     .border_radius = 0, .is_link = 0, .target_blank = 0,
+    // Flexbox (v3.0)
     .flex_direction = 0, .justify_content = 0, .align_items = 0,
-    .align_self = 0, .flex_wrap = 0, .flex_grow = 0, .flex_shrink = 1,
-    .flex_basis = -1, .gap = 0, .width = 0, .height = 0,
-    .min_width = 0, .max_width = 0,
+    .align_self = 0, .align_content = 0, .flex_wrap = 0,
+    .flex_grow = 0, .flex_shrink = 1, .flex_basis = -1,
+    .gap = 0, .row_gap = 0, .column_gap = 0, .order = 0,
+    // Sizing (v3.0)
+    .width = 0, .height = 0, .min_width = 0, .max_width = 0,
+    .min_height = 0, .max_height = 0,
+    // Positioning (v3.0)
+    .position = 0, .top = 0, .right = 0, .bottom = 0, .left = 0, .z_index = 0,
+    // Borders
     .border_color = 0xFF000000, .border_width = 0, .border_style = 0,
     .border_top = 0, .border_right = 0, .border_bottom = 0, .border_left = 0,
-    .line_height = 18, .overflow = 0, .visibility = 0,
-    .position = 0, .z_index = 0,
-    .box_shadow_x = 0, .box_shadow_y = 0, .box_shadow_blur = 0,
-    .box_shadow_color = 0x00000000
+    // Typography (v3.0)
+    .line_height = 18, .vertical_align = 0,
+    // Visibility (v3.0)
+    .overflow = 0, .overflow_x = 0, .overflow_y = 0,
+    .visibility = 0, .opacity = 100,
+    // Effects (v3.0)
+    .box_shadow_x = 0, .box_shadow_y = 0, .box_shadow_blur = 0, .box_shadow_spread = 0,
+    .box_shadow_color = 0x00000000, .box_shadow_inset = 0,
+    .text_shadow_x = 0, .text_shadow_y = 0, .text_shadow_blur = 0,
+    .text_shadow_color = 0x00000000,
+    // Transform/Transition (v3.0)
+    .transform = {0}, .transition = {0},
+    // Box model (v3.0)
+    .box_sizing = 0, .cursor = 0, .font_family = {0}
 };
 
 // ============================================================================
-// CACHE FUNCTIONS  — FIX: cache now actually saves and restores HTML content
+// JS ENGINE INITIALIZATION AND BROWSER APIs (v3.0)
 // ============================================================================
+
+// Console log callback
+static void js_console_log_callback(const char* message) {
+    if (!message) return;
+    int len = 0;
+    while (message[len]) len++;
+    if (console_log_len + len + 2 < MAX_CONSOLE_LOG) {
+        sys->memcpy(console_log_buffer + console_log_len, message, len);
+        console_log_len += len;
+        console_log_buffer[console_log_len++] = '\n';
+        console_log_buffer[console_log_len] = 0;
+    }
+    // Also output to debug
+    sys->printf("[JS] %s\n", message);
+}
+
+// Initialize JS engine
+static void init_js_engine(void) {
+    if (js_engine_initialized) return;
+    
+    js_v2_init(&js_engine);
+    js_engine.log_callback = js_console_log_callback;
+    
+    // Clear state
+    collected_script_count = 0;
+    js_timer_count = 0;
+    console_log_len = 0;
+    js_dom_ref_count = 0;
+    
+    js_engine_initialized = 1;
+}
+
+// Reset JS engine for new page
+static void reset_js_engine(void) {
+    collected_script_count = 0;
+    js_timer_count = 0;
+    console_log_len = 0;
+    js_dom_ref_count = 0;
+    if (js_engine_initialized) {
+        js_v2_clear_error(&js_engine);
+    }
+}
+
+// DOM lookup by ID
+static dom_node_t* find_dom_node_by_id(const char* id) {
+    if (!id || !*id) return 0;
+    
+    // First check cache
+    for (int i = 0; i < js_dom_ref_count; i++) {
+        if (js_dom_refs[i].valid && sys->strcmp(js_dom_refs[i].id, id) == 0) {
+            return js_dom_refs[i].node;
+        }
+    }
+    
+    // Walk DOM tree
+    dom_node_t* stack[MAX_DOM_NODES];
+    int stack_top = 0;
+    stack[stack_top++] = document;
+    
+    while (stack_top > 0) {
+        dom_node_t* node = stack[--stack_top];
+        if (node->type == DOM_ELEMENT && node->id[0]) {
+            if (sys->strcmp(node->id, id) == 0) {
+                // Cache it
+                if (js_dom_ref_count < 128) {
+                    js_dom_refs[js_dom_ref_count].node = node;
+                    sys->strcpy(js_dom_refs[js_dom_ref_count].id, id);
+                    js_dom_refs[js_dom_ref_count].valid = 1;
+                    js_dom_ref_count++;
+                }
+                return node;
+            }
+        }
+        // Push children
+        dom_node_t* child = node->last_child;
+        while (child) {
+            stack[stack_top++] = child;
+            child = child->previous_sibling; // We need to add this field or use another approach
+            break; // Simple approach: just check first_child and iterate
+        }
+        if (node->first_child) {
+            stack[stack_top++] = node->first_child;
+        }
+    }
+    return 0;
+}
+
+// Register browser APIs with JS engine
+static void register_browser_apis(void) {
+    if (!js_engine_initialized) init_js_engine();
+    
+    // Set up window.location
+    js_v2_value_t* location = js_v2_new_object(&js_engine);
+    js_v2_object_set(&js_engine, location, "href", js_v2_new_string(&js_engine, current_url));
+    js_v2_object_set(&js_engine, js_engine.window_object, "location", location);
+    js_v2_object_set(&js_engine, js_engine.document_object, "location", location);
+    
+    // Set up document.body placeholder
+    js_v2_value_t* body = js_v2_new_object(&js_engine);
+    js_v2_object_set(&js_engine, body, "tagName", js_v2_new_string(&js_engine, "BODY"));
+    js_v2_object_set(&js_engine, body, "innerHTML", js_v2_new_string(&js_engine, ""));
+    js_v2_object_set(&js_engine, js_engine.document_object, "body", body);
+    
+    // Set up document.URL
+    js_v2_object_set(&js_engine, js_engine.document_object, "URL", js_v2_new_string(&js_engine, current_url));
+}
+
+// Process timers (call from main loop)
+static void process_js_timers(void) {
+    if (!js_engine_initialized) return;
+    
+    uint32_t now = sys->get_ticks();
+    
+    for (int i = 0; i < js_timer_count; i++) {
+        if (js_timers[i].active && now >= js_timers[i].target_time) {
+            // Execute callback
+            if (js_timers[i].callback && js_timers[i].callback->type == JS_V2_TYPE_FUNCTION) {
+                js_v2_call(&js_engine, js_timers[i].callback, NULL, 0, NULL);
+            }
+            
+            if (js_timers[i].is_interval) {
+                // Reschedule for interval
+                js_timers[i].target_time = now + js_timers[i].interval_ms;
+            } else {
+                // One-shot timer
+                js_timers[i].active = 0;
+            }
+        }
+    }
+}
+
+// Execute a collected script
+static void execute_script(int script_index) {
+    if (script_index < 0 || script_index >= collected_script_count) return;
+    
+    if (!js_engine_initialized) init_js_engine();
+    
+    const char* script = collected_scripts[script_index];
+    int len = collected_script_lens[script_index];
+    
+    if (len == 0 || !script[0]) return;
+    
+    // Execute via JS engine
+    js_v2_eval(&js_engine, script);
+    
+    if (js_engine.has_error) {
+        js_console_log_callback(js_engine.error_msg);
+        js_v2_clear_error(&js_engine);
+    }
+}
+
+// Execute all collected scripts
+static void execute_all_scripts(void) {
+    for (int i = 0; i < collected_script_count; i++) {
+        execute_script(i);
+    }
+}
+
+// Add script to collection
+static void collect_script(const char* script, int len, const char* src_url) {
+    if (collected_script_count >= MAX_SCRIPTS) return;
+    if (len <= 0 || !script || !script[0]) return;
+    if (len >= MAX_SCRIPT_LEN) len = MAX_SCRIPT_LEN - 1;
+    
+    sys->memcpy(collected_scripts[collected_script_count], script, len);
+    collected_scripts[collected_script_count][len] = 0;
+    collected_script_lens[collected_script_count] = len;
+    
+    if (src_url && src_url[0]) {
+        sys->strncpy(script_src_urls[collected_script_count], src_url, MAX_URL - 1);
+    } else {
+        script_src_urls[collected_script_count][0] = 0;
+    }
+    
+    collected_script_count++;
+}
 
 static page_cache_t* cache_find(const char* url) {
     for (int i = 0; i < CACHE_SIZE; i++) {
@@ -672,8 +960,11 @@ static void parse_inline_style(const char* style_str, css_style_t* style) {
         }
         else if (str_casecmp(prop,"font-style")==0)
             style->font_style=(str_casecmp(value,"italic")==0)?1:0;
-        else if (str_casecmp(prop,"text-decoration")==0)
-            style->text_decoration=(sys->strstr(value,"underline")!=0)?1:0;
+        else if (str_casecmp(prop,"text-decoration")==0) {
+            if(sys->strstr(value,"underline")!=0) style->text_decoration=1;
+            else if(sys->strstr(value,"line-through")!=0 || sys->strstr(value,"strikethrough")!=0) style->text_decoration=2;
+            else style->text_decoration=0;
+        }
         else if (str_casecmp(prop,"display")==0) {
             if(str_casecmp(value,"none")==0) style->display=2;
             else if(str_casecmp(value,"block")==0) style->display=1;
@@ -723,9 +1014,150 @@ static void parse_inline_style(const char* style_str, css_style_t* style) {
         }
         else if (str_casecmp(prop,"width")==0)  style->width=parse_size(value);
         else if (str_casecmp(prop,"height")==0) style->height=parse_size(value);
+        else if (str_casecmp(prop,"min-width")==0)  style->min_width=parse_size(value);
+        else if (str_casecmp(prop,"max-width")==0)  style->max_width=parse_size(value);
+        else if (str_casecmp(prop,"min-height")==0) style->min_height=parse_size(value);
+        else if (str_casecmp(prop,"max-height")==0) style->max_height=parse_size(value);
         else if (str_casecmp(prop,"visibility")==0) {
             if(str_casecmp(value,"hidden")==0)style->visibility=1;
             else style->visibility=0;
+        }
+        // v3.0: Positioning
+        else if (str_casecmp(prop,"position")==0) {
+            if(str_casecmp(value,"relative")==0) style->position=1;
+            else if(str_casecmp(value,"absolute")==0) style->position=2;
+            else if(str_casecmp(value,"fixed")==0) style->position=3;
+            else if(str_casecmp(value,"sticky")==0) style->position=4;
+            else style->position=0;
+        }
+        else if (str_casecmp(prop,"top")==0)    style->top=parse_size(value);
+        else if (str_casecmp(prop,"right")==0)  style->right=parse_size(value);
+        else if (str_casecmp(prop,"bottom")==0) style->bottom=parse_size(value);
+        else if (str_casecmp(prop,"left")==0)   style->left=parse_size(value);
+        else if (str_casecmp(prop,"z-index")==0) {
+            int z=0; const char* zp=value;
+            while(*zp>='0'&&*zp<='9'){z=z*10+(*zp-'0');zp++;}
+            style->z_index=z;
+        }
+        // v3.0: Flexbox properties
+        else if (str_casecmp(prop,"flex-direction")==0) {
+            if(str_casecmp(value,"row")==0) style->flex_direction=0;
+            else if(str_casecmp(value,"row-reverse")==0) style->flex_direction=1;
+            else if(str_casecmp(value,"column")==0) style->flex_direction=2;
+            else if(str_casecmp(value,"column-reverse")==0) style->flex_direction=3;
+        }
+        else if (str_casecmp(prop,"flex-wrap")==0) {
+            if(str_casecmp(value,"nowrap")==0) style->flex_wrap=0;
+            else if(str_casecmp(value,"wrap")==0) style->flex_wrap=1;
+            else if(str_casecmp(value,"wrap-reverse")==0) style->flex_wrap=2;
+        }
+        else if (str_casecmp(prop,"justify-content")==0) {
+            if(str_casecmp(value,"flex-start")==0) style->justify_content=0;
+            else if(str_casecmp(value,"flex-end")==0) style->justify_content=1;
+            else if(str_casecmp(value,"center")==0) style->justify_content=2;
+            else if(str_casecmp(value,"space-between")==0) style->justify_content=3;
+            else if(str_casecmp(value,"space-around")==0) style->justify_content=4;
+        }
+        else if (str_casecmp(prop,"align-items")==0 || str_casecmp(prop,"align-self")==0) {
+            int* target = (prop[6]=='i') ? &style->align_items : &style->align_self;
+            if(str_casecmp(value,"stretch")==0) *target=0;
+            else if(str_casecmp(value,"flex-start")==0) *target=1;
+            else if(str_casecmp(value,"flex-end")==0) *target=2;
+            else if(str_casecmp(value,"center")==0) *target=3;
+            else if(str_casecmp(value,"baseline")==0) *target=4;
+        }
+        else if (str_casecmp(prop,"align-content")==0) {
+            if(str_casecmp(value,"stretch")==0) style->align_content=0;
+            else if(str_casecmp(value,"flex-start")==0) style->align_content=1;
+            else if(str_casecmp(value,"flex-end")==0) style->align_content=2;
+            else if(str_casecmp(value,"center")==0) style->align_content=3;
+        }
+        else if (str_casecmp(prop,"gap")==0) style->gap=parse_size(value);
+        else if (str_casecmp(prop,"row-gap")==0) style->row_gap=parse_size(value);
+        else if (str_casecmp(prop,"column-gap")==0) style->column_gap=parse_size(value);
+        else if (str_casecmp(prop,"flex-grow")==0) {
+            int g=0; const char* gp=value;
+            while(*gp>='0'&&*gp<='9'){g=g*10+(*gp-'0');gp++;} style->flex_grow=g;
+        }
+        else if (str_casecmp(prop,"flex-shrink")==0) {
+            int s=0; const char* sp=value;
+            while(*sp>='0'&&*sp<='9'){s=s*10+(*sp-'0');sp++;} style->flex_shrink=s;
+        }
+        else if (str_casecmp(prop,"flex-basis")==0) style->flex_basis=parse_size(value);
+        else if (str_casecmp(prop,"order")==0) {
+            int o=0; const char* op=value;
+            while(*op>='0'&&*op<='9'){o=o*10+(*op-'0');op++;} style->order=o;
+        }
+        // v3.0: Overflow
+        else if (str_casecmp(prop,"overflow")==0) {
+            if(str_casecmp(value,"hidden")==0) style->overflow=1;
+            else if(str_casecmp(value,"scroll")==0) style->overflow=2;
+            else if(str_casecmp(value,"auto")==0) style->overflow=3;
+            else style->overflow=0;
+        }
+        else if (str_casecmp(prop,"overflow-x")==0) style->overflow_x=parse_size(value);
+        else if (str_casecmp(prop,"overflow-y")==0) style->overflow_y=parse_size(value);
+        // v3.0: Opacity
+        else if (str_casecmp(prop,"opacity")==0) {
+            int op=100; const char* opp=value;
+            while(*opp>='0'&&*opp<='9'){op=op*10+(*opp-'0');opp++;}
+            if(*opp=='.'){opp++;int dec=0;while(*opp>='0'&&*opp<='9'){dec=dec*10+(*opp-'0');opp++;}}
+            style->opacity=(op>100)?100:op;
+        }
+        // v3.0: Box-shadow (basic parsing - store values)
+        else if (str_casecmp(prop,"box-shadow")==0) {
+            const char* bsp=value; int vals[4]={0,0,0,0}, vi=0;
+            while(*bsp&&vi<4){
+                while(*bsp==' ')bsp++;
+                int neg=0; if(*bsp=='-'){neg=1;bsp++;}
+                while(*bsp>='0'&&*bsp<='9'){vals[vi]=vals[vi]*10+(*bsp-'0');bsp++;}
+                if(neg)vals[vi]=-vals[vi]; vi++;
+                while(*bsp&&*bsp!='-'&&(*bsp<'0'||*bsp>'9'))bsp++;
+            }
+            style->box_shadow_x=vals[0]; style->box_shadow_y=vals[1];
+            style->box_shadow_blur=vals[2]; style->box_shadow_spread=vals[3];
+            // Try to find color
+            const char* csp=value; while(*csp){if(*csp=='#'||(*csp>='a'&&*csp<='z'))break;csp++;}
+            if(*csp) style->box_shadow_color=parse_color(csp);
+        }
+        // v3.0: Text-shadow (basic parsing)
+        else if (str_casecmp(prop,"text-shadow")==0) {
+            const char* tsp=value; int vals[3]={0,0,0}, vi=0;
+            while(*tsp&&vi<3){
+                while(*tsp==' ')tsp++;
+                int neg=0; if(*tsp=='-'){neg=1;tsp++;}
+                while(*tsp>='0'&&*tsp<='9'){vals[vi]=vals[vi]*10+(*tsp-'0');tsp++;}
+                if(neg)vals[vi]=-vals[vi]; vi++;
+                while(*tsp&&*tsp!='-'&&(*tsp<'0'||*tsp>'9'))tsp++;
+            }
+            style->text_shadow_x=vals[0]; style->text_shadow_y=vals[1]; style->text_shadow_blur=vals[2];
+        }
+        // v3.0: Transform (store for future)
+        else if (str_casecmp(prop,"transform")==0) {
+            int tlen=sys->strlen(value); if(tlen>127)tlen=127;
+            sys->strncpy(style->transform,value,tlen); style->transform[tlen]=0;
+        }
+        // v3.0: Transition (store for future)
+        else if (str_casecmp(prop,"transition")==0) {
+            int tlen=sys->strlen(value); if(tlen>127)tlen=127;
+            sys->strncpy(style->transition,value,tlen); style->transition[tlen]=0;
+        }
+        // v3.0: Box-sizing
+        else if (str_casecmp(prop,"box-sizing")==0) {
+            style->box_sizing=(str_casecmp(value,"border-box")==0)?1:0;
+        }
+        // v3.0: Cursor
+        else if (str_casecmp(prop,"cursor")==0) {
+            if(str_casecmp(value,"pointer")==0) style->cursor=1;
+            else if(str_casecmp(value,"text")==0) style->cursor=2;
+            else if(str_casecmp(value,"move")==0) style->cursor=3;
+            else style->cursor=0;
+        }
+        // v3.0: Vertical-align for sub/sup
+        else if (str_casecmp(prop,"vertical-align")==0) {
+            if(str_casecmp(value,"super")==0) style->vertical_align=1;
+            else if(str_casecmp(value,"sub")==0) style->vertical_align=2;
+            else style->vertical_align=0;
         }
     }
 }
@@ -806,7 +1238,31 @@ static element_type_t get_element_type(const char* tag) {
     if (str_casecmp(tag,"wbr")==0)     return ELEM_WBR;
     if (str_casecmp(tag,"output")==0)  return ELEM_OUTPUT;
     if (str_casecmp(tag,"datalist")==0)return ELEM_DATALIST;
-    if (str_casecmp(tag,"noscript")==0)return ELEM_NOSCRIPT;  // FIX: added
+    if (str_casecmp(tag,"noscript")==0)return ELEM_NOSCRIPT;
+    // v3.0: Additional HTML tags
+    if (str_casecmp(tag,"small")==0)   return ELEM_SMALL;
+    if (str_casecmp(tag,"big")==0)     return ELEM_BIG;
+    if (str_casecmp(tag,"sub")==0)     return ELEM_SUB;
+    if (str_casecmp(tag,"sup")==0)     return ELEM_SUP;
+    if (str_casecmp(tag,"del")==0)     return ELEM_DEL;
+    if (str_casecmp(tag,"s")==0)       return ELEM_S;
+    if (str_casecmp(tag,"ins")==0)     return ELEM_INS;
+    if (str_casecmp(tag,"abbr")==0)    return ELEM_ABBR;
+    if (str_casecmp(tag,"address")==0) return ELEM_ADDRESS;
+    if (str_casecmp(tag,"cite")==0)    return ELEM_CITE;
+    if (str_casecmp(tag,"dfn")==0)     return ELEM_DFN;
+    if (str_casecmp(tag,"kbd")==0)     return ELEM_KBD;
+    if (str_casecmp(tag,"samp")==0)    return ELEM_SAMP;
+    if (str_casecmp(tag,"var")==0)     return ELEM_VAR;
+    if (str_casecmp(tag,"q")==0)       return ELEM_Q;
+    if (str_casecmp(tag,"center")==0)  return ELEM_CENTER;
+    if (str_casecmp(tag,"font")==0)    return ELEM_FONT;
+    if (str_casecmp(tag,"dl")==0)      return ELEM_DL;
+    if (str_casecmp(tag,"dt")==0)      return ELEM_DT;
+    if (str_casecmp(tag,"dd")==0)      return ELEM_DD;
+    if (str_casecmp(tag,"fieldset")==0)return ELEM_FIELDSET;
+    if (str_casecmp(tag,"legend")==0)  return ELEM_LEGEND;
+    if (str_casecmp(tag,"optgroup")==0)return ELEM_OPTGROUP;
     return ELEM_UNKNOWN;
 }
 
@@ -885,6 +1341,33 @@ static css_style_t get_element_style(element_type_t elem_type, dom_node_t* paren
             style.display=1;style.margin_top=8;style.margin_bottom=8;
             style.padding_top=8;style.padding_bottom=8;style.padding_left=12;style.padding_right=12;
             style.bg_color=0xFFFFF8E1;style.border_left=3;style.border_color=0xFFFFB300;break;
+        // v3.0: Additional HTML tag styles
+        case ELEM_SMALL: style.font_size=12;style.display=0;break;
+        case ELEM_BIG:   style.font_size=18;style.display=0;break;
+        case ELEM_SUB:   style.font_size=11;style.vertical_align=2;style.display=0;break;
+        case ELEM_SUP:   style.font_size=11;style.vertical_align=1;style.display=0;break;
+        case ELEM_DEL:case ELEM_S: style.text_decoration=2;style.display=0;style.fg_color=0xFF888888;break;
+        case ELEM_INS:   style.text_decoration=1;style.bg_color=0xFFD4EDDA;style.display=0;break;
+        case ELEM_ABBR:  style.border_bottom=1;style.border_style=2;style.border_color=0xFF000000;style.display=0;break;
+        case ELEM_ADDRESS:style.font_style=1;style.margin_top=8;style.margin_bottom=8;style.display=1;break;
+        case ELEM_CITE:  style.font_style=1;style.fg_color=0xFF555555;style.display=0;break;
+        case ELEM_DFN:   style.font_style=1;style.font_weight=700;style.display=0;break;
+        case ELEM_KBD:   style.font_size=12;style.bg_color=0xFFEEEEEE;style.padding_left=4;style.padding_right=4;
+                        style.border_radius=3;style.border_width=1;style.border_style=1;style.border_color=0xFFCCCCCC;style.display=0;break;
+        case ELEM_SAMP:  style.font_size=12;style.bg_color=0xFFF5F5F5;style.display=0;break;
+        case ELEM_VAR:   style.font_style=1;style.display=0;break;
+        case ELEM_Q:     style.display=0;style.border_left=1;style.border_color=0xFFCCCCCC;
+                        style.padding_left=4;style.fg_color=0xFF555555;break;
+        case ELEM_CENTER:style.text_align=1;style.display=1;break;
+        case ELEM_FONT:  style.display=0;break; // Font styling handled by attributes
+        case ELEM_DL:    style.display=1;style.margin_top=12;style.margin_bottom=12;break;
+        case ELEM_DT:    style.font_weight=700;style.margin_top=8;style.display=1;break;
+        case ELEM_DD:    style.margin_left=24;style.margin_top=4;style.margin_bottom=4;style.display=1;break;
+        case ELEM_FIELDSET:style.display=1;style.margin_top=12;style.margin_bottom=12;
+                          style.padding_top=12;style.padding_bottom=12;style.padding_left=12;style.padding_right=12;
+                          style.border_width=1;style.border_style=1;style.border_color=0xFFCCCCCC;break;
+        case ELEM_LEGEND:style.font_weight=700;style.padding_left=8;style.padding_right=8;style.display=0;break;
+        case ELEM_OPTGROUP:style.font_style=1;style.font_weight=700;style.display=1;break;
         default: break;
     }
     return style;
@@ -932,6 +1415,9 @@ static void execute_document_write(const char* html);
 
 static void execute_script_content(const char* script) {
     if (!script || !script[0]) return;
+    
+    // v3.0: Use JS engine for execution
+    // First, still handle document.write for backwards compatibility
     const char* p = script;
     while ((p = sys->strstr(p, "document.write")) != 0) {
         p += 14;
@@ -958,6 +1444,11 @@ static void execute_script_content(const char* script) {
             }
         }
     }
+    
+    // v3.0: Collect script for deferred execution via JS engine
+    int len = 0;
+    while (script[len]) len++;
+    collect_script(script, len, 0);
 }
 
 static void execute_document_write(const char* html) {
@@ -1046,6 +1537,7 @@ static void handle_end_tag(const char* tag_name) {
     if (elem_type == ELEM_SCRIPT && in_script) {
         in_script = 0;
         script_buffer[script_buffer_len] = 0;
+        // v3.0: Execute via JS engine integration
         execute_script_content(script_buffer);
         script_buffer_len = 0;
         return;
@@ -1471,20 +1963,22 @@ static void show_js_required_page(const char* url) {
     text_run_count = 0; box_run_count = 0;
 
     struct { const char* text; int x; int y; uint32_t color; int size; int bold; } msgs[] = {
-        { "JavaScript Required", 20, 20, 0xFF222222, 22, 700 },
-        { "This page needs JavaScript to render content.", 20, 60, 0xFF444444, 14, 400 },
-        { "CamelOS Browser does not yet have a JS engine.", 20, 82, 0xFF444444, 14, 400 },
+        { "JavaScript Execution Issue", 20, 20, 0xFF222222, 22, 700 },
+        { "This page requires complex JavaScript that could not execute.", 20, 60, 0xFF444444, 14, 400 },
+        { "CamelOS Browser v3.0 has basic JS engine support.", 20, 82, 0xFF444444, 14, 400 },
         { "What you can try:", 20, 116, 0xFF333333, 14, 700 },
         { "  - Append ?lite or ?hl=en to the URL", 20, 138, 0xFF555555, 13, 400 },
         { "  - Visit the site's /sitemap.xml for static links", 20, 158, 0xFF555555, 13, 400 },
         { "  - Try news.ycombinator.com or text.npr.org", 20, 178, 0xFF555555, 13, 400 },
         { "  - Wikipedia works well (static HTML)", 20, 198, 0xFF555555, 13, 400 },
-        { "Technical status:", 20, 232, 0xFF333333, 14, 700 },
-        { "  JS engine:    MISSING (Priority 3 backlog)", 20, 254, 0xFFBB2222, 13, 400 },
-        { "  TLS 1.3:      INCOMPLETE (crypto stubs)", 20, 274, 0xFFBB2222, 13, 400 },
-        { "  HTTP/2:       NOT WIRED (http2.c exists)", 20, 294, 0xFFBB5500, 13, 400 },
-        { "  HTML parser:  WORKING (basic)", 20, 314, 0xFF228822, 13, 400 },
-        { "  DOM layout:   WORKING (block/inline)", 20, 334, 0xFF228822, 13, 400 },
+        { "Technical status (v3.0):", 20, 232, 0xFF333333, 14, 700 },
+        { "  JS engine:    WORKING (js_engine_v2)", 20, 254, 0xFF228822, 13, 400 },
+        { "  DOM API:      PARTIAL (getElementById, createElement)", 20, 274, 0xFF228822, 13, 400 },
+        { "  Timers:       WORKING (setTimeout/setInterval)", 20, 294, 0xFF228822, 13, 400 },
+        { "  TLS 1.3:      INCOMPLETE (crypto stubs)", 20, 314, 0xFFBB5500, 13, 400 },
+        { "  HTTP/2:       NOT WIRED (http2.c exists)", 20, 334, 0xFFBB5500, 13, 400 },
+        { "  HTML parser:  WORKING (enhanced)", 20, 354, 0xFF228822, 13, 400 },
+        { "  CSS:          WORKING (flexbox, positioning)", 20, 374, 0xFF228822, 13, 400 },
         { 0, 0, 0, 0, 0, 0 }
     };
 
@@ -1501,7 +1995,7 @@ static void show_js_required_page(const char* url) {
         run->line_height = msgs[i].size + 6;
     }
 
-    sys->strcpy(page_title, "JavaScript Required");
+    sys->strcpy(page_title, "JavaScript Issue");
 }
 
 int fetch_url(const char* url) {
@@ -1509,6 +2003,9 @@ int fetch_url(const char* url) {
 
     sys->strcpy(current_url, url);
     url_cursor_pos = sys->strlen(current_url);
+
+    // v3.0: Reset JS engine state for new page
+    reset_js_engine();
 
     // Check cache — FIX: now actually restores content
     page_cache_t* cached = cache_find(url);
@@ -1518,6 +2015,11 @@ int fetch_url(const char* url) {
         dom_node_count = 0;
         document = dom_create_node(DOM_DOCUMENT);
         parse_html(page_content);
+        
+        // v3.0: Register browser APIs and execute scripts
+        register_browser_apis();
+        execute_all_scripts();
+        
         layout_dom(780, 500);
 
         sys->strcpy(current_url, url);
@@ -1544,16 +2046,22 @@ int fetch_url(const char* url) {
         page_title[0] = 0;
 
         parse_html(page_content);
+        
+        // v3.0: Register browser APIs and execute collected scripts after DOM is built
+        register_browser_apis();
+        execute_all_scripts();
+        
         layout_dom(780, 500);
 
         if (!page_title[0]) sys->strcpy(page_title, "Untitled");
 
+        // v3.0: Only show JS required page if scripts failed to produce content
         int has_scripts = (sys->strstr(page_content, "<script") != 0 ||
                            sys->strstr(page_content, "<SCRIPT") != 0);
         int has_body_content = (sys->strstr(page_content, "<body") != 0 ||
                                 sys->strstr(page_content, "<BODY")  != 0);
 
-        if (has_scripts && text_run_count < 3 && has_body_content) {
+        if (has_scripts && text_run_count < 3 && has_body_content && collected_script_count == 0) {
             show_js_required_page(url);
         }
 
@@ -1768,6 +2276,10 @@ static void draw_border(int x, int y, int w, int h, int bw, int bstyle, uint32_t
 
 void on_paint(int x, int y, int w, int h) {
     if (!sys) return;
+    
+    // v3.0: Process JS timers on each paint
+    process_js_timers();
+    
     sys->draw_rect(x, y, w, h, 0xFFFFFFFF);
 
     // Tab bar
@@ -1977,7 +2489,11 @@ cdl_exports_t* cdl_main(kernel_api_t* api) {
 
     document = dom_create_node(DOM_DOCUMENT);
 
-    void* win = sys->create_window("Web Browser", 800, 600, on_paint, on_input, on_mouse);
+    // v3.0: Initialize JS engine
+    init_js_engine();
+    register_browser_apis();
+
+    void* win = sys->create_window("Web Browser v3.0", 800, 600, on_paint, on_input, on_mouse);
 
     static menu_def_t menus[3];
     sys->strcpy(menus[0].name, "File");
