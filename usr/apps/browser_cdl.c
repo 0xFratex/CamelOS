@@ -195,6 +195,9 @@ typedef struct {
     char font_family[64];
 } css_style_t;
 
+// Forward declaration for inline style parser
+static void parse_inline_style(const char* style_str, css_style_t* style);
+
 // ============================================================================
 // DOM STRUCTURES
 // ============================================================================
@@ -1689,13 +1692,6 @@ static dom_node_t* dom_create_node(dom_node_type_t type) {
     sys->memset(node, 0, sizeof(dom_node_t));
     node->type = type;
     return node;
-}
-
-static void dom_append_child(dom_node_t* parent, dom_node_t* child) {
-    if (!parent || !child) return;
-    child->parent = parent;
-    if (!parent->first_child) { parent->first_child = parent->last_child = child; }
-    else { parent->last_child->next_sibling = child; parent->last_child = child; }
 }
 
 // ============================================================================
