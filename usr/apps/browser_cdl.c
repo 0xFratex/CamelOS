@@ -224,12 +224,14 @@ static void parse_html(const char* html) {
     char hidden_tag_name[16] = {0};
     int in_title = 0;
     int in_comment = 0;
+    int in_noscript = 0;  // Track <noscript> separately - content should be VISIBLE
     int tag_len = 0;
     int text_len = 0;
     
     sys->memset(parse_text_buffer, 0, MAX_CONTENT);
     
     while(html[i] && i < MAX_CONTENT && node_count < MAX_NODES) {
+        // Handle <!-- comments -->
         if (!in_tag && html[i] == '<' && html[i+1] == '!' && html[i+2] == '-' && html[i+3] == '-') {
             in_comment = 1;
             i += 4;
@@ -243,22 +245,55 @@ static void parse_html(const char* html) {
             i++;
             continue;
         }
+        // Handle <!DOCTYPE ...> and <![CDATA[ ... ]]> - skip them entirely
+        if (!in_tag && html[i] == '<' && html[i+1] == '!') {
+            // Skip until closing >
+            i += 2;
+            while(html[i] && html[i] != '>') i++;
+            if (html[i] == '>') i++;
+            continue;
+        }
 
         if(html[i] == '<') {
             if(text_len > 0) {
                 if (in_script) {
                     // Execute JavaScript from <script> tags
-                    if (js_vm && text_len > 0 && text_len < 8192) {
+                    // Only try simple scripts - skip minified/complex ones that Elk can't handle
+                    int looks_simple = 1;
+                    if (text_len > 4096) looks_simple = 0;  // Too long for Elk
+                    if (text_len > 50) {
+                        // Check for patterns that indicate complex JS Elk can't handle
+                        if (sys->strstr(parse_text_buffer, "class ")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "=>")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "async ")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "await ")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "Promise")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "Symbol")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "Map(")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "Set(")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "WeakRef")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "Proxy")) looks_simple = 0;
+                        if (sys->strstr(parse_text_buffer, "Reflect")) looks_simple = 0;
+                    }
+                    
+                    if (js_vm && text_len > 0 && looks_simple) {
                         sys->print("[JS] Evaluating script (");
                         char num_buf[16];
                         sys->itoa(text_len, num_buf);
                         sys->print(num_buf);
                         sys->print(" bytes)\n");
                         js_eval(js_vm, parse_text_buffer, text_len);
+                    } else if (text_len > 0) {
+                        sys->print("[JS] Skipping complex script (");
+                        char num_buf[16];
+                        sys->itoa(text_len, num_buf);
+                        sys->print(num_buf);
+                        sys->print(" bytes - too complex for Elk)\n");
                     }
                 } else if (in_title) {
                     sys->strncpy(tabs[active_tab].title, parse_text_buffer, MAX_TITLE-1);
                 } else if (!in_hidden) {
+                    // noscript content IS shown (in_noscript just tracks we're inside it)
                     if (node_count < MAX_NODES) {
                         dom_node_t* n = &nodes[node_count++];
                         sys->memset(n, 0, sizeof(dom_node_t));
@@ -307,8 +342,11 @@ static void parse_html(const char* html) {
                     }
                 }
                 
-                if (!in_hidden && (is_tag(current_tag_buf, "style") || is_tag(current_tag_buf, "head") || 
-                    is_tag(current_tag_buf, "noscript") || is_tag(current_tag_buf, "svg"))) {
+                // CRITICAL FIX: <noscript> content must be VISIBLE in non-JS browsers!
+                // Only hide: <style>, <head>, <svg> - NOT <noscript>
+                // <noscript> is specifically designed for browsers without JS support
+                if (!in_hidden && !in_noscript && (is_tag(current_tag_buf, "style") || is_tag(current_tag_buf, "head") || 
+                    is_tag(current_tag_buf, "svg"))) {
                     
                     int is_self_closing = 0;
                     if (tag_len > 0 && current_tag_buf[tag_len-1] == '/') is_self_closing = 1;
@@ -322,6 +360,16 @@ static void parse_html(const char* html) {
                         }
                         hidden_tag_name[k] = 0;
                     }
+                }
+                
+                // Track <noscript> separately - its content should be SHOWN (not hidden)
+                // since our browser has limited/no JS capability
+                if (is_tag(current_tag_buf, "noscript")) {
+                    in_noscript = 1;
+                    // Don't add <noscript> tag as a visible element - skip it
+                    // but continue to process its children as visible content
+                    i++;
+                    continue;
                 }
                 
                 if (node_count < MAX_NODES) {
@@ -340,6 +388,8 @@ static void parse_html(const char* html) {
                     n->font_size = 16;
                     
                     if(is_tag(n->tag, "h1")) n->font_size = 24;
+                    if(is_tag(n->tag, "h2")) n->font_size = 20;
+                    if(is_tag(n->tag, "h3")) n->font_size = 18;
                     if(is_tag(n->tag, "a")) {
                         n->color = 0xFF0000FF; 
                         get_attribute(current_tag_buf, "href", n->attr, 127);
@@ -348,13 +398,28 @@ static void parse_html(const char* html) {
                         get_attribute(current_tag_buf, "src", n->attr, 127);
                         get_attribute(current_tag_buf, "alt", n->attr2, 31);
                     }
+                    if(is_tag(n->tag, "form")) {
+                        get_attribute(current_tag_buf, "action", n->attr, 127);
+                        get_attribute(current_tag_buf, "method", n->attr2, 31);
+                    }
+                    if(is_tag(n->tag, "input")) {
+                        get_attribute(current_tag_buf, "type", n->attr, 127);
+                        get_attribute(current_tag_buf, "name", n->attr2, 31);
+                    }
                 }
             } else if(tag_len > 0 && current_tag_buf[0] == '/') {
                 if (is_tag(current_tag_buf + 1, "script")) in_script = 0;
                 if (is_tag(current_tag_buf + 1, "title")) in_title = 0;
+                if (is_tag(current_tag_buf + 1, "noscript")) in_noscript = 0;
                 if (in_hidden && is_tag(current_tag_buf + 1, hidden_tag_name)) {
                     in_hidden = 0;
                     hidden_tag_name[0] = 0;
+                }
+                
+                // Skip </noscript> closing tag from being added as node
+                if (is_tag(current_tag_buf + 1, "noscript")) {
+                    i++;
+                    continue;
                 }
                 
                 if (node_count < MAX_NODES) {
@@ -384,6 +449,7 @@ static void parse_html(const char* html) {
         n->font_size = 16;
     }
     
+    // Count visual (renderable) nodes - also count form elements and headings
     int visual_nodes = 0;
     for(int k=0; k<node_count; k++) {
         if (nodes[k].type == 0) {
@@ -394,16 +460,39 @@ static void parse_html(const char* html) {
             }
             if (!is_whitespace) visual_nodes++;
         }
-        if (nodes[k].type == 1 && (is_tag(nodes[k].tag, "img") || is_tag(nodes[k].tag, "input") || is_tag(nodes[k].tag, "button"))) visual_nodes++;
+        if (nodes[k].type == 1 && (is_tag(nodes[k].tag, "img") || is_tag(nodes[k].tag, "input") || 
+            is_tag(nodes[k].tag, "button") || is_tag(nodes[k].tag, "form") ||
+            is_tag(nodes[k].tag, "h1") || is_tag(nodes[k].tag, "h2") ||
+            is_tag(nodes[k].tag, "h3") || is_tag(nodes[k].tag, "textarea"))) visual_nodes++;
     }
     
+    // Better fallback: show useful info instead of just "requires JavaScript"
     if (visual_nodes == 0 && node_count < MAX_NODES) {
+        // First, show the page title if we got one
+        if (tabs[active_tab].title[0] != 0) {
+            dom_node_t* tn = &nodes[node_count++];
+            sys->memset(tn, 0, sizeof(dom_node_t));
+            tn->type = 0;
+            sys->strcpy(tn->tag, "text");
+            tn->color = 0xFF000000;
+            tn->font_size = 24;
+            sys->strncpy(tn->text, tabs[active_tab].title, 127);
+        }
+        
         dom_node_t* n = &nodes[node_count++];
         sys->memset(n, 0, sizeof(dom_node_t));
         n->type = 0;
-        sys->strcpy(n->text, "The site requires JavaScript (Single Page App) to render content.");
+        sys->strcpy(n->text, "This page needs JavaScript to fully render.");
         sys->strcpy(n->tag, "text");
-        n->color = 0xFFFF0000;
+        n->color = 0xFF888888;
+        n->font_size = 16;
+        
+        n = &nodes[node_count++];
+        sys->memset(n, 0, sizeof(dom_node_t));
+        n->type = 0;
+        sys->strcpy(n->text, "Try: lite.duckduckgo.com for JS-free search");
+        sys->strcpy(n->tag, "text");
+        n->color = 0xFF0000AA;
         n->font_size = 16;
     }
 }
@@ -425,7 +514,13 @@ static void layout_html() {
             if(sys->strcmp(n->tag, "h1") == 0) {
                 cy += 30; cx = 10;
                 current_font = 24;
-            } else if(sys->strcmp(n->tag, "br") == 0 || sys->strcmp(n->tag, "p") == 0 || sys->strcmp(n->tag, "div") == 0) {
+            } else if(sys->strcmp(n->tag, "h2") == 0) {
+                cy += 24; cx = 10;
+                current_font = 20;
+            } else if(sys->strcmp(n->tag, "h3") == 0) {
+                cy += 20; cx = 10;
+                current_font = 18;
+            } else if(sys->strcmp(n->tag, "br") == 0 || sys->strcmp(n->tag, "p") == 0 || sys->strcmp(n->tag, "div") == 0 || sys->strcmp(n->tag, "li") == 0) {
                 cy += current_font + 4;
                 cx = 10;
             } else if (is_tag(n->tag, "img") || is_tag(n->tag, "video") || is_tag(n->tag, "audio")) {
@@ -435,13 +530,44 @@ static void layout_html() {
                 n->w = 100;
                 n->h = 60;
                 cy += 70;
+            } else if (is_tag(n->tag, "form")) {
+                cy += current_font + 8; cx = 10;
+                n->x = cx; n->y = cy;
+                n->w = max_x; n->h = 40;
+                cy += 50;
+            } else if (is_tag(n->tag, "input")) {
+                // Render input fields as placeholder boxes
+                n->x = cx;
+                n->y = cy;
+                n->w = 150;
+                n->h = 22;
+                cx += 160;
+            } else if (is_tag(n->tag, "button")) {
+                n->x = cx;
+                n->y = cy;
+                n->w = 80;
+                n->h = 22;
+                cx += 90;
             }
             if (node_count < MAX_NODES) nodes[node_count++] = *n;
         } else if(n->type == 2) { 
-            if(sys->strcmp(n->tag, "h1") == 0 || sys->strcmp(n->tag, "p") == 0 || sys->strcmp(n->tag, "div") == 0) {
+            if(sys->strcmp(n->tag, "h1") == 0) {
                 cy += current_font + 4;
                 cx = 10;
-                if (sys->strcmp(n->tag, "h1") == 0) current_font = 16;
+                current_font = 16;
+            } else if(sys->strcmp(n->tag, "h2") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+                current_font = 16;
+            } else if(sys->strcmp(n->tag, "h3") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+                current_font = 16;
+            } else if(sys->strcmp(n->tag, "p") == 0 || sys->strcmp(n->tag, "div") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "form") == 0) {
+                cy += 10; cx = 10;
             }
             if (node_count < MAX_NODES) nodes[node_count++] = *n;
         } else if(n->type == 0) { 
@@ -583,6 +709,23 @@ void draw_ui(int x, int y, int w, int h) {
                     sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFCCCCCC);
                     sys->draw_text(x + n->x + 5, y + UI_H + n->y + 5, "IMG", 0xFF000000);
                     if (n->attr2[0]) sys->draw_text(x + n->x + 5, y + UI_H + n->y + 25, n->attr2, 0xFF444444);
+                } else if (is_tag(n->tag, "form")) {
+                    // Draw form container border
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFEEEEEE);
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, 1, 0xFFCCCCCC);
+                } else if (is_tag(n->tag, "input")) {
+                    // Draw input field placeholder
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFFFFFFF);
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFAAAAAA);
+                    // Show input name/type as label
+                    if (n->attr[0]) {
+                        sys->draw_text(x + n->x + 3, y + UI_H + n->y + 4, n->attr, 0xFF888888);
+                    }
+                } else if (is_tag(n->tag, "button")) {
+                    // Draw button placeholder
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFDDDDDD);
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFF888888);
+                    sys->draw_text(x + n->x + 10, y + UI_H + n->y + 4, "Button", 0xFF444444);
                 }
             }
         }
@@ -635,6 +778,24 @@ start_fetch:
     }
     // ------------------------------
     
+    // --- CRITICAL FIX: Set f_base_url for proper relative URL resolution ---
+    // Extract protocol + host (e.g. "https://www.google.com") from f_final_url
+    f_base_url[0] = 0;
+    {
+        char* bp = sys->strstr(f_final_url, "://");
+        if (bp) {
+            int idx = (bp + 3) - f_final_url;  // Start after "://"
+            // Find end of host (before first / or ? or end of string)
+            while(f_final_url[idx] && f_final_url[idx] != '/' && 
+                  f_final_url[idx] != '?' && idx < MAX_URL - 1) {
+                idx++;
+            }
+            sys->strncpy(f_base_url, f_final_url, idx);
+            f_base_url[idx] = 0;
+        }
+    }
+    // ---------------------------------------------------------------------------
+    
     is_loading = 1;
     meta_refresh_triggered = 0;
     meta_refresh_url[0] = 0;
@@ -677,6 +838,24 @@ start_fetch:
             // ---------------------
 
             parse_html(html_buffer);
+            
+            // --- ENHANCED DEBUG LOGGING ---
+            {
+                int text_nodes = 0, elem_nodes = 0, close_nodes = 0;
+                for(int k=0; k<node_count; k++) {
+                    if (nodes[k].type == 0) text_nodes++;
+                    else if (nodes[k].type == 1) elem_nodes++;
+                    else if (nodes[k].type == 2) close_nodes++;
+                }
+                char dbuf[128];
+                sys->sprintf(dbuf, "[PARSE] %d nodes: %d text, %d elements, %d closing\n", 
+                            node_count, text_nodes, elem_nodes, close_nodes);
+                sys->print(dbuf);
+                if (tabs[active_tab].title[0]) {
+                    sys->print("[TITLE] "); sys->print(tabs[active_tab].title); sys->print("\n");
+                }
+            }
+            // --------------------------------
             
             // --- ANTI-BOT BYPASS: Check for "Moved" manual HTML link redirect ---
             int has_moved_text = 0;
@@ -937,10 +1116,13 @@ cdl_exports_t* cdl_main(kernel_api_t* api) {
         sys->memset(&tabs[i], 0, sizeof(browser_tab_t));
     }
     
-    sys->strcpy(tabs[0].url, "google.com");
+    sys->strcpy(tabs[0].url, "lite.duckduckgo.com");
     tabs[0].url_len = sys->strlen(tabs[0].url);
     active_tab = 0;
     tab_count = 1;
+    
+    sys->print("[BROWSER] Default homepage: DuckDuckGo Lite (works without JavaScript)\n");
+    sys->print("[BROWSER] Tip: Try google.com for Google (with gbv=1 auto-bypass)\n");
     
     frame_buffer = (uint32_t*)sys->malloc(CONTENT_W * CONTENT_H * 4);
     if (frame_buffer) {

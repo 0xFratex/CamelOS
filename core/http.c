@@ -15,7 +15,7 @@
 
 #define HTTP_BUFFER_SIZE (32768 + 16)
 #define HTTP_MAX_REDIRECTS 5
-#define HTTP_TIMEOUT 5000 // 5 seconds (reduced from 10)
+#define HTTP_TIMEOUT 15000 // 15 seconds - increased to get full page content
 #define HTTP_MAX_URL_LEN 1024
 #define HTTP_MAX_HEADERS_SIZE (32768 + 16)
 
