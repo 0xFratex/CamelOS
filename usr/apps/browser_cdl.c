@@ -120,6 +120,23 @@ static jsval_t js_console_log(struct js *js, jsval_t *args, int nargs) {
     return js_mkundef();
 }
 
+typedef struct dom_node {
+    int type; // 0=text, 1=element, 2=closing element
+    char tag[16];
+    char text[128];
+    char attr[128];
+    char attr2[32];
+    
+    int x, y, w, h;
+    uint32_t color;
+    int font_size; 
+} dom_node_t;
+
+#define MAX_NODES 8192
+static dom_node_t* nodes = 0;
+static dom_node_t* temp_nodes = 0;
+static int node_count = 0;
+
 // document.write implementation - appends text to the DOM
 static jsval_t js_document_write(struct js *js, jsval_t *args, int nargs) {
     for (int i = 0; i < nargs; i++) {
@@ -143,23 +160,6 @@ static jsval_t js_document_getById(struct js *js, jsval_t *args, int nargs) {
     // Return null for now - full DOM support would need element tracking
     return js_mknull();
 }
-
-typedef struct dom_node {
-    int type; // 0=text, 1=element, 2=closing element
-    char tag[16];
-    char text[128];
-    char attr[128];
-    char attr2[32];
-    
-    int x, y, w, h;
-    uint32_t color;
-    int font_size; 
-} dom_node_t;
-
-#define MAX_NODES 8192
-static dom_node_t* nodes = 0;
-static dom_node_t* temp_nodes = 0;
-static int node_count = 0;
 
 // Case insensitive tag comparison
 static int is_tag(const char* tag, const char* name) {
@@ -1003,10 +1003,9 @@ start_fetch:
                     if (sys->strstr(f_next_url, "://") == 0) {
                         if (f_next_url[0] == '/') {
                             int slashes = 0;
-                            int split = 0;
                             for(int i=0; f_final_url[i]; i++) {
                                 if(f_final_url[i] == '/') slashes++;
-                                if(slashes == 3) { split = i; break; }
+                                if(slashes == 3) break;
                             }
                             if (sys->strlen(f_base_url) + sys->strlen(f_next_url) < MAX_URL) {
                                 sys->sprintf(tabs[active_tab].url, "%s%s", f_base_url, f_next_url);
