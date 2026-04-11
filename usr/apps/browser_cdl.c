@@ -1,8 +1,8 @@
 // ============================================================================
 // VERSION INFO
 // ============================================================================
-#define BROWSER_VERSION "4.7"
-#define BROWSER_VERSION_NUM 470
+#define BROWSER_VERSION "4.8"
+#define BROWSER_VERSION_NUM 480
 
 #include "../../sys/cdl_defs.h"
 #include "../lib/camel_framework.h"
@@ -363,9 +363,18 @@ static void parse_html(const char* html) {
                 }
                 
                 // Track <noscript> separately - its content should be SHOWN (not hidden)
-                // since our browser has limited/no JS capability
+                // since our browser has limited/no JS capability.
+                // IMPORTANT: <noscript> OVERRIDES <head> hiding - content inside
+                // <head><noscript> should still be visible in a non-JS browser
                 if (is_tag(current_tag_buf, "noscript")) {
                     in_noscript = 1;
+                    // If we're inside <head> (in_hidden), save the hidden state
+                    // so we can restore it after </noscript>
+                    if (in_hidden) {
+                        // Temporarily unhide so noscript content is visible
+                        // The hidden_tag_name is preserved for restoration
+                        in_hidden = 0;
+                    }
                     // Don't add <noscript> tag as a visible element - skip it
                     // but continue to process its children as visible content
                     i++;
@@ -406,11 +415,24 @@ static void parse_html(const char* html) {
                         get_attribute(current_tag_buf, "type", n->attr, 127);
                         get_attribute(current_tag_buf, "name", n->attr2, 31);
                     }
+                    if(is_tag(n->tag, "select")) {
+                        get_attribute(current_tag_buf, "name", n->attr, 127);
+                    }
+                    if(is_tag(n->tag, "option")) {
+                        get_attribute(current_tag_buf, "value", n->attr, 127);
+                    }
                 }
             } else if(tag_len > 0 && current_tag_buf[0] == '/') {
                 if (is_tag(current_tag_buf + 1, "script")) in_script = 0;
                 if (is_tag(current_tag_buf + 1, "title")) in_title = 0;
-                if (is_tag(current_tag_buf + 1, "noscript")) in_noscript = 0;
+                if (is_tag(current_tag_buf + 1, "noscript")) {
+                    in_noscript = 0;
+                    // If we were inside <head> before <noscript>, restore hidden state
+                    // This handles <head><noscript>...</noscript> properly
+                    if (hidden_tag_name[0] != 0 && is_tag(hidden_tag_name, "head")) {
+                        in_hidden = 1;
+                    }
+                }
                 if (in_hidden && is_tag(current_tag_buf + 1, hidden_tag_name)) {
                     in_hidden = 0;
                     hidden_tag_name[0] = 0;
@@ -449,40 +471,60 @@ static void parse_html(const char* html) {
         n->font_size = 16;
     }
     
-    // Count visual (renderable) nodes - also count form elements and headings
+    // Count visual (renderable) nodes - comprehensive element type coverage
     int visual_nodes = 0;
     for(int k=0; k<node_count; k++) {
         if (nodes[k].type == 0) {
             int len = sys->strlen(nodes[k].text);
             int is_whitespace = 1;
             for (int m=0; m<len; m++) {
-                if (nodes[k].text[m] != ' ' && nodes[k].text[m] != '\n' && nodes[k].text[m] != '\r') is_whitespace = 0;
+                if (nodes[k].text[m] != ' ' && nodes[k].text[m] != '\n' && nodes[k].text[m] != '\r' && nodes[k].text[m] != '\t') is_whitespace = 0;
             }
             if (!is_whitespace) visual_nodes++;
         }
         if (nodes[k].type == 1 && (is_tag(nodes[k].tag, "img") || is_tag(nodes[k].tag, "input") || 
             is_tag(nodes[k].tag, "button") || is_tag(nodes[k].tag, "form") ||
             is_tag(nodes[k].tag, "h1") || is_tag(nodes[k].tag, "h2") ||
-            is_tag(nodes[k].tag, "h3") || is_tag(nodes[k].tag, "textarea"))) visual_nodes++;
+            is_tag(nodes[k].tag, "h3") || is_tag(nodes[k].tag, "h4") ||
+            is_tag(nodes[k].tag, "textarea") || is_tag(nodes[k].tag, "a") ||
+            is_tag(nodes[k].tag, "p") || is_tag(nodes[k].tag, "center") ||
+            is_tag(nodes[k].tag, "font") || is_tag(nodes[k].tag, "span") ||
+            is_tag(nodes[k].tag, "table") || is_tag(nodes[k].tag, "td") ||
+            is_tag(nodes[k].tag, "tr") || is_tag(nodes[k].tag, "th") ||
+            is_tag(nodes[k].tag, "li") || is_tag(nodes[k].tag, "ul") ||
+            is_tag(nodes[k].tag, "ol") || is_tag(nodes[k].tag, "b") ||
+            is_tag(nodes[k].tag, "i") || is_tag(nodes[k].tag, "strong") ||
+            is_tag(nodes[k].tag, "em") || is_tag(nodes[k].tag, "pre") ||
+            is_tag(nodes[k].tag, "code") || is_tag(nodes[k].tag, "select") ||
+            is_tag(nodes[k].tag, "option"))) visual_nodes++;
     }
     
-    // Better fallback: show useful info instead of just "requires JavaScript"
+    // Only show fallback when there are truly NO visual nodes at all
+    // CRITICAL: Replace existing nodes, don't append - to prevent overlap
     if (visual_nodes == 0 && node_count < MAX_NODES) {
+        // Save the page title before clearing nodes
+        char saved_title[MAX_TITLE];
+        sys->strncpy(saved_title, tabs[active_tab].title, MAX_TITLE - 1);
+        saved_title[MAX_TITLE - 1] = 0;
+        
+        // CLEAR all existing nodes first to prevent overlap with fallback
+        node_count = 0;
+        
         // First, show the page title if we got one
-        if (tabs[active_tab].title[0] != 0) {
+        if (saved_title[0] != 0) {
             dom_node_t* tn = &nodes[node_count++];
             sys->memset(tn, 0, sizeof(dom_node_t));
             tn->type = 0;
             sys->strcpy(tn->tag, "text");
             tn->color = 0xFF000000;
             tn->font_size = 24;
-            sys->strncpy(tn->text, tabs[active_tab].title, 127);
+            sys->strncpy(tn->text, saved_title, 127);
         }
         
         dom_node_t* n = &nodes[node_count++];
         sys->memset(n, 0, sizeof(dom_node_t));
         n->type = 0;
-        sys->strcpy(n->text, "This page needs JavaScript to fully render.");
+        sys->strcpy(n->text, "This page requires JavaScript to render its content.");
         sys->strcpy(n->tag, "text");
         n->color = 0xFF888888;
         n->font_size = 16;
@@ -490,9 +532,9 @@ static void parse_html(const char* html) {
         n = &nodes[node_count++];
         sys->memset(n, 0, sizeof(dom_node_t));
         n->type = 0;
-        sys->strcpy(n->text, "Try: lite.duckduckgo.com for JS-free search");
+        sys->strcpy(n->text, "The server sent a page that needs a JS-capable browser.");
         sys->strcpy(n->tag, "text");
-        n->color = 0xFF0000AA;
+        n->color = 0xFF888888;
         n->font_size = 16;
     }
 }
@@ -520,9 +562,33 @@ static void layout_html() {
             } else if(sys->strcmp(n->tag, "h3") == 0) {
                 cy += 20; cx = 10;
                 current_font = 18;
+            } else if(sys->strcmp(n->tag, "h4") == 0) {
+                cy += 18; cx = 10;
+                current_font = 17;
             } else if(sys->strcmp(n->tag, "br") == 0 || sys->strcmp(n->tag, "p") == 0 || sys->strcmp(n->tag, "div") == 0 || sys->strcmp(n->tag, "li") == 0) {
                 cy += current_font + 4;
                 cx = 10;
+            } else if(sys->strcmp(n->tag, "center") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "ul") == 0 || sys->strcmp(n->tag, "ol") == 0) {
+                cy += current_font + 4;
+                cx = 30;  // Indent lists
+            } else if(sys->strcmp(n->tag, "table") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "tr") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "td") == 0 || sys->strcmp(n->tag, "th") == 0) {
+                // Table cells: keep inline, add padding
+                cx += 8;
+            } else if(sys->strcmp(n->tag, "hr") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "blockquote") == 0 || sys->strcmp(n->tag, "pre") == 0) {
+                cy += current_font + 4;
+                cx = 30;  // Indent blockquotes
             } else if (is_tag(n->tag, "img") || is_tag(n->tag, "video") || is_tag(n->tag, "audio")) {
                 if (cx > 10) { cx = 10; cy += 20; }
                 n->x = cx;
@@ -548,7 +614,15 @@ static void layout_html() {
                 n->w = 80;
                 n->h = 22;
                 cx += 90;
+            } else if (is_tag(n->tag, "select")) {
+                n->x = cx;
+                n->y = cy;
+                n->w = 120;
+                n->h = 22;
+                cx += 130;
             }
+            // Tags like <a>, <font>, <span>, <b>, <i>, <em>, <strong>, <code>
+            // are inline - they don't cause line breaks, just flow with text
             if (node_count < MAX_NODES) nodes[node_count++] = *n;
         } else if(n->type == 2) { 
             if(sys->strcmp(n->tag, "h1") == 0) {
@@ -563,7 +637,26 @@ static void layout_html() {
                 cy += current_font + 4;
                 cx = 10;
                 current_font = 16;
+            } else if(sys->strcmp(n->tag, "h4") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+                current_font = 16;
             } else if(sys->strcmp(n->tag, "p") == 0 || sys->strcmp(n->tag, "div") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "center") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "ul") == 0 || sys->strcmp(n->tag, "ol") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "table") == 0) {
+                cy += current_font + 4;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "tr") == 0) {
+                cy += 2;
+                cx = 10;
+            } else if(sys->strcmp(n->tag, "blockquote") == 0 || sys->strcmp(n->tag, "pre") == 0) {
                 cy += current_font + 4;
                 cx = 10;
             } else if(sys->strcmp(n->tag, "form") == 0) {
@@ -709,6 +802,9 @@ void draw_ui(int x, int y, int w, int h) {
                     sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFCCCCCC);
                     sys->draw_text(x + n->x + 5, y + UI_H + n->y + 5, "IMG", 0xFF000000);
                     if (n->attr2[0]) sys->draw_text(x + n->x + 5, y + UI_H + n->y + 25, n->attr2, 0xFF444444);
+                } else if (is_tag(n->tag, "hr")) {
+                    // Horizontal rule
+                    sys->draw_rect(x + n->x, y + UI_H + n->y + 8, CONTENT_W - 40, 1, 0xFFCCCCCC);
                 } else if (is_tag(n->tag, "form")) {
                     // Draw form container border
                     sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFEEEEEE);
@@ -721,6 +817,10 @@ void draw_ui(int x, int y, int w, int h) {
                     if (n->attr[0]) {
                         sys->draw_text(x + n->x + 3, y + UI_H + n->y + 4, n->attr, 0xFF888888);
                     }
+                } else if (is_tag(n->tag, "select")) {
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFFFFFFF);
+                    sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFAAAAAA);
+                    sys->draw_text(x + n->x + 3, y + UI_H + n->y + 4, "[select]", 0xFF888888);
                 } else if (is_tag(n->tag, "button")) {
                     // Draw button placeholder
                     sys->draw_rect(x + n->x, y + UI_H + n->y, n->w, n->h, 0xFFDDDDDD);
@@ -1116,13 +1216,12 @@ cdl_exports_t* cdl_main(kernel_api_t* api) {
         sys->memset(&tabs[i], 0, sizeof(browser_tab_t));
     }
     
-    sys->strcpy(tabs[0].url, "lite.duckduckgo.com");
+    sys->strcpy(tabs[0].url, "www.google.com");
     tabs[0].url_len = sys->strlen(tabs[0].url);
     active_tab = 0;
     tab_count = 1;
     
-    sys->print("[BROWSER] Default homepage: DuckDuckGo Lite (works without JavaScript)\n");
-    sys->print("[BROWSER] Tip: Try google.com for Google (with gbv=1 auto-bypass)\n");
+    sys->print("[BROWSER] Default homepage: Google (with gbv=1 auto-bypass)\n");
     
     frame_buffer = (uint32_t*)sys->malloc(CONTENT_W * CONTENT_H * 4);
     if (frame_buffer) {
