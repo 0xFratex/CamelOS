@@ -258,17 +258,17 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
                 // Check sequence number
                 if (seq == conn->rcv_nxt) {
-                    // Add to receive buffer
-                    if (conn->recv_tail + data_len <= TCP_WINDOW_SIZE) {
+                    // Add to receive buffer with BOUNDS CHECK against actual buffer size
+                    if (conn->recv_tail + data_len <= sizeof(conn->recv_buffer)) {
                         memcpy(conn->recv_buffer + conn->recv_tail, data, data_len);
                         conn->recv_tail += data_len;
-                    } else {
-                        // Wrap around
-                        uint16_t first_part = TCP_WINDOW_SIZE - conn->recv_tail;
-                        memcpy(conn->recv_buffer + conn->recv_tail, data, first_part);
-                        memcpy(conn->recv_buffer, data + first_part, data_len - first_part);
-                        conn->recv_tail = data_len - first_part;
+                    } else if (conn->recv_tail < sizeof(conn->recv_buffer)) {
+                        // Partial write: fill remaining space
+                        uint32_t remaining = sizeof(conn->recv_buffer) - conn->recv_tail;
+                        memcpy(conn->recv_buffer + conn->recv_tail, data, remaining);
+                        conn->recv_tail = sizeof(conn->recv_buffer);
                     }
+                    // If buffer is completely full, data is silently dropped (window closed)
 
                     conn->rcv_nxt += data_len;
 
@@ -297,8 +297,41 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             break;
 
         case TCP_FIN_WAIT1:
-            if (flags & TCP_ACK) {
+            if (flags & TCP_FIN && flags & TCP_ACK) {
+                // Simultaneous close: received FIN+ACK
+                conn->rcv_nxt = seq + 1;
+                tcp_send(conn, TCP_ACK, NULL, 0);
+                conn->state = TCP_CLOSED;
+                if (conn->on_state_change) {
+                    conn->on_state_change(TCP_FIN_WAIT1, TCP_CLOSED);
+                }
+            } else if (flags & TCP_ACK) {
                 conn->state = TCP_FIN_WAIT2;
+            } else if (flags & TCP_FIN) {
+                // Got FIN without ACK
+                conn->rcv_nxt = seq + 1;
+                tcp_send(conn, TCP_ACK, NULL, 0);
+                conn->state = TCP_CLOSING;
+            }
+            break;
+
+        case TCP_FIN_WAIT2:
+            if (flags & TCP_FIN) {
+                conn->rcv_nxt = seq + 1;
+                tcp_send(conn, TCP_ACK, NULL, 0);
+                conn->state = TCP_CLOSED;
+                if (conn->on_state_change) {
+                    conn->on_state_change(TCP_FIN_WAIT2, TCP_CLOSED);
+                }
+            }
+            break;
+
+        case TCP_CLOSING:
+            if (flags & TCP_ACK) {
+                conn->state = TCP_CLOSED;
+                if (conn->on_state_change) {
+                    conn->on_state_change(TCP_CLOSING, TCP_CLOSED);
+                }
             }
             break;
 
@@ -322,16 +355,15 @@ int tcp_send_data(tcp_connection_t* conn, uint8_t* data, uint16_t len) {
         return -1;
     }
 
-    // Add to send buffer
-    if (conn->send_tail + len <= TCP_WINDOW_SIZE) {
+    // Add to send buffer with bounds check against actual buffer size
+    if (conn->send_tail + len <= sizeof(conn->send_buffer)) {
         memcpy(conn->send_buffer + conn->send_tail, data, len);
         conn->send_tail += len;
-    } else {
-        // Wrap around
-        uint16_t first_part = TCP_WINDOW_SIZE - conn->send_tail;
-        memcpy(conn->send_buffer + conn->send_tail, data, first_part);
-        memcpy(conn->send_buffer, data + first_part, len - first_part);
-        conn->send_tail = len - first_part;
+    } else if (conn->send_tail < sizeof(conn->send_buffer)) {
+        // Partial write
+        uint32_t remaining = sizeof(conn->send_buffer) - conn->send_tail;
+        memcpy(conn->send_buffer + conn->send_tail, data, remaining);
+        conn->send_tail = sizeof(conn->send_buffer);
     }
 
     // Send data (in chunks of MSS)

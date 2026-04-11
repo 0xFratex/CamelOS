@@ -51,13 +51,13 @@ typedef struct tcp_connection {
     uint32_t snd_una;
     uint32_t rcv_nxt;
 
-    // Buffers
-    uint8_t send_buffer[4096];
-    uint8_t recv_buffer[4096];
-    uint16_t send_head;
-    uint16_t send_tail;
-    uint16_t recv_head;
-    uint16_t recv_tail;
+    // Buffers - MUST match TCP_WINDOW_SIZE (16384) to prevent overflow
+    uint8_t send_buffer[16384];
+    uint8_t recv_buffer[16384];
+    uint32_t send_head;
+    uint32_t send_tail;
+    uint32_t recv_head;
+    uint32_t recv_tail;
 
     // Timers
     uint32_t last_ack_time;

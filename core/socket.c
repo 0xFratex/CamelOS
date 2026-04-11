@@ -348,9 +348,26 @@ int k_close(int fd) {
     socket_t* sock = socket_get(fd);
     if (!sock) return -1;
 
-    // For TCP, send FIN
+    // For TCP, properly close the connection
     if (sock->type == SOCK_STREAM && sock->tcp_conn) {
-        // TODO: Send TCP FIN
+        tcp_connection_t* conn = sock->tcp_conn;
+
+        // Clear callbacks FIRST to prevent use-after-free
+        conn->on_data = NULL;
+        conn->on_state_change = NULL;
+        conn->callback_user_data = NULL;
+
+        // Send FIN if connection is established
+        if (conn->state == TCP_ESTABLISHED) {
+            tcp_send(conn, TCP_FIN | TCP_ACK, NULL, 0);
+            conn->state = TCP_FIN_WAIT1;
+        } else if (conn->state == TCP_CLOSE_WAIT) {
+            tcp_send(conn, TCP_FIN | TCP_ACK, NULL, 0);
+            conn->state = TCP_LAST_ACK;
+        } else {
+            // For any other state, just mark closed immediately
+            conn->state = TCP_CLOSED;
+        }
     }
 
     // Free buffers

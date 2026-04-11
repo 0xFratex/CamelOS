@@ -729,7 +729,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     k_close(sockfd);
 
         // Handle redirects (301, 302, 303, 307, 308)
-    if (0 && (status_code == 301 || status_code == 302 || status_code == 303 ||
+    if ((status_code == 301 || status_code == 302 || status_code == 303 ||
           status_code == 307 || status_code == 308) && redirect_url[0]) {
 
         // Prevent redirect loops: if we fell back to HTTP, don't redirect back to HTTPS
@@ -770,6 +770,8 @@ static int http_get_internal(const char* url, char* response, int response_size,
 
         
         kfree(headers_buffer);
+        headers_buffer = NULL;  // Prevent double-free on next iteration
+        // Note: buffer is kept alive for the next iteration since it's reused
         // Follow redirect iteratively
         s_printf("[REDIR] processing\n");
         strncpy(current_url, redirect_url, sizeof(current_url) - 1);
