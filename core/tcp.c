@@ -93,9 +93,11 @@ uint16_t tcp_checksum(uint8_t* packet, uint16_t len, uint32_t src_ip, uint32_t d
     return (uint16_t)~sum;
 }
 
-// Send TCP packet - OPTIMIZED
+// Send TCP packet - OPTIMIZED with static buffer to prevent stack overflow
+// CRITICAL: tcp_send can be called from deep call chains (e.g., interrupt → tcp_handle_packet → tcp_send)
+// Using a 1500-byte stack buffer was causing stack overflow with 16KB kernel stack
 int tcp_send(tcp_connection_t* conn, uint8_t flags, uint8_t* data, uint16_t len) {
-    uint8_t packet[1500];
+    static uint8_t packet[1500];  // Static to avoid stack overflow in deep call chains
     tcp_header_t* tcp = (tcp_header_t*)packet;
 
     memset(tcp, 0, sizeof(tcp_header_t));

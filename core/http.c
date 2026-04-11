@@ -341,20 +341,40 @@ static int http_decode_chunked_in_place(char* buffer, int len) {
 static int http_get_internal(const char* url, char* response, int response_size,
                               const char** headers, int header_count, int redirect_count,
                               http_progress_cb progress_cb, void* user_data) {
-    char current_url[HTTP_MAX_URL_LEN * 2];
-    strncpy(current_url, url, sizeof(current_url) - 1);
-    current_url[sizeof(current_url) - 1] = '\0';
+    // CRITICAL: Moved large arrays from stack to heap to prevent stack overflow
+    // Kernel stack is only 16KB, and these arrays totaled ~7KB + deep call chain = crash
+    char* current_url = (char*)kmalloc(HTTP_MAX_URL_LEN * 2);
+    if (!current_url) {
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
+        return -1;
+    }
+    strncpy(current_url, url, HTTP_MAX_URL_LEN * 2 - 1);
+    current_url[HTTP_MAX_URL_LEN * 2 - 1] = '\0';
     int cur_redirect = redirect_count;
     int tried_http_fallback = 0;  // Track if we fell back from HTTPS to HTTP
 
     char* buffer = NULL;
     char* headers_buffer = NULL;
+    // Heap-allocate host and path to save ~2KB of stack per iteration
+    char* host = (char*)kmalloc(HTTP_MAX_URL_LEN);
+    char* path = (char*)kmalloc(HTTP_MAX_URL_LEN);
+    char* redirect_url = (char*)kmalloc(HTTP_MAX_URL_LEN);
+    if (!host || !path || !redirect_url) {
+        if (current_url) kfree(current_url);
+        if (host) kfree(host);
+        if (path) kfree(path);
+        if (redirect_url) kfree(redirect_url);
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
+        return -1;
+    }
+    memset(redirect_url, 0, HTTP_MAX_URL_LEN);
+
     int total_received = 0;
 
     while (cur_redirect <= HTTP_MAX_REDIRECTS) {
     {
-        char host[HTTP_MAX_URL_LEN];
-        char path[HTTP_MAX_URL_LEN];
         uint16_t port;
         int is_https;
 
@@ -362,6 +382,9 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if (cur_redirect > HTTP_MAX_REDIRECTS) {
         http_loading_state.phase = HTTP_PHASE_ERROR;
         strcpy(http_loading_state.status_text, "Too many redirects");
+        kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
+        if (buffer) kfree(buffer);
+        if (headers_buffer) kfree(headers_buffer);
         return -1;
     }
 
@@ -378,6 +401,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if (is_https < 0) {
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
+        kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
         return -1;
     }
 
@@ -391,6 +415,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
         strcpy(http_loading_state.status_text, "DNS lookup failed");
+        kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
         return -1;
     }
 
@@ -401,6 +426,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
             http_loading_state.is_loading = 0;
             http_loading_state.phase = HTTP_PHASE_ERROR;
             strcpy(http_loading_state.status_text, "Blocked by firewall");
+            kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
             return -1;
         }
     }
@@ -413,6 +439,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if (sockfd < 0) {
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
+        kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
         return -1;
     }
 
@@ -428,6 +455,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
         strcpy(http_loading_state.status_text, "Connection failed");
+        kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
         return -1;
     }
 
@@ -443,6 +471,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
             k_close(sockfd);
             http_loading_state.is_loading = 0;
             http_loading_state.phase = HTTP_PHASE_ERROR;
+            kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
             return -1;
         }
         
@@ -466,6 +495,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
             if (sockfd < 0) {
                 http_loading_state.is_loading = 0;
                 http_loading_state.phase = HTTP_PHASE_ERROR;
+                kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
                 return -1;
             }
 
@@ -474,6 +504,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
                 k_close(sockfd);
                 http_loading_state.is_loading = 0;
                 http_loading_state.phase = HTTP_PHASE_ERROR;
+                kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
                 return -1;
             }
 
@@ -537,6 +568,9 @@ static int http_get_internal(const char* url, char* response, int response_size,
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
         strcpy(http_loading_state.status_text, "Failed to send request");
+        kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
+        if (buffer) kfree(buffer);
+        if (headers_buffer) kfree(headers_buffer);
         return -1;
     }
     kfree(request);
@@ -546,8 +580,9 @@ static int http_get_internal(const char* url, char* response, int response_size,
     int in_body = 0;
     int status_code = 0;
     int is_chunked = 0;
-    char redirect_url[HTTP_MAX_URL_LEN];
-    memset(redirect_url, 0, sizeof(redirect_url));
+    // redirect_url is already heap-allocated at function start
+    // Clear it for this request iteration
+    memset(redirect_url, 0, HTTP_MAX_URL_LEN);
     char* response_ptr = response;
     
     if (!headers_buffer) {
@@ -555,6 +590,8 @@ static int http_get_internal(const char* url, char* response, int response_size,
         if (!headers_buffer) {
             if (tls_session) tls_destroy_session(tls_session);
             if (sockfd >= 0) k_close(sockfd);
+            kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
+            if (buffer) kfree(buffer);
             return -1;
         }
     }
@@ -571,6 +608,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
             headers_buffer = NULL;
             if (tls_session) tls_destroy_session(tls_session);
             k_close(sockfd);
+            kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
             return -1;
         }
     }
@@ -738,35 +776,47 @@ static int http_get_internal(const char* url, char* response, int response_size,
             http_loading_state.is_loading = 0;
             http_loading_state.phase = HTTP_PHASE_COMPLETE;
             strcpy(http_loading_state.status_text, "Redirect to HTTPS skipped");
+            kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
             if (buffer) kfree(buffer);
             if (headers_buffer) kfree(headers_buffer);
             return total_received;
         }
 
         // Handle relative URLs explicitly
-        char absolute_url[HTTP_MAX_URL_LEN * 2]; // Increased size to prevent stack overflow
+        // CRITICAL: Use heap for absolute_url to prevent stack overflow
+        char* absolute_url = (char*)kmalloc(HTTP_MAX_URL_LEN * 2);
+        if (!absolute_url) {
+            // Can't resolve redirect - just return what we have
+            http_loading_state.is_loading = 0;
+            http_loading_state.phase = HTTP_PHASE_COMPLETE;
+            kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
+            if (buffer) kfree(buffer);
+            if (headers_buffer) kfree(headers_buffer);
+            return total_received;
+        }
         
         // Protocol-relative URL (e.g. //www.google.com/)
         if (redirect_url[0] == '/' && redirect_url[1] == '/') {
-            snprintf(absolute_url, sizeof(absolute_url), "%s:%s", 
+            snprintf(absolute_url, HTTP_MAX_URL_LEN * 2, "%s:%s", 
                     is_https ? "https" : "http", redirect_url);
             strncpy(redirect_url, absolute_url, HTTP_MAX_URL_LEN - 1);
             redirect_url[HTTP_MAX_URL_LEN - 1] = '\0';
         } 
         // Root-relative URL (e.g. /search?q=test)
         else if (redirect_url[0] == '/') {
-            snprintf(absolute_url, sizeof(absolute_url), "%s://%s%s", 
+            snprintf(absolute_url, HTTP_MAX_URL_LEN * 2, "%s://%s%s", 
                     is_https ? "https" : "http", host, redirect_url);
             strncpy(redirect_url, absolute_url, HTTP_MAX_URL_LEN - 1);
             redirect_url[HTTP_MAX_URL_LEN - 1] = '\0';
         } 
         // Relative URL missing root path (e.g. "search?q=test")
         else if (strstr(redirect_url, "://") == NULL) {
-            snprintf(absolute_url, sizeof(absolute_url), "%s://%s/%s",
+            snprintf(absolute_url, HTTP_MAX_URL_LEN * 2, "%s://%s/%s",
                     is_https ? "https" : "http", host, redirect_url);
             strncpy(redirect_url, absolute_url, HTTP_MAX_URL_LEN - 1);
             redirect_url[HTTP_MAX_URL_LEN - 1] = '\0';
         }
+        kfree(absolute_url);
 
         
         kfree(headers_buffer);
@@ -774,18 +824,19 @@ static int http_get_internal(const char* url, char* response, int response_size,
         // Note: buffer is kept alive for the next iteration since it's reused
         // Follow redirect iteratively
         s_printf("[REDIR] processing\n");
-        strncpy(current_url, redirect_url, sizeof(current_url) - 1);
-        current_url[sizeof(current_url) - 1] = '\0';
+        strncpy(current_url, redirect_url, HTTP_MAX_URL_LEN * 2 - 1);
+        current_url[HTTP_MAX_URL_LEN * 2 - 1] = '\0';
         cur_redirect++;
         continue;
     }
     } // end while
 
-    // Mark complete
+    // Mark complete and free heap-allocated URL buffers
     http_loading_state.is_loading = 0;
     http_loading_state.phase = HTTP_PHASE_COMPLETE;
     strcpy(http_loading_state.status_text, "Done");
 
+    kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
     if (buffer) kfree(buffer);
     if (headers_buffer) kfree(headers_buffer);
     return total_received;
