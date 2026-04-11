@@ -17,6 +17,7 @@
 #include "../fs/disk.h"
 #include "../core/memory.h"
 #include "../hal/cpu/paging.h"
+#include "../hal/cpu/syscall.h"
 #include "../core/net.h"
 #include "../core/dns.h"
 #include "../core/net_if.h"
@@ -40,6 +41,7 @@ void transition_to_gui() {
 void kernel_init_hal() {
     init_gdt();
     init_idt();
+    init_syscall();   // Install syscall handler at int 0x80
     init_keyboard();
     init_serial();
     

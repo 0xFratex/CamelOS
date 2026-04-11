@@ -115,7 +115,7 @@ void rtl8169_init(pci_device_t* dev) {
     pci_enable_bus_master(dev);
     io_base = dev->bar[0] & ~3;
 
-    ioapic_set_gsi_redirect(45, 0x80, 0, 0, 0); 
+    ioapic_set_gsi_redirect(45, 0x81, 0, 0, 0); // Vector 0x81 (moved from 0x80 for syscalls)
 
     outb(io_base + R8169_CMD, 0x10);
     for(volatile int i=0; i<100000; i++) {
@@ -164,7 +164,7 @@ void rtl8169_init(pci_device_t* dev) {
     rtl_if.is_up = 1;
 
     net_register_interface(&rtl_if);
-    s_printf("[R8169] Driver Loaded. IRQ 45 -> Vec 0x80.\n");
+    s_printf("[R8169] Driver Loaded. IRQ 45 -> Vec 0x81.\n");
     
     net_dhcp_discover();
 }

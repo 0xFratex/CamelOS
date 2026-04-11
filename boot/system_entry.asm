@@ -189,12 +189,57 @@ IRQ 14, 46
 IRQ 15, 47
 
 ; Add at the end of ISR stubs
-; ISR 0x80 for RTL8169
-global isr128
-isr128:
+; ISR 0x81 for RTL8169 (moved from 0x80, which is now used for syscalls)
+global isr129
+isr129:
     push byte 0
-    push byte 128
+    push byte 129
     jmp isr_common_stub
+
+; --- Syscall Handler (int 0x80) ---
+; Custom syscall entry point that preserves user registers properly
+; Syscall convention:
+;   EAX = syscall number
+;   EBX = arg1, ECX = arg2, EDX = arg3, ESI = arg4, EDI = arg5
+;   Return: EAX = result
+global syscall_entry
+syscall_entry:
+    ; Save all registers
+    pusha           ; Saves eax,ecx,edx,ebx,old_esp,ebp,esi,edi
+    push ds
+    push es
+    push fs
+    push gs
+    
+    ; Load kernel data segment
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    
+    ; Push pointer to saved register state (first arg to C handler)
+    push esp
+    
+    ; Call C syscall handler
+    extern syscall_handler
+    call syscall_handler
+    
+    ; Restore the result into the saved eax slot on stack
+    ; After pusha, the stack layout is: edi,esi,ebp,esp,ebx,edx,ecx,eax
+    ; We need to write EAX result into the saved eax position
+    ; esp+20 = saved eax (after pusha + 4 segs + arg)
+    ; Actually: pusha(32) + ds,es,fs,gs(16) + push esp(4) = 52 bytes above
+    ; saved_regs.eax is at esp+52-4+28 = let's just use the stack directly
+    ; After call returns, add esp,4 to remove the arg
+    add esp, 4      ; Remove the pushed esp argument
+    
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    popa            ; Restores all regs including EAX with return value
+    iret
 
 section .data
 global isr_stub_table

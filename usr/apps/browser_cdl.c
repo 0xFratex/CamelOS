@@ -14,22 +14,10 @@ typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 
-// --- Soft-float stubs for Elk JS Engine ---
-double __floatunsidf(unsigned int i) { return (double)((int)i); }
-double __adddf3(double a, double b) { return a; }
-double __subdf3(double a, double b) { return a; }
-double __muldf3(double a, double b) { return a; }
-double __divdf3(double a, double b) { return a; }
-int __ltdf2(double a, double b) { return 0; }
-int __gedf2(double a, double b) { return 0; }
-int __gtdf2(double a, double b) { return 0; }
-int __ledf2(double a, double b) { return 0; }
-int __eqdf2(double a, double b) { return 0; }
-int __nedf2(double a, double b) { return 0; }
-int __unorddf2(double a, double b) { return 0; }
-int __fixdfsi(double a) { return 0; }
-unsigned int __fixunsdfsi(double a) { return 0; }
-double __floatsidf(int a) { return 0; }
+// --- Proper Soft-float implementation for Elk JS Engine ---
+// Replaces the broken stubs that returned wrong values
+// These are now implemented in softfloat.h with real IEEE 754 arithmetic
+#include "../lib/softfloat.h"
 
 // ============================================================================
 // CONFIGURATION
@@ -103,7 +91,7 @@ static char mouse_new_url[MAX_URL];
 
 // JavaScript Engine State
 static struct js *js_vm = 0;
-static uint8_t js_mem[32768];
+static uint8_t js_mem[65536];  // 64KB for JS heap (was 32KB)
 
 static jsval_t js_alert(struct js *js, jsval_t *args, int nargs) {
     if (nargs > 0) {
@@ -116,6 +104,44 @@ static jsval_t js_alert(struct js *js, jsval_t *args, int nargs) {
         }
     }
     return js_mkundef();
+}
+
+// console.log implementation
+static jsval_t js_console_log(struct js *js, jsval_t *args, int nargs) {
+    for (int i = 0; i < nargs; i++) {
+        size_t len;
+        char *str = js_getstr(js, args[i], &len);
+        if (str) {
+            sys->print(str);
+            if (i < nargs - 1) sys->print(" ");
+        }
+    }
+    sys->print("\n");
+    return js_mkundef();
+}
+
+// document.write implementation - appends text to the DOM
+static jsval_t js_document_write(struct js *js, jsval_t *args, int nargs) {
+    for (int i = 0; i < nargs; i++) {
+        size_t len;
+        char *str = js_getstr(js, args[i], &len);
+        if (str && node_count < MAX_NODES) {
+            dom_node_t* n = &nodes[node_count++];
+            sys->memset(n, 0, sizeof(dom_node_t));
+            n->type = 0;
+            sys->strncpy(n->text, str, 127);
+            sys->strcpy(n->tag, "text");
+            n->color = 0xFF000000;
+            n->font_size = 16;
+        }
+    }
+    return js_mkundef();
+}
+
+// document.getElementById stub - returns a simple object
+static jsval_t js_document_getById(struct js *js, jsval_t *args, int nargs) {
+    // Return null for now - full DOM support would need element tracking
+    return js_mknull();
 }
 
 typedef struct dom_node {
@@ -221,8 +247,15 @@ static void parse_html(const char* html) {
         if(html[i] == '<') {
             if(text_len > 0) {
                 if (in_script) {
-                    // Temporarily disable JS eval due to broken soft-float stubs
-                    // if (js_vm && text_len < 4096) js_eval(js_vm, parse_text_buffer, text_len);
+                    // Execute JavaScript from <script> tags
+                    if (js_vm && text_len > 0 && text_len < 8192) {
+                        sys->print("[JS] Evaluating script (");
+                        char num_buf[16];
+                        sys->itoa(text_len, num_buf);
+                        sys->print(num_buf);
+                        sys->print(" bytes)\n");
+                        js_eval(js_vm, parse_text_buffer, text_len);
+                    }
                 } else if (in_title) {
                     sys->strncpy(tabs[active_tab].title, parse_text_buffer, MAX_TITLE-1);
                 } else if (!in_hidden) {
@@ -919,6 +952,22 @@ cdl_exports_t* cdl_main(kernel_api_t* api) {
     js_vm = js_create(js_mem, sizeof(js_mem));
     if (js_vm) {
         js_set(js_vm, js_glob(js_vm), "alert", js_mkfun(js_alert));
+        
+        // Create console object with log method
+        jsval_t console_obj = js_mkobj(js_vm);
+        js_set(js_vm, console_obj, "log", js_mkfun(js_console_log));
+        js_set(js_vm, console_obj, "error", js_mkfun(js_console_log));
+        js_set(js_vm, console_obj, "warn", js_mkfun(js_console_log));
+        js_set(js_vm, console_obj, "info", js_mkfun(js_console_log));
+        js_set(js_vm, js_glob(js_vm), "console", console_obj);
+        
+        // Create document object
+        jsval_t doc_obj = js_mkobj(js_vm);
+        js_set(js_vm, doc_obj, "write", js_mkfun(js_document_write));
+        js_set(js_vm, doc_obj, "getElementById", js_mkfun(js_document_getById));
+        js_set(js_vm, js_glob(js_vm), "document", doc_obj);
+        
+        sys->print("[JS] Engine initialized with console and document APIs\n");
     }
     
     return &exports;

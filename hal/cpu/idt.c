@@ -65,8 +65,9 @@ void init_idt() {
         idt_set_gate(32 + i, irq_stub_table[i], 0x08, 0x8E);
     }
 
-    // Register Network Interrupt (Vector 0x80 / 128)
-    idt_set_gate(0x80, (uint32_t)isr128, 0x08, 0x8E);
+    // NOTE: Vector 0x80 is now reserved for syscalls (installed by init_syscall())
+    // Vector 0x81 is used for the RTL8169 NIC interrupt (installed by init_syscall())
+    // Do NOT install anything at 0x80 here!
 
     // 5. Load IDT
     asm volatile ("lidt %0" : : "m" (idtp));

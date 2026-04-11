@@ -54,11 +54,9 @@ void isr_handler(registers_t r) {
         return;
     }
 
-    // Network Interrupt
-    if (r.int_no == 128) { // 0x80
+    // Network Interrupt (moved from 0x80 to 0x81 to make room for syscalls)
+    if (r.int_no == 129) { // 0x81
         rtl8169_handler();
-        // EOI handled inside driver or here depending on APIC logic
-        // apic_send_eoi() is safer here if shared, but specific driver does it.
         return;
     }
 
