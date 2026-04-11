@@ -2,6 +2,7 @@
 #include "../hal/video/gfx_hal.h"
 #include "../hal/drivers/vga.h"
 #include "../hal/drivers/ata.h"
+#include "../fs/disk.h"
 #include "../core/string.h"
 #include "../hal/drivers/keyboard.h"
 #include "../common/font.h"
@@ -107,7 +108,12 @@ int sys_clipboard_get(char* buf, int max_len) {
 int sys_fs_mount() {
     ata_identify_device(0);
     if (!ide_devices[0].present) return -1;
-    return pfs32_init(16384, ide_devices[0].sectors - 16384);
+
+    uint8_t mbr[512];
+    if (disk_read_block(0, mbr) != 0) return -1;
+
+    uint32_t part_lba = *(uint32_t*)(mbr + 0x1BE + 8); // first partition start
+    return pfs32_init(part_lba, disk_total_blocks - part_lba);
 }
 
 int sys_fs_write(const char* filename, char* data, int size) {

@@ -3,7 +3,7 @@
 
 #include "css_parser_v2.h"
 #include "../../core/string.h"
-#include <stdlib.h>
+#include "../../core/memory.c"  // For kmalloc, kfree, krealloc, memset
 
 // ============================================================================
 // PARSER INITIALIZATION
@@ -86,7 +86,7 @@ static css_value_t* parse_string(css_parser_t* parser);
 static css_value_t* parse_function(css_parser_t* parser);
 
 static css_value_t* alloc_value(void) {
-    css_value_t* val = (css_value_t*)malloc(sizeof(css_value_t));
+    css_value_t* val = (css_value_t*)kmalloc(sizeof(css_value_t));
     if (val) memset(val, 0, sizeof(css_value_t));
     return val;
 }
@@ -256,11 +256,12 @@ static css_value_t* parse_function(css_parser_t* parser) {
     // Parse arguments
     skip_whitespace(parser);
     int arg_count = 0;
+    css_value_t* args[16] = {0}; // Temporary storage for args
     
     while (peek_char(parser) != ')' && peek_char(parser) != '\0') {
         css_value_t* arg = parse_value(parser);
-        if (arg) {
-            val->data.function.args[arg_count++] = arg;
+        if (arg && arg_count < 16) {
+            args[arg_count++] = arg;
         }
         skip_whitespace(parser);
         if (peek_char(parser) == ',') {
@@ -269,6 +270,14 @@ static css_value_t* parse_function(css_parser_t* parser) {
         }
     }
     
+    // Allocate memory for args
+    val->data.function.args = (css_value_t*)kmalloc(sizeof(css_value_t) * arg_count);
+    if (val->data.function.args) {
+        for (int j = 0; j < arg_count; j++) {
+            val->data.function.args[j] = *args[j]; // Copy the value
+            kfree(args[j]); // Free the temporary parse_value allocation
+        }
+    }
     val->data.function.arg_count = arg_count;
     
     if (peek_char(parser) == ')') {
@@ -665,7 +674,7 @@ static void parse_property(css_parser_t* parser, css_computed_style_t* style) {
 static int parse_selector(css_parser_t* parser, css_selector_t* selector) {
     memset(selector, 0, sizeof(css_selector_t));
     
-    css_selector_part_t* parts = (css_selector_part_t*)malloc(sizeof(css_selector_part_t) * 8);
+    css_selector_part_t* parts = (css_selector_part_t*)kmalloc(sizeof(css_selector_part_t) * 8);
     if (!parts) return 0;
     
     selector->parts = parts;
@@ -791,7 +800,7 @@ static int parse_rule(css_parser_t* parser, css_rule_t* rule) {
     memset(rule, 0, sizeof(css_rule_t));
     
     // Parse selectors
-    css_selector_t* selectors = (css_selector_t*)malloc(sizeof(css_selector_t) * 8);
+    css_selector_t* selectors = (css_selector_t*)kmalloc(sizeof(css_selector_t) * 8);
     if (!selectors) return 0;
     
     rule->selectors = selectors;
@@ -939,20 +948,20 @@ int css_parse_stylesheet(css_parser_t* parser) {
         }
         
         // Parse rule
-        css_rule_t* rule = (css_rule_t*)malloc(sizeof(css_rule_t));
+        css_rule_t* rule = (css_rule_t*)kmalloc(sizeof(css_rule_t));
         if (!rule) break;
         
         if (parse_rule(parser, rule)) {
             // Add rule to stylesheet
             if (parser->stylesheet.rule_count < CSS_MAX_RULES) {
-                parser->stylesheet.rules = (css_rule_t*)realloc(
+                parser->stylesheet.rules = (css_rule_t*)krealloc(
                     parser->stylesheet.rules,
                     sizeof(css_rule_t) * (parser->stylesheet.rule_count + 1)
                 );
                 parser->stylesheet.rules[parser->stylesheet.rule_count++] = *rule;
             }
         } else {
-            free(rule);
+            kfree(rule);
         }
     }
     
@@ -1194,18 +1203,18 @@ void css_layout_flexbox(css_layout_node_t* container, double available_width, do
         child = child->next_sibling;
     }
     
-    // Calculate free space
-    double free_space = main_size - used_main_size - style->flex.gap * (item_count - 1);
+    // Calculate kfree space
+    double kfree_space = main_size - used_main_size - style->flex.gap * (item_count - 1);
     
-    // Distribute free space
-    if (free_space > 0 && total_flex_grow > 0) {
+    // Distribute kfree space
+    if (kfree_space > 0 && total_flex_grow > 0) {
         child = container->children;
         while (child) {
             if (child->style && child->style->display != CSS_DISPLAY_NONE) {
                 double grow = child->style->flex.grow;
                 if (grow > 0) {
                     child->flexed_main_size = child->flex_base_size + 
-                                              (free_space * grow / total_flex_grow);
+                                              (kfree_space * grow / total_flex_grow);
                     child->main_size = child->flexed_main_size;
                 }
             }
@@ -1225,20 +1234,20 @@ void css_layout_flexbox(css_layout_node_t* container, double available_width, do
         case CSS_JUSTIFY_FLEX_START:
             break;
         case CSS_JUSTIFY_FLEX_END:
-            start_offset = free_space;
+            start_offset = kfree_space;
             break;
         case CSS_JUSTIFY_CENTER:
-            start_offset = free_space / 2;
+            start_offset = kfree_space / 2;
             break;
         case CSS_JUSTIFY_SPACE_BETWEEN:
-            if (item_count > 1) spacing = free_space / (item_count - 1);
+            if (item_count > 1) spacing = kfree_space / (item_count - 1);
             break;
         case CSS_JUSTIFY_SPACE_AROUND:
-            spacing = free_space / item_count;
+            spacing = kfree_space / item_count;
             start_offset = spacing / 2;
             break;
         case CSS_JUSTIFY_SPACE_EVENLY:
-            spacing = free_space / (item_count + 1);
+            spacing = kfree_space / (item_count + 1);
             start_offset = spacing;
             break;
     }
@@ -1401,7 +1410,7 @@ double css_compute_length(css_value_t* value, css_computed_style_t* parent_style
     }
 }
 
-void css_stylesheet_free(css_stylesheet_t* stylesheet) {
+void css_stylesheet_kfree(css_stylesheet_t* stylesheet) {
     if (!stylesheet) return;
     
     if (stylesheet->rules) {
@@ -1410,16 +1419,16 @@ void css_stylesheet_free(css_stylesheet_t* stylesheet) {
             if (rule->selectors) {
                 for (int j = 0; j < rule->selector_count; j++) {
                     if (rule->selectors[j].parts) {
-                        free(rule->selectors[j].parts);
+                        kfree(rule->selectors[j].parts);
                     }
                 }
-                free(rule->selectors);
+                kfree(rule->selectors);
             }
         }
-        free(stylesheet->rules);
+        kfree(stylesheet->rules);
     }
     
-    if (stylesheet->media_queries) free(stylesheet->media_queries);
-    if (stylesheet->keyframes) free(stylesheet->keyframes);
-    if (stylesheet->fonts) free(stylesheet->fonts);
+    if (stylesheet->media_queries) kfree(stylesheet->media_queries);
+    if (stylesheet->keyframes) kfree(stylesheet->keyframes);
+    if (stylesheet->fonts) kfree(stylesheet->fonts);
 }

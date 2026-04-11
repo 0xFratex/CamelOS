@@ -75,10 +75,24 @@ static socket_t* socket_alloc() {
             sockets[i].timeout = SOCKET_TIMEOUT;
 
             // Allocate default buffers
-            sockets[i].recv_buffer_size = 8192;
-            sockets[i].recv_buffer = (uint8_t*)kmalloc(8192);
-            sockets[i].send_buffer_size = 8192;
-            sockets[i].send_buffer = (uint8_t*)kmalloc(8192);
+            sockets[i].recv_buffer_size = 32768 + 16;
+            sockets[i].recv_buffer = (uint8_t*)kmalloc(32768 + 16);
+            sockets[i].send_buffer_size = 32768 + 16;
+            sockets[i].send_buffer = (uint8_t*)kmalloc(32768 + 16);
+
+            // Check for allocation failure
+            if (!sockets[i].recv_buffer || !sockets[i].send_buffer) {
+                s_printf("[MEM] socket_alloc FAILED free=");
+                char buf[32];
+                int_to_str(k_get_free_mem(), buf);
+                s_printf(buf);
+                s_printf("\n");
+                // Free what was allocated
+                if (sockets[i].recv_buffer) kfree(sockets[i].recv_buffer);
+                if (sockets[i].send_buffer) kfree(sockets[i].send_buffer);
+                sockets[i].fd = 0; // Mark as free
+                return NULL;
+            }
 
             return &sockets[i];
         }

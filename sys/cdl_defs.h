@@ -85,10 +85,13 @@ typedef struct {
     int (*close)(int fd);
     int (*net_get_interface_info)(char* name, char* out_ip, char* out_mac);
     int (*dns_resolve)(const char* hostname, char* ip_out, int max_len);
-    int (*http_get)(const char* url, char* response, int response_size);
+    int (*http_get)(const char* url, char* response, int response_size, const char** headers, int header_count);
     
     // 7. Event Processing (for async operations)
     void (*process_events)(void);  // Process window events during long operations
+    
+    // 8. Custom Additions
+    void (*draw_pixels)(int x, int y, int w, int h, const uint32_t* data);
 
 } kernel_api_t;
 

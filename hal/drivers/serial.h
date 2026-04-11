@@ -1,7 +1,7 @@
 #ifndef SERIAL_H
 #define SERIAL_H
 
-#include "../common/ports.h"
+#include "ports.h"
 
 int init_serial();
 int is_transmit_empty();

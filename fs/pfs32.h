@@ -105,4 +105,11 @@ int get_dir_block(const char* path, uint32_t* block);
 // Helpers
 uint32_t pfs32_time_now(void);
 
+// File Handle Operations
+int pfs32_open(const char* path, int flags);
+void pfs32_close(int handle);
+int pfs32_seek(int handle, uint32_t offset);
+int pfs32_read_handle(int handle, void* buffer, uint32_t len);
+int pfs32_write_handle(int handle, const void* buffer, uint32_t len);
+
 #endif

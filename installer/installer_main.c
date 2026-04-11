@@ -1515,7 +1515,11 @@ void install_tick() {
             add_log("ERROR: PFS32 format failed");
             return;
         }
-        
+
+        pfs32_sync();
+        disk_flush_cache();
+        add_log("Caches flushed after formatting");
+
         install_pct = 45;
         install_step++;
         add_log("PFS32 formatting complete");
@@ -1564,6 +1568,10 @@ void install_tick() {
         }
         
         // All files installed
+        pfs32_sync();
+        disk_flush_cache();
+        add_log("Caches flushed after file installation");
+
         install_pct = 90;
         install_step++;
         install_sub_step = 0;

@@ -35,7 +35,7 @@ CDL_CFLAGS	=	-m32	-fno-stack-protector	-fno-builtin	-nostdinc	-O2	\
 #	CDL	Flags
 #	-shared	creates	a	relocatable	ELF	(like	a	DLL)
 #	-Bsymbolic	ensures	internal	function	calls	bind	locally
-CDL_LDFLAGS	=	-m	elf_i386	-shared	-Bsymbolic	--no-undefined	-e	cdl_main	-T	linker_cdl.ld
+CDL_LDFLAGS	=	-m	elf_i386	-shared	-Bsymbolic	--no-undefined	-e	cdl_main	-T	linker_cdl.ld	-L/usr/lib/gcc/x86_64-linux-gnu/13/32	-lgcc
 
 COMMON_SRC	=	common/font.c
 
@@ -243,11 +243,11 @@ textedit.cdl:	usr/apps/textedit_cdl.c	usr/lib/camel_framework.c
 	$(LD)	$(CDL_LDFLAGS)	-o	textedit.cdl	textedit.o	camel_framework.o
 
 #	Browser	App
-#	Simple	browser	with	basic	document.write	support
-browser.cdl:	usr/apps/browser_cdl.c	usr/lib/camel_framework.c
+browser.cdl:	usr/apps/browser_cdl.c	usr/lib/camel_framework.c	usr/apps/elk.c
 	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/browser_cdl.c	-o	browser.o
 	$(CC)	$(CDL_CFLAGS)	-c	usr/lib/camel_framework.c	-o	camel_framework.o
-	$(LD)	$(CDL_LDFLAGS)	-o	browser.cdl	browser.o	camel_framework.o
+	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/elk.c	-o	elk.o
+	$(LD)	$(CDL_LDFLAGS)	-o	browser.cdl	browser.o	camel_framework.o	elk.o	-lgcc
 #	Settings	App
 settings.cdl:	usr/apps/settings_cdl.c	usr/lib/camel_framework.c
 	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/settings_cdl.c	-o	settings.o

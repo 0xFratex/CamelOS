@@ -34,7 +34,7 @@ typedef struct {
     http_phase_t phase;
     int bytes_received;
     int total_bytes;
-    char status_text[64];
+    char status_text[256];
     void (*progress_callback)(int bytes, int total, void* data);
     void* user_data;
 } http_loading_state_t;

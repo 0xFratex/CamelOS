@@ -7,9 +7,21 @@
 #include "../core/task.h" // For get_current_uid()
 
 // --- Concurrency / Thread Safety (BUG-001) ---
-// Define these macros based on your OS (e.g., disable_interrupts or mutex)
-#define PFS_LOCK()   
-#define PFS_UNLOCK() 
+// Simple spinlock implementation using interrupt disable
+static volatile int pfs_lock = 0;
+
+static inline void pfs_spin_lock(void) {
+    while(__sync_lock_test_and_set(&pfs_lock, 1)) {
+        asm volatile("pause");
+    }
+}
+
+static inline void pfs_spin_unlock(void) {
+    __sync_lock_release(&pfs_lock);
+}
+
+#define PFS_LOCK()   pfs_spin_lock()
+#define PFS_UNLOCK() pfs_spin_unlock() 
 
 static pfs32_superblock_t sb;
 static uint32_t disk_start = 0;
@@ -19,6 +31,35 @@ static pfs32_stats_t stats = {0};
 // --- Helper Prototypes ---
 uint32_t get_current_gid() { return 0; } // Placeholder: Hook into task/OS
 uint32_t pfs32_time_now() { return 0; }  // Placeholder: Hook into RTC
+
+// Simple integer to string conversion
+void pfs_int_to_str(int num, char* buf) {
+    if (num == 0) {
+        buf[0] = '0';
+        buf[1] = 0;
+        return;
+    }
+    
+    int i = 0;
+    int is_neg = num < 0;
+    if (is_neg) num = -num;
+    
+    while (num > 0) {
+        buf[i++] = '0' + (num % 10);
+        num /= 10;
+    }
+    
+    if (is_neg) buf[i++] = '-';
+    buf[i] = 0;
+    
+    // Reverse string
+    int len = i;
+    for (int j = 0; j < len / 2; j++) {
+        char tmp = buf[j];
+        buf[j] = buf[len - 1 - j];
+        buf[len - 1 - j] = tmp;
+    }
+}
 
 // --- FAT CACHE (LRU Implementation PERF-004) ---
 #define FAT_CACHE_SIZE 8
@@ -294,12 +335,40 @@ int pfs32_init(uint32_t start, uint32_t total) {
     disk_start = start;
     memset(&sb, 0, sizeof(sb));
     memset(&stats, 0, sizeof(stats));
-    
+
+    s_printf("[PFS] init start=");
+    char buf[32];
+    int_to_str(start, buf);
+    s_printf(buf);
+    s_printf(" total=");
+    int_to_str(total, buf);
+    s_printf(buf);
+    s_printf("\n");
+
     int res = disk_read_block(disk_start, &sb);
+    s_printf("[PFS] read_block res=");
+    int_to_str(res, buf);
+    s_printf(buf);
+    s_printf("\n");
     if(res != 0) return PFS_ERR_IO;
-    
+
+    s_printf("[PFS] sb.magic=");
+    int_to_str(sb.magic, buf);
+    s_printf(buf);
+    s_printf(" expected=");
+    int_to_str(PFS32_MAGIC, buf);
+    s_printf(buf);
+    s_printf("\n");
+    s_printf("[PFS] sb.total_blocks=");
+    int_to_str(sb.total_blocks, buf);
+    s_printf(buf);
+    s_printf(" block_size=");
+    int_to_str(sb.block_size, buf);
+    s_printf(buf);
+    s_printf("\n");
+
     if (sb.magic != PFS32_MAGIC) return PFS_ERR_NO_FS;
-    
+
     mounted = 1;
     return PFS_OK;
 }
@@ -908,7 +977,7 @@ void get_unique_path(const char* base_path, const char* name, char* out_full_pat
         
         strcat(out_full_path, base);
         strcat(out_full_path, " ");
-        char num[8]; int_to_str(i, num);
+        char num[8]; pfs_int_to_str(i, num);
         strcat(out_full_path, num);
         strcat(out_full_path, ext);
         

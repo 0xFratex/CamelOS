@@ -74,9 +74,9 @@ void init_paging() {
     // Virtual Address == Physical Address.
     kernel_directory->physicalAddr = (uint32_t)kernel_directory->tablesPhysical;
 
-    // === FIX: Map 64MB instead of 16MB to cover the larger Kernel Heap ===
-    // 64MB = 16 Page Tables
-    for (int i = 0; i < 1024 * 16; i++) {
+    // === FIX: Map 128MB instead of 16MB to cover the larger Kernel Heap ===
+    // 128MB = 32 Page Tables
+    for (int i = 0; i < 1024 * 32; i++) {
         uint32_t phys_addr = i * 0x1000;
         uint32_t virt_addr = phys_addr; // Identity Map
 

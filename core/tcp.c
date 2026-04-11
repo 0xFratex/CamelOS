@@ -20,7 +20,7 @@ extern void printk(const char* fmt, ...);
 #define TCP_DEBUG_ERRORS      0    // Log errors (set to 0 for production)
 
 #define TCP_MAX_CONNECTIONS 32
-#define TCP_WINDOW_SIZE 4096
+#define TCP_WINDOW_SIZE 16384 // Increased to 16KB
 #define TCP_MSS 1460
 #define TCP_RETRANSMIT_TIMEOUT 1000 // ms
 

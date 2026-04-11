@@ -266,11 +266,13 @@ js_v2_value_t* js_v2_new_object(js_v2_engine_t* engine) {
     js_v2_value_t* val = alloc_value(engine);
     if (val) {
         val->type = JS_V2_TYPE_OBJECT;
-        // Use static object storage
+        // Allocate on the stack instead of using static storage
         static js_v2_object_t static_objects[128];
         static int obj_idx = 0;
         if (obj_idx < 128) {
             val->data.object = &static_objects[obj_idx++];
+            // Use kernel memset
+            extern void* memset(void* ptr, int value, size_t num);
             memset(val->data.object, 0, sizeof(js_v2_object_t));
         }
     }

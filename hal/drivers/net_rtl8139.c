@@ -10,7 +10,7 @@
 // ============================================================================
 // DEBUG CONFIGURATION - Set to 0 for production, 1 for debugging
 // ============================================================================
-#define RTL_DEBUG_INIT        0    // Log initialization
+#define RTL_DEBUG_INIT        1    // Log initialization (Enabled for debugging Panic)
 #define RTL_DEBUG_TX          0    // Log TX operations  
 #define RTL_DEBUG_RX          0    // Log RX operations
 #define RTL_DEBUG_ERRORS      1    // Always log errors
@@ -30,13 +30,13 @@
 #define RTL_REG_RCR      0x44
 #define RTL_REG_CONFIG1  0x52
 
-// Buffer size
-#define RX_BUF_SIZE (8192 + 16 + 1500)
+// Buffer size - Increased to 32KB + Wrap margin for modern web traffic
+#define RX_BUF_SIZE (32768 + 16 + 1536)
 #define TX_BUF_SIZE 2048
 
 // Performance tuning
 #define TX_TIMEOUT_CYCLES     100000
-#define RX_MAX_BATCH          32     // Max packets to process per poll
+#define RX_MAX_BATCH          64     // Increased packet throughput
 #define MAX_CONSECUTIVE_ERRORS 5      // Max bad packets before RX reset
 
 rtl8139_dev_t rtl_dev;  // Global device structure
@@ -45,9 +45,11 @@ static int rtl_initialized = 0;
 // Local MAC address storage
 static uint8_t local_mac[6];
 
+// Static buffers for TX (small)
 static uint8_t tx_buffers[4][TX_BUF_SIZE] __attribute__((aligned(4)));
-// CRITICAL: RTL8139 requires RX buffer to be 8KB aligned (lower 13 bits = 0)
-static uint8_t rx_buffer[RX_BUF_SIZE + 8192] __attribute__((aligned(8192)));
+
+// Moved RX buffer to HEAP to avoid massive static BSS alignment issues (Kernel Panic)
+static uint8_t* rx_buffer_raw = 0;
 static uint8_t* rx_buffer_aligned = 0;
 static uint16_t current_packet_ptr = 0;
 static int tx_cur = 0;
@@ -131,7 +133,7 @@ void rtl8139_receive_packets() {
     while ((inb(rtl_dev.io_base + RTL_REG_CMD) & 0x01) == 0 && 
            packets_processed < RX_MAX_BATCH) {
         
-        uint16_t offset = current_packet_ptr % 8192;
+        uint16_t offset = current_packet_ptr % 32768;
         
         // Header: [Status 16b] [Length 16b]
         // Read as 32-bit to ensure atomicity
@@ -139,27 +141,10 @@ void rtl8139_receive_packets() {
         uint16_t status = header_val & 0xFFFF;
         uint16_t length = (header_val >> 16) & 0xFFFF;
 
-        // RTL8139 receive status bits:
-        // Bit 0: ROK - Receive OK
-        // Bit 1: FAE - Frame Alignment Error
-        // Bit 2: CRC - CRC Error
-        // Bit 3: LONG - Long packet (>4KB)
-        // Bit 4: RUNT - Runt packet (<64 bytes)
-        // Bit 5: ISE - Invalid Symbol Error
-        // Bit 6: BAR - Broadcast address received
-        // Bit 7: PAM - Physical address matched
-        // Bit 8: MAR - Multicast address received
-        
         // Check for runt or error packets by status
         int is_error = (status & 0x3E);  // Check error bits (1-5)
         
-        // Sanity check - RTL8139 length includes:
-        // - Packet data (64-1514 bytes for Ethernet)
-        // - 4 bytes CRC (added by hardware)
-        // - Does NOT include the 4-byte header
-        // Valid range is 60-1522 bytes (with CRC for standard frames)
-        // Allow some tolerance: 60-1536 for VLAN and jumbo tolerance
-        if (length < 60 || length > 1536 || is_error) {
+        if (length < 60 || length > 1536 || is_error || (status & 0x01) == 0) {
 #if RTL_DEBUG_ERRORS
             s_printf("[RTL8139] RX: Bad packet, skipping\n");
 #endif
@@ -181,16 +166,14 @@ void rtl8139_receive_packets() {
                 return;
             }
             
-            // Skip this packet - try to find next valid header
-            // Advance by at least the header + minimum frame size to avoid infinite loop
-            // This is more aggressive than before
-            if (length == 0 || length > 1536) {
-                // Completely bogus length - skip just the header
-                current_packet_ptr = (current_packet_ptr + 4) % 8192;
-            } else {
-                // Length might be partially valid - skip the whole frame
-                current_packet_ptr = ((current_packet_ptr + length + 4 + 3) & ~3) % 8192;
+            // Unrecoverable bogus length?
+            if (length == 0 || length > 16384) {
+                consecutive_rx_errors = MAX_CONSECUTIVE_ERRORS; // Force reset
+                continue;
             }
+
+            // Skip this packet
+            current_packet_ptr = ((current_packet_ptr + length + 4 + 3) & ~3) % 32768;
             outw(rtl_dev.io_base + RTL_REG_CAPR, current_packet_ptr - 16);
             continue;
         }
@@ -198,51 +181,31 @@ void rtl8139_receive_packets() {
         // Reset consecutive error counter on valid packet
         consecutive_rx_errors = 0;
 
-        // Check ROK (Receive OK) - Bit 0 of status
-        if (status & 0x01) {
-            // Length includes packet + CRC
-            // Actual packet data is length - 4 (CRC is at the end)
-            uint32_t packet_len = length - 4;
+        // Packet data length (exclude 4 bytes CRC)
+        uint32_t packet_len = length - 4;
 
-            // Allocate packet buffer
-            void* packet_copy = kmalloc(packet_len);
-            if (packet_copy) {
-                // Handle Ring Buffer Wrap
-                // Packet data starts after 4-byte header
-                if (offset + 4 + packet_len > 8192) {
-                    uint32_t chunk1 = 8192 - (offset + 4);
-                    memcpy(packet_copy, rx_buffer_aligned + offset + 4, chunk1);
-                    memcpy((uint8_t*)packet_copy + chunk1, rx_buffer_aligned, packet_len - chunk1);
-                } else {
-                    memcpy(packet_copy, rx_buffer_aligned + offset + 4, packet_len);
-                }
+        // Allocate packet buffer
+        void* packet_copy = kmalloc(packet_len);
+        if (packet_copy) {
+            // Hardware wrap-around margin allows contiguous copy
+            memcpy(packet_copy, rx_buffer_aligned + (offset + 4), packet_len);
 
-                // Process packet through network stack
-                net_handle_packet((uint8_t*)packet_copy, packet_len);
-                
-                kfree(packet_copy);
-                
-                rtl_if.rx_packets++;
-                rtl_if.rx_bytes += packet_len;
-                stat_rx_packets++;
-            } else {
-#if RTL_DEBUG_ERRORS
-                s_printf("[RTL8139] RX Error: kmalloc failed\n");
-#endif
-                stat_rx_errors++;
-            }
+            // Process packet through network stack
+            net_handle_packet((uint8_t*)packet_copy, packet_len);
+            kfree(packet_copy);
+            
+            rtl_if.rx_packets++;
+            rtl_if.rx_bytes += packet_len;
+            stat_rx_packets++;
         } else {
 #if RTL_DEBUG_ERRORS
-            s_printf("[RTL8139] RX Error: Bad status (ROK=0)\n");
+            s_printf("[RTL8139] RX Error: kmalloc failed\n");
 #endif
             stat_rx_errors++;
         }
 
-        // Update read pointer - RTL8139 requires:
-        // 1. Move past this packet (offset + 4 + length)
-        // 2. Align to 4-byte boundary
-        // 3. Write CAPR as (new_offset - 16)
-        current_packet_ptr = ((current_packet_ptr + length + 4 + 3) & ~3) % 8192;
+        // Update read pointer (CAPR)
+        current_packet_ptr = ((current_packet_ptr + length + 4 + 3) & ~3) % 32768;
         outw(rtl_dev.io_base + RTL_REG_CAPR, current_packet_ptr - 16);
         
         packets_processed++;
@@ -326,35 +289,40 @@ void rtl8139_init(pci_device_t* dev) {
     // Delay after reset
     for(volatile int i = 0; i < 500000; i++) asm volatile("pause");
     
-    // 3. Init Buffers - ensure 8KB alignment
-    rx_buffer_aligned = (uint8_t*)(((uint32_t)rx_buffer + 8191) & ~8191);
+    // 3. Init Buffers - allocate from HEAP to avoid alignment issues in binary
+    // Need RX_BUF_SIZE + 32KB padding for 32KB alignment
+    rx_buffer_raw = (uint8_t*)kmalloc(RX_BUF_SIZE + 32768);
+    if (!rx_buffer_raw) {
+        s_printf("[RTL8139] FATAL: Failed to allocate RX buffer!\n");
+        return;
+    }
+    rx_buffer_aligned = (uint8_t*)(((uint32_t)rx_buffer_raw + 32767) & ~32767);
     memset(rx_buffer_aligned, 0, RX_BUF_SIZE);
     
 #if RTL_DEBUG_INIT
-    s_printf("[RTL8139] RX buffer aligned\n");
+    s_printf("[RTL8139] rx_buffer allocated and aligned to 32KB\n");
 #endif
-    
-    // Verify alignment
-    if ((uint32_t)rx_buffer_aligned & 0x1FFF) {
-#if RTL_DEBUG_ERRORS
-        s_printf("[RTL8139] ERROR: RX buffer not 8KB aligned!\n");
-#endif
-    }
     
     outl(rtl_dev.io_base + RTL_REG_RBSTART, (uint32_t)rx_buffer_aligned);
     
-    // 4. Interrupts (ROK + TOK)
-    outw(rtl_dev.io_base + RTL_REG_IMR, 0x0005); 
+    // 4. Interrupts (ROK + TOK + RXOVW)
+    outw(rtl_dev.io_base + RTL_REG_IMR, 0x0015); 
     
-    // 5. Receive Config - Accept all packets for compatibility
-    outl(rtl_dev.io_base + RTL_REG_RCR, 0x0000003F);
+    // 5. Receive Config:
+    // - Accept Physical Match, Multicast, Broadcast
+    // - Do NOT Accept Runt (AR=0) or Error Packets (AER=0)
+    // - 32KB + WRAP Mode
+    // - Max DMA burst 512 bytes
+    // - No FIFO threshold
+    // WRAP bit (7) = 1, SIZE bits (12-11) = 2 (10 binary)
+    outl(rtl_dev.io_base + RTL_REG_RCR, (6 << 13) | (2 << 11) | (1 << 7) | 0x0E);
     
     // Accept ALL multicast
     outl(rtl_dev.io_base + RTL_REG_MAR0, 0xFFFFFFFF);
     outl(rtl_dev.io_base + RTL_REG_MAR0 + 4, 0xFFFFFFFF);
     
     // 6. Transmit Configuration
-    outl(rtl_dev.io_base + RTL_REG_TCR, 0x00000700);
+    outl(rtl_dev.io_base + RTL_REG_TCR, 0x03000700); // Max DMA
     
     // 7. Configure Transmit Descriptors
     for (int i = 0; i < 4; i++) {

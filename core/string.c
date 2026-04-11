@@ -213,6 +213,12 @@ int snprintf(char* buf, size_t size, const char* fmt, ...) {
 int atoi(const char* str) {
     int result = 0;
     int sign = 1;
+    
+    // Skip whitespace
+    while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r') {
+        str++;
+    }
+    
     if (*str == '-') {
         sign = -1;
         str++;

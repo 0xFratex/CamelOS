@@ -38,6 +38,8 @@ task_t* create_task(int id, uint32_t entry_point, uint32_t stack_top);
 void create_user_task(void (*entry)(), const char* name, int uid, int is_app);
 void task_switch(void);
 void task_exit(void);
+int get_current_uid(void);
+void set_current_uid(int uid);
 
 /* External reference to current task */
 extern task_t* current_task;

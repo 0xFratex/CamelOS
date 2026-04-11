@@ -1,7 +1,7 @@
 #ifndef ATA_H
 #define ATA_H
 
-#include "../common/ports.h"
+#include "../../common/ports.h"
 #include "../../include/types.h"
 
 int ata_wait_busy(void);

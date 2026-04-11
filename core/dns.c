@@ -13,7 +13,7 @@
 #define DNS_DEBUG_ENABLED     0
 
 #define DNS_CACHE_SIZE 32     // Increased cache size
-#define DNS_TIMEOUT 300       // Reduced timeout (was 500)
+#define DNS_TIMEOUT 5000       // Increased timeout for slow networks
 
 typedef struct {
     char domain[64];
@@ -30,9 +30,9 @@ void dns_init() {
     dns_count = 0;
 }
 
-// QEMU DNS is 10.0.2.3
-// In network byte order (big endian): 10.0.2.3 = 0x0A000203
-#define QEMU_DNS_IP 0x0A000203 
+// Configurable DNS server - default to Google DNS for broader compatibility
+// Can be set via DHCP or manually
+static uint32_t dns_server_ip = 0x08080808;  // 8.8.8.8 Google DNS
 
 int dns_encode(const char* host, uint8_t* buf) {
     int len = strlen(host);
@@ -68,7 +68,7 @@ int dns_resolve(const char* domain, char* ip_out, int max_len) {
     // 2. Ensure ARP for gateway is resolved first
     extern int arp_resolve(uint32_t ip, uint8_t* mac_out);
     uint8_t gw_mac[6];
-    arp_resolve(QEMU_DNS_IP, gw_mac);  // Don't warn on failure
+    arp_resolve(dns_server_ip, gw_mac);  // Wait for ARP resolution
 
     // 3. Query
     int s = k_socket(AF_INET, SOCK_DGRAM, 0);
@@ -94,7 +94,7 @@ int dns_resolve(const char* domain, char* ip_out, int max_len) {
     sockaddr_in_t dest;
     dest.sin_family = AF_INET;
     dest.sin_port = htons(53);
-    dest.sin_addr = QEMU_DNS_IP;
+    dest.sin_addr = dns_server_ip;
     
     k_sendto(s, pkt, len, 0, &dest);
     

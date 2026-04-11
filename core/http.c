@@ -10,13 +10,14 @@
 #include "window_server.h"
 #include "../hal/video/gfx_hal.h"
 #include "../hal/video/loading_animation.h"
+#include "../hal/cpu/timer.h"
 #include "../usr/framework.h"
 
-#define HTTP_BUFFER_SIZE 8192
+#define HTTP_BUFFER_SIZE (32768 + 16)
 #define HTTP_MAX_REDIRECTS 5
 #define HTTP_TIMEOUT 5000 // 5 seconds (reduced from 10)
-#define HTTP_MAX_URL_LEN 512
-#define HTTP_MAX_HEADERS_SIZE 8192
+#define HTTP_MAX_URL_LEN 1024
+#define HTTP_MAX_HEADERS_SIZE (32768 + 16)
 
 // ============================================================================
 // DEBUG CONFIGURATION - Set to 0 for production
@@ -26,7 +27,7 @@
 // External references for event processing
 extern void rtl8139_poll(void);
 extern window_t* active_win;  // From window_server.c
-extern int atoi(const char* str);
+extern void s_printf(const char*);
 
 // TLS session for HTTPS connections
 static tls_session_t* current_tls_session = NULL;
@@ -60,20 +61,22 @@ static void draw_loading_overlay(int x, int y, int w, int h) {
     // Draw overlay
     for (int py = y; py < y + h; py++) {
         for (int px = x; px < x + w; px++) {
-            uint32_t* buf = gfx_get_active_buffer();
-            if (buf) {
-                int idx = py * 1024 + px;  // Assuming 1024 width
-                uint32_t bg = buf[idx];
-                // Alpha blend
-                uint8_t bg_r = (bg >> 16) & 0xFF;
-                uint8_t bg_g = (bg >> 8) & 0xFF;
-                uint8_t bg_b = bg & 0xFF;
-                
-                uint8_t r = (bg_r * 128 + 0xFF * 127) / 255;
-                uint8_t g = (bg_g * 128 + 0xFF * 127) / 255;
-                uint8_t b = (bg_b * 128 + 0xFF * 127) / 255;
-                
-                buf[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            if (px >= 0 && px < 1024 && py >= 0 && py < 768) {
+                uint32_t* buf = gfx_get_active_buffer();
+                if (buf) {
+                    int idx = py * 1024 + px;  // Assuming 1024 width
+                    uint32_t bg = buf[idx];
+                    // Alpha blend
+                    uint8_t bg_r = (bg >> 16) & 0xFF;
+                    uint8_t bg_g = (bg >> 8) & 0xFF;
+                    uint8_t bg_b = bg & 0xFF;
+
+                    uint8_t r = (bg_r * 128 + 0xFF * 127) / 255;
+                    uint8_t g = (bg_g * 128 + 0xFF * 127) / 255;
+                    uint8_t b = (bg_b * 128 + 0xFF * 127) / 255;
+
+                    buf[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
             }
         }
     }
@@ -118,35 +121,34 @@ static void draw_loading_overlay(int x, int y, int w, int h) {
 // Full event processing during HTTP requests - redraws window and swaps buffers
 static void http_process_events(void) {
     rtl8139_poll();  // Poll network card
-    
-    // Redraw the active window completely
-    if (active_win && active_win->paint_callback) {
-        // Draw window frame first
-        extern void compositor_draw_window(window_t* w);
-        compositor_draw_window(active_win);
-        
-        // Draw content area with loading overlay if loading
-        if (http_loading_state.is_loading) {
-            // First draw the content
-            typedef void (*pcb)(int,int,int,int);
-            ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30, 
-                                              active_win->width, active_win->height - 30);
-            
-            // Then draw loading overlay
-            draw_loading_overlay(active_win->x, active_win->y + 30, 
-                               active_win->width, active_win->height - 30);
-        } else {
-            // Just draw the content
-            typedef void (*pcb)(int,int,int,int);
-            ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30, 
-                                              active_win->width, active_win->height - 30);
-        }
-        
-        // Swap buffers to show the update
-        gfx_swap_buffers();
-    }
-    
-    for(volatile int i = 0; i < 1000; i++) asm volatile("pause");
+
+    s_printf("[EVT] processing\n");
+
+    // Temporarily disabled overlay to prevent corruption
+    // if (active_win && active_win->paint_callback) {
+    //     // Draw window frame first
+    //     extern void compositor_draw_window(window_t* w);
+    //     compositor_draw_window(active_win);
+    //
+    //     // Draw content area with loading overlay if loading
+    //     if (http_loading_state.is_loading) {
+    //         // First draw the content
+    //         typedef void (*pcb)(int,int,int,int);
+    //         ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30,
+    //                                           active_win->width, active_win->height - 30);
+    //
+    //         // Then draw loading overlay
+    //         draw_loading_overlay(active_win->x, active_win->y + 30,
+    //                             active_win->width, active_win->height - 30);
+    //     } else {
+    //         // Just draw the content
+    //         typedef void (*pcb)(int,int,int,int);
+    //         ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30,
+    //                                           active_win->width, active_win->height - 30);
+    //     }
+    // }
+
+    timer_sleep(1);
 }
 
 // Parse URL - returns 1 for HTTPS, 0 for HTTP
@@ -187,7 +189,16 @@ static int http_parse_url(const char* url, char* host, char* path, uint16_t* por
     int host_len;
     if (port_start && (!path_start || port_start < path_start)) {
         host_len = port_start - start;
-        *port = atoi(port_start + 1);
+        
+        // Robust inline port parser instead of external atoi
+        int parsed_port = 0;
+        const char* p_str = port_start + 1;
+        while (*p_str >= '0' && *p_str <= '9') {
+            parsed_port = parsed_port * 10 + (*p_str - '0');
+            p_str++;
+        }
+        *port = parsed_port;
+        
         // Validate port
         if (*port == 0) *port = is_https ? 443 : 80;
     } else if (path_start) {
@@ -242,17 +253,113 @@ void http_cancel_request(void) {
     http_loading_state.status_text[0] = 0;
 }
 
+// Robust case-insensitive header extraction helper
+static char* http_get_header(const char* headers, const char* name) {
+    if (!headers || !name) return NULL;
+    int name_len = 0;
+    while(name[name_len]) name_len++;
+    const char* p = headers;
+    int iterations = 0;
+    while (*p && iterations++ < 1000) {
+        int match = 1;
+        for (int i = 0; i < name_len; i++) {
+            if (!p[i]) { match = 0; break; }
+            char c1 = p[i];
+            char c2 = name[i];
+            if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+            if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+            if (c1 != c2) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) {
+            char* val = p + name_len;
+            if (!val) return NULL;  // Safety check
+            while (*val == ' ' || *val == '\t') val++;
+            return val;
+        }
+        // Move to next line
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+    return NULL;
+}
+
+// Helper to decode chunked transfer encoding in place
+static int http_decode_chunked_in_place(char* buffer, int len) {
+    char* src = buffer;
+    char* dst = buffer;
+    int total_len = 0;
+    
+    while (src - buffer < len) {
+        // Read chunk size (hex)
+        while (*src && (*src == '\r' || *src == '\n' || *src == ' ')) src++;
+        if (!*src || src - buffer >= len) break;
+
+        char hex[16]; int hi = 0;
+        while (*src && *src != '\r' && *src != '\n' && *src != ';' && hi < 15) {
+            hex[hi++] = *src++;
+        }
+        hex[hi] = 0;
+        
+        // Convert hex string to int
+        int chunk_size = 0;
+        for (int i = 0; hex[i]; i++) {
+            char c = hex[i];
+            int v = 0;
+            if (c >= '0' && c <= '9') v = c - '0';
+            else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+            else break;
+            chunk_size = (chunk_size << 4) | v;
+        }
+        
+        // Skip till end of chunk size line
+        while (*src && *src != '\r' && *src != '\n') src++;
+        while (*src == '\r' || *src == '\n') src++;
+        
+        if (chunk_size <= 0) break;
+        
+        // Copy data
+        int remain = len - (src - buffer);
+        if (chunk_size > remain) chunk_size = remain;
+        
+        for (int i = 0; i < chunk_size; i++) {
+            *dst++ = *src++;
+        }
+        total_len += chunk_size;
+        
+        // Skip CRLF after chunk
+        while (*src == '\r' || *src == '\n') src++;
+    }
+    *dst = 0;
+    return total_len;
+}
+
 // Internal HTTP GET with redirect tracking and loading state
 static int http_get_internal(const char* url, char* response, int response_size,
-                             const char** headers, int header_count, int redirect_count,
-                             http_progress_cb progress_cb, void* user_data) {
-    char host[HTTP_MAX_URL_LEN];
-    char path[HTTP_MAX_URL_LEN];
-    uint16_t port;
-    int is_https;
+                              const char** headers, int header_count, int redirect_count,
+                              http_progress_cb progress_cb, void* user_data) {
+    char current_url[HTTP_MAX_URL_LEN * 2];
+    strncpy(current_url, url, sizeof(current_url) - 1);
+    current_url[sizeof(current_url) - 1] = '\0';
+    int cur_redirect = redirect_count;
+    int tried_http_fallback = 0;  // Track if we fell back from HTTPS to HTTP
+
+    char* buffer = NULL;
+    char* headers_buffer = NULL;
+    int total_received = 0;
+
+    while (cur_redirect <= HTTP_MAX_REDIRECTS) {
+    {
+        char host[HTTP_MAX_URL_LEN];
+        char path[HTTP_MAX_URL_LEN];
+        uint16_t port;
+        int is_https;
 
     // Check redirect limit
-    if (redirect_count > HTTP_MAX_REDIRECTS) {
+    if (cur_redirect > HTTP_MAX_REDIRECTS) {
         http_loading_state.phase = HTTP_PHASE_ERROR;
         strcpy(http_loading_state.status_text, "Too many redirects");
         return -1;
@@ -267,7 +374,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     http_loading_state.progress_callback = progress_cb;
     http_loading_state.user_data = user_data;
 
-    is_https = http_parse_url(url, host, path, &port);
+    is_https = http_parse_url(current_url, host, path, &port);
     if (is_https < 0) {
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
@@ -341,7 +448,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
         
         tls_session->socket_fd = sockfd;
         tls_set_hostname(tls_session, host);
-        tls_set_verify(tls_session, 0);  // Skip cert verification for now
+        tls_set_verify(tls_session, 0);  // Skip strict cert verification for broader compatibility
         
         // Perform TLS handshake
         int tls_result = tls_connect(tls_session, host, port);
@@ -349,19 +456,19 @@ static int http_get_internal(const char* url, char* response, int response_size,
             // TLS failed - try fallback to HTTP on port 80
             tls_destroy_session(tls_session);
             k_close(sockfd);
-            
+
             // Fallback: try HTTP on port 80
             http_loading_state.phase = HTTP_PHASE_CONNECTING;
             strcpy(http_loading_state.status_text, "Falling back to HTTP...");
             http_process_events();
-            
+
             sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
             if (sockfd < 0) {
                 http_loading_state.is_loading = 0;
                 http_loading_state.phase = HTTP_PHASE_ERROR;
                 return -1;
             }
-            
+
             server_addr.sin_port = htons(80);
             if (k_connect(sockfd, &server_addr) < 0) {
                 k_close(sockfd);
@@ -369,36 +476,51 @@ static int http_get_internal(const char* url, char* response, int response_size,
                 http_loading_state.phase = HTTP_PHASE_ERROR;
                 return -1;
             }
-            
+
             is_https = 0;  // Continue with HTTP
             tls_session = NULL;
+            tried_http_fallback = 1;  // Mark that we fell back to HTTP
         }
         
         current_tls_session = tls_session;
     }
 
-    // Build HTTP request - use HTTP/1.1 for better compatibility
+    // Build HTTP request - use HTTP/1.1 with modern browser spoofing to bypass blocks
     http_loading_state.phase = HTTP_PHASE_SENDING_REQUEST;
     strcpy(http_loading_state.status_text, "Sending request...");
     http_process_events();
     
-    char request[1024];
-    int len = snprintf(request, sizeof(request),
-                      "GET %s HTTP/1.1\r\n"
-                      "Host: %s\r\n"
-                      "User-Agent: Mozilla/5.0 (compatible; CamelOS/1.0; +https://camelos.org)\r\n"
-                      "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
-                      "Accept-Language: en-US,en;q=0.5\r\n"
-                      "Accept-Encoding: identity\r\n"
-                      "Cache-Control: max-age=0\r\n"
-                      "Connection: close\r\n", path, host);
-
-    // Add custom headers
-    for (int i = 0; i < header_count && headers[i]; i++) {
-        len += snprintf(request + len, sizeof(request) - len, "%s\r\n", headers[i]);
+    char* request = (char*)kmalloc(2048);
+    if (!request) {
+        if (tls_session) tls_destroy_session(tls_session);
+        k_close(sockfd);
+        http_loading_state.is_loading = 0;
+        http_loading_state.phase = HTTP_PHASE_ERROR;
+        return -1;
     }
 
-    len += snprintf(request + len, sizeof(request) - len, "\r\n");
+    int len = snprintf(request, 2048,
+                  "GET %s HTTP/1.1\r\n"
+                  "Host: %s\r\n"
+                  // Updated User-Agent to avoid bot detection
+                  "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
+                  "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\n"
+                  "Accept-Language: en-US,en;q=0.9\r\n"
+                  "Accept-Encoding: identity\r\n"
+                  "Upgrade-Insecure-Requests: 1\r\n"
+                  "Sec-Fetch-Dest: document\r\n"
+                  "Sec-Fetch-Mode: navigate\r\n"
+                  "Sec-Fetch-Site: none\r\n"
+                  "Sec-Fetch-User: ?1\r\n"
+                  "Connection: close\r\n", path, host);
+
+    // Add custom headers if specified
+    for (int i = 0; i < header_count && headers[i]; i++) {
+        len += snprintf(request + len, 2048 - len, "%s\r\n", headers[i]);
+    }
+
+    len += snprintf(request + len, 2048 - len, "\r\n");
+
 
     // Send request (via TLS if HTTPS)
     int send_result;
@@ -411,36 +533,57 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if (send_result < 0) {
         if (tls_session) tls_destroy_session(tls_session);
         k_close(sockfd);
+        kfree(request);
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
         strcpy(http_loading_state.status_text, "Failed to send request");
         return -1;
     }
+    kfree(request);
 
     // Receive response with headers for redirect handling
-    int total_received = 0;
     int content_length = -1;
     int in_body = 0;
     int status_code = 0;
+    int is_chunked = 0;
     char redirect_url[HTTP_MAX_URL_LEN];
     memset(redirect_url, 0, sizeof(redirect_url));
     char* response_ptr = response;
-    // Use heap allocation to avoid stack overflow
-    char* headers_buffer = (char*)kmalloc(HTTP_MAX_HEADERS_SIZE);
+    
     if (!headers_buffer) {
-        if (sockfd >= 0) k_close(sockfd);
-        return -1;
+        headers_buffer = (char*)kmalloc(HTTP_MAX_HEADERS_SIZE);
+        if (!headers_buffer) {
+            if (tls_session) tls_destroy_session(tls_session);
+            if (sockfd >= 0) k_close(sockfd);
+            return -1;
+        }
     }
     int headers_len = 0;
 
     http_loading_state.phase = HTTP_PHASE_RECEIVING_HEADERS;
     strcpy(http_loading_state.status_text, "Receiving headers...");
-    
-    // Use larger buffer for faster reads
-    char buffer[2048];
-    
+
+    // Massive buffer for faster reads of big pages (like Google/YouTube)
+    if (!buffer) {
+        buffer = (char*)kmalloc(HTTP_BUFFER_SIZE);
+        if (!buffer) {
+            kfree(headers_buffer);
+            headers_buffer = NULL;
+            if (tls_session) tls_destroy_session(tls_session);
+            k_close(sockfd);
+            return -1;
+        }
+    }
+
+    // Timeout tracking for receive loop
+    uint32_t start_time = get_tick_count();
+
     while (total_received < response_size - 1) {
-        // Update loading state and process events
+        // Check for timeout
+        if (get_tick_count() - start_time > HTTP_TIMEOUT) {
+            strcpy(http_loading_state.status_text, "Request timed out");
+            break;
+        }
         http_loading_state.bytes_received = total_received;
         if (content_length > 0) {
             http_loading_state.total_bytes = content_length;
@@ -448,85 +591,103 @@ static int http_get_internal(const char* url, char* response, int response_size,
                      "Loading %d/%d bytes", total_received, content_length);
         }
         
-        // Process events to prevent UI freeze
         http_process_events();
         
         int received;
         if (is_https && tls_session) {
-            received = tls_read(tls_session, buffer, sizeof(buffer) - 1);
+            received = tls_read(tls_session, buffer, 32767);
         } else {
-            received = k_recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, NULL);
+            received = k_recvfrom(sockfd, buffer, 32767, 0, NULL);
         }
 
         if (received <= 0) {
             break;
         }
 
-        buffer[received] = 0;
+        if (received <= 32767) buffer[received] = 0;
 
         if (!in_body) {
-            // Store headers for redirect parsing
-            if (headers_len < (int)sizeof(headers_buffer) - 1) {
+            if (headers_len < HTTP_MAX_HEADERS_SIZE - 1) {
                 int copy_len = received;
-                if (headers_len + copy_len >= (int)sizeof(headers_buffer)) {
-                    copy_len = sizeof(headers_buffer) - headers_len - 1;
+                if (headers_len + copy_len >= HTTP_MAX_HEADERS_SIZE) {
+                    copy_len = HTTP_MAX_HEADERS_SIZE - headers_len - 1;
                 }
                 memcpy(headers_buffer + headers_len, buffer, copy_len);
                 headers_len += copy_len;
                 headers_buffer[headers_len] = 0;
             }
             
-            // Still in headers - find body start
-            char* body_start = strstr(buffer, "\r\n\r\n");
+            char* body_start = strstr(headers_buffer, "\r\n\r\n");
             if (body_start) {
                 in_body = 1;
                 http_loading_state.phase = HTTP_PHASE_RECEIVING_BODY;
-                char* body = body_start + 4;
-                int body_len = received - (body - buffer);
-
-                // Parse status code
-                if (strncmp(buffer, "HTTP/1.", 7) == 0) {
-                    status_code = atoi(buffer + 9);
+                
+                // Parse status code robustly WITHOUT depending on an external atoi 
+                char* status_line = NULL;
+                if (strncmp(headers_buffer, "HTTP/", 5) == 0) {
+                    status_line = headers_buffer;
+                } else {
+                    status_line = strstr(headers_buffer, "HTTP/");
                 }
-
-                // Check for Location header (redirect)
-                char* location = strstr(headers_buffer, "Location:");
-                if (!location) location = strstr(headers_buffer, "location:");
-                if (location) {
-                    location += 9;  // Skip "Location:"
-                    while (*location == ' ') location++;
-                    char* end = strstr(location, "\r\n");
-                    if (end) {
-                        int loc_len = end - location;
-                        // Validate and safely copy URL
-                        if (loc_len > 0 && loc_len < HTTP_MAX_URL_LEN - 1) {
-                            memcpy(redirect_url, location, loc_len);
-                            redirect_url[loc_len] = '\0';
-                            
-                            // Validate URL doesn't contain dangerous characters
-                            for (int i = 0; i < loc_len; i++) {
-                                if (redirect_url[i] < 32 || redirect_url[i] > 126) {
-                                    // Invalid character in URL, clear redirect
-                                    redirect_url[0] = '\0';
-                                    break;
-                                }
-                            }
-                        } else {
-                            // URL too long or empty, don't redirect
-                            redirect_url[0] = '\0';
+                
+                if (status_line) {
+                    char* space = strchr(status_line, ' ');
+                    if (space) {
+                        while (*space == ' ') space++;
+                        
+                        // Inline integer parse
+                        int sc = 0;
+                        while (*space >= '0' && *space <= '9') {
+                            sc = sc * 10 + (*space - '0');
+                            space++;
                         }
+                        if (sc > 0) status_code = sc;
                     }
                 }
 
-                // Check for Content-Length header (case-insensitive search)
-                char* cl_header = strstr(buffer, "Content-Length:");
-                if (!cl_header) cl_header = strstr(buffer, "content-length:");
-                if (cl_header) {
-                    content_length = atoi(cl_header + 15);
-                    http_loading_state.total_bytes = content_length;
+                // Parse Location header
+                char* location = http_get_header(headers_buffer, "Location:");
+                if (location) {
+                    char* end = location;
+                    while (*end && *end != '\r' && *end != '\n') end++;
+                    
+                    // Strip trailing spaces explicitly
+                    while (end > location && (*(end - 1) == ' ' || *(end - 1) == '\t')) end--;
+                    
+                    int loc_len = end - location;
+                    if (loc_len > 0) {
+                        // Prevent buffer overflows from massive URL redirects without breaking entirely
+                        if (loc_len >= HTTP_MAX_URL_LEN) loc_len = HTTP_MAX_URL_LEN - 1;
+                        memcpy(redirect_url, location, loc_len);
+                        redirect_url[loc_len] = '\0';
+                    }
                 }
 
-                // Copy body to response
+                // Check for Content-Length header using inline parsing
+                char* cl_header = http_get_header(headers_buffer, "Content-Length:");
+                if (cl_header) {
+                    int cl = 0;
+                    while (*cl_header >= '0' && *cl_header <= '9') {
+                        cl = cl * 10 + (*cl_header - '0');
+                        cl_header++;
+                    }
+                    if (cl > 0) {
+                        content_length = cl;
+                        http_loading_state.total_bytes = content_length;
+                    }
+                }
+                
+                // Check if chunked
+                char* te_header = http_get_header(headers_buffer, "Transfer-Encoding:");
+                if (te_header) {
+                    if (strstr(te_header, "chunked") || strstr(te_header, "Chunked")) {
+                        is_chunked = 1;
+                    }
+                }
+
+                // Copy body remainder already in headers_buffer to response
+                char* body = body_start + 4;
+                int body_len = (headers_buffer + headers_len) - body;
                 if (body_len > 0) {
                     int copy_len = body_len < response_size - total_received - 1 ? 
                                    body_len : response_size - total_received - 1;
@@ -536,7 +697,6 @@ static int http_get_internal(const char* url, char* response, int response_size,
                 }
             }
         } else {
-            // Already in body - copy directly
             int copy_len = received < response_size - total_received - 1 ? 
                            received : response_size - total_received - 1;
             memcpy(response_ptr, buffer, copy_len);
@@ -544,12 +704,10 @@ static int http_get_internal(const char* url, char* response, int response_size,
             total_received += copy_len;
         }
 
-        // Call progress callback if set
         if (progress_cb) {
             progress_cb(total_received, content_length > 0 ? content_length : total_received, user_data);
         }
 
-        // Stop if we have all content
         if (content_length > 0 && total_received >= content_length) {
             break;
         }
@@ -557,73 +715,90 @@ static int http_get_internal(const char* url, char* response, int response_size,
 
     response[total_received] = 0;
     
-    // Cleanup TLS session
+    // Decode if chunked
+    if (is_chunked) {
+        total_received = http_decode_chunked_in_place(response, total_received);
+    }
+    
+    // Cleanup Resources BEFORE potential recursion
     if (tls_session) {
         tls_close(tls_session);
         tls_destroy_session(tls_session);
         current_tls_session = NULL;
     }
-    
     k_close(sockfd);
 
-    // Handle redirects (301, 302, 303, 307, 308)
-    if ((status_code == 301 || status_code == 302 || status_code == 303 || 
-         status_code == 307 || status_code == 308) && redirect_url[0]) {
+        // Handle redirects (301, 302, 303, 307, 308)
+    if (0 && (status_code == 301 || status_code == 302 || status_code == 303 ||
+          status_code == 307 || status_code == 308) && redirect_url[0]) {
+
+        // Prevent redirect loops: if we fell back to HTTP, don't redirect back to HTTPS
+        if (tried_http_fallback && strncmp(redirect_url, "https://", 8) == 0) {
+            // Skip redirect to avoid loop
+            http_loading_state.is_loading = 0;
+            http_loading_state.phase = HTTP_PHASE_COMPLETE;
+            strcpy(http_loading_state.status_text, "Redirect to HTTPS skipped");
+            if (buffer) kfree(buffer);
+            if (headers_buffer) kfree(headers_buffer);
+            return total_received;
+        }
+
+        // Handle relative URLs explicitly
+        char absolute_url[HTTP_MAX_URL_LEN * 2]; // Increased size to prevent stack overflow
         
-        // Log redirect for debugging
-        #if HTTP_DEBUG_ENABLED
-        k_printf("HTTP: Redirect %d -> %s\n", status_code, redirect_url);
-        #endif
-        
-        // Handle relative URLs
-        char absolute_url[HTTP_MAX_URL_LEN];
-        if (redirect_url[0] == '/') {
-            // Relative URL - construct absolute URL
+        // Protocol-relative URL (e.g. //www.google.com/)
+        if (redirect_url[0] == '/' && redirect_url[1] == '/') {
+            snprintf(absolute_url, sizeof(absolute_url), "%s:%s", 
+                    is_https ? "https" : "http", redirect_url);
+            strncpy(redirect_url, absolute_url, HTTP_MAX_URL_LEN - 1);
+            redirect_url[HTTP_MAX_URL_LEN - 1] = '\0';
+        } 
+        // Root-relative URL (e.g. /search?q=test)
+        else if (redirect_url[0] == '/') {
             snprintf(absolute_url, sizeof(absolute_url), "%s://%s%s", 
                     is_https ? "https" : "http", host, redirect_url);
             strncpy(redirect_url, absolute_url, HTTP_MAX_URL_LEN - 1);
             redirect_url[HTTP_MAX_URL_LEN - 1] = '\0';
-        } else if (strstr(redirect_url, "://") == NULL) {
-            // No protocol - add current protocol
+        } 
+        // Relative URL missing root path (e.g. "search?q=test")
+        else if (strstr(redirect_url, "://") == NULL) {
             snprintf(absolute_url, sizeof(absolute_url), "%s://%s/%s",
                     is_https ? "https" : "http", host, redirect_url);
             strncpy(redirect_url, absolute_url, HTTP_MAX_URL_LEN - 1);
             redirect_url[HTTP_MAX_URL_LEN - 1] = '\0';
         }
+
         
-        // Follow redirect
         kfree(headers_buffer);
-        return http_get_internal(redirect_url, response, response_size, headers, header_count, 
-                               redirect_count + 1, progress_cb, user_data);
+        // Follow redirect iteratively
+        s_printf("[REDIR] processing\n");
+        strncpy(current_url, redirect_url, sizeof(current_url) - 1);
+        current_url[sizeof(current_url) - 1] = '\0';
+        cur_redirect++;
+        continue;
     }
+    } // end while
 
     // Mark complete
     http_loading_state.is_loading = 0;
     http_loading_state.phase = HTTP_PHASE_COMPLETE;
     strcpy(http_loading_state.status_text, "Done");
 
-    kfree(headers_buffer);
+    if (buffer) kfree(buffer);
+    if (headers_buffer) kfree(headers_buffer);
     return total_received;
+    }
 }
 
 // Simple HTTP GET with default headers
 int http_get_simple(const char* url, char* response, int response_size) {
-    const char* headers[] = {
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language: en-US,en;q=0.5",
-        "Accept-Encoding: identity",
-        NULL
-    };
-
-    return http_get(url, response, response_size, headers, 3);
+    return http_get(url, response, response_size, NULL, 0);
 }
 
-// Async HTTP GET with progress callback - allows UI updates during fetch, supports HTTPS
+// Async HTTP GET with progress callback
 int http_get_async(const char* url, char* response, int response_size,
                    const char** headers, int header_count,
                    http_progress_cb progress_cb, void* user_data) {
-    // For simplicity, use the sync version with progress callback
-    // In a real implementation, this would be truly async
     int result = http_get(url, response, response_size, headers, header_count);
     
     if (progress_cb && result > 0) {

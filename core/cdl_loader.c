@@ -234,7 +234,8 @@ kernel_api_t g_kernel_api = {
     .send = wrap_send, .recvfrom = wrap_recvfrom, .recv = wrap_recv, .close = wrap_close,
     .net_get_interface_info = wrap_net_get_if_info, .dns_resolve = wrap_dns_resolve,
     .http_get = http_get_simple,
-    .process_events = wrap_process_events
+    .process_events = wrap_process_events,
+    .draw_pixels = sys_gfx_draw_image
 };
 
 // ... (ELF Loader implementation remains the same) ...

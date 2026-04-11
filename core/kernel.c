@@ -11,8 +11,10 @@
 #include "../hal/drivers/serial.h"
 #include "../hal/drivers/sound.h"
 #include "../hal/drivers/pci.h"
+#include "../hal/drivers/ata.h"
 #include "../core/string.h"
 #include "../fs/pfs32.h"
+#include "../fs/disk.h"
 #include "../core/memory.h"
 #include "../hal/cpu/paging.h"
 #include "../core/net.h"
@@ -22,6 +24,9 @@
 
 extern int kbd_ctrl_pressed;
 extern int kbd_shift_pressed;
+
+extern void pfs32_init_handles();
+extern uint32_t k_get_free_mem();
 extern uint32_t _bss_end;
 extern void socket_init_system(); // Added
 extern void dns_init();
@@ -41,7 +46,7 @@ void kernel_init_hal() {
     // --- MEMORY FIX ---
     uint32_t heap_start = (uint32_t)&_bss_end;
     if (heap_start % 16 != 0) heap_start += 16 - (heap_start % 16);
-    init_heap(heap_start, 32 * 1024 * 1024);
+    init_heap(heap_start, 64 * 1024 * 1024);
     
     init_paging();
     init_apic();
@@ -148,7 +153,47 @@ void kernel_main(void* mboot_ptr) {
     extern void gfx_init_hal(void*);
     gfx_init_hal(mboot_ptr);
 
-    extern void pfs32_init_handles();
+    pci_init();
+    disk_init();
+    s_printf("[DISK] total_blocks=");
+    char buf[32];
+    int_to_str(disk_total_blocks, buf);
+    s_printf(buf);
+    s_printf(" present=");
+    int_to_str(ide_devices[0].present, buf);
+    s_printf(buf);
+    s_printf("\n");
+
+    pfs32_init_handles();
+
+    // DEBUG MOUNT
+    uint8_t mbr[512];
+    s_printf("[DBG] disk_total_blocks=");
+    int_to_str(disk_total_blocks, buf);
+    s_printf(buf);
+    s_printf(" free_mem=");
+    int_to_str(k_get_free_mem(), buf);
+    s_printf(buf);
+    s_printf("\n");
+
+    disk_read_block(0, mbr);
+    s_printf("[DBG] LBA0 sig=");
+    int_to_str(mbr[510], buf);
+    s_printf(buf);
+    s_printf(" ");
+    int_to_str(mbr[511], buf);
+    s_printf(buf);
+    s_printf(" magic0=");
+    int_to_str(*(uint32_t*)mbr, buf);
+    s_printf(buf);
+    s_printf("\n");
+
+    disk_read_block(16384, mbr);
+    s_printf("[DBG] LBA16384 magic=");
+    int_to_str(*(uint32_t*)mbr, buf);
+    s_printf(buf);
+    s_printf("\n");
+
     pfs32_init_handles();
     s_printf("[KERNEL] File Handle System Initialized.\n");
 
@@ -166,7 +211,12 @@ void kernel_main(void* mboot_ptr) {
     internal_cdl_init_system();
     s_printf("[KERNEL] CDL System Initialized.\n");
 
-    if (sys_fs_mount() != 0) s_printf("[KERNEL] FS Mount Failed.\n");
+    int m = sys_fs_mount();
+    s_printf("[DBG] sys_fs_mount returned ");
+    int_to_str(m, buf);
+    s_printf(buf);
+    s_printf("\n");
+    if (m != 0) s_printf("[KERNEL] FS Mount Failed.\n");
     else sys_print("[OK] Filesystem Mounted.\n");
 
     sys_print("Booting...\n");
