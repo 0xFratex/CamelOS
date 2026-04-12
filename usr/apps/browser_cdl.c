@@ -875,8 +875,10 @@ start_fetch:
     }
 
     // Using the static global f_final_url instead of stack array
+    // Default to HTTP since CamelOS TLS has limited ECDH support.
+    // HTTPS URLs will still be attempted but will gracefully fall back.
     if (sys->strstr(tabs[active_tab].url, "://") == 0) {
-        sys->sprintf(f_final_url, "https://%s", tabs[active_tab].url);
+        sys->sprintf(f_final_url, "http://%s", tabs[active_tab].url);
     } else {
         sys->strcpy(f_final_url, tabs[active_tab].url);
     }
@@ -994,9 +996,83 @@ start_fetch:
             f_next_url[0] = 0;
             if (meta_refresh_triggered && meta_refresh_url[0]) {
                 sys->strcpy(f_next_url, meta_refresh_url);
+                // Also downconvert meta refresh HTTPS→HTTP for same reason
+                if (sys->strstr(f_next_url, "https://") != 0) {
+                    char* https_ptr = sys->strstr(f_next_url, "https://");
+                    if (https_ptr) {
+                        int idx = https_ptr - f_next_url;
+                        for (int k = idx + 5; f_next_url[k]; k++) {
+                            f_next_url[k - 1] = f_next_url[k];
+                        }
+                        int len = sys->strlen(f_next_url);
+                        f_next_url[len] = 0;
+                        sys->print("[REDIR] Downconverted meta-refresh to HTTP: ");
+                        sys->print(f_next_url); sys->print("\n");
+                    }
+                }
             } else if (has_moved_text && f_first_link[0] && node_count < 30) {
                 // If it's a tiny page saying "Moved" and it has a link, follow it immediately
                 sys->strcpy(f_next_url, f_first_link);
+                
+                // CRITICAL FIX: TLS is broken in CamelOS (limited ECDH support).
+                // When a redirect URL points to https://, convert it to http://
+                // to avoid the TLS→HTTP fallback→302 loop. This mirrors the
+                // http.c tried_http_fallback guard but at the browser level.
+                if (sys->strstr(f_next_url, "https://") != 0) {
+                    // Replace "https://" with "http://" in-place
+                    char* https_ptr = sys->strstr(f_next_url, "https://");
+                    if (https_ptr) {
+                        // Shift everything left by 1 to shrink "https" to "http"
+                        int idx = https_ptr - f_next_url;
+                        // Move 's' position: shift chars after 's' one position left
+                        for (int k = idx + 5; f_next_url[k]; k++) {
+                            f_next_url[k - 1] = f_next_url[k];
+                        }
+                        // Find the new end and null-terminate
+                        int len = sys->strlen(f_next_url);
+                        f_next_url[len] = 0;
+                        sys->print("[REDIR] Downconverted redirect to HTTP: ");
+                        sys->print(f_next_url); sys->print("\n");
+                    }
+                }
+                
+                // Strip gws_rd=ssl (and similar) from URL — this parameter
+                // tells Google to force-redirect to HTTPS, creating an
+                // infinite loop when TLS is broken.
+                char* gws_ptr = sys->strstr(f_next_url, "gws_rd=ssl");
+                if (gws_ptr) {
+                    // Remove the parameter: &gws_rd=ssl or ?gws_rd=ssl
+                    int param_start = gws_ptr - f_next_url;
+                    // Check if preceded by & or ?
+                    int prefix_len = 0;
+                    if (param_start > 0 && (f_next_url[param_start - 1] == '&' || f_next_url[param_start - 1] == '?')) {
+                        prefix_len = 1;
+                        // If it was '?', this was the only param — strip it entirely
+                        if (f_next_url[param_start - 1] == '?' && f_next_url[param_start + 10] != '&') {
+                            // ?gws_rd=ssl at end of URL or standalone
+                            f_next_url[param_start - 1] = 0;
+                        } else {
+                            // Shift remaining URL left over the parameter
+                            int k = param_start - prefix_len;
+                            int remaining = param_start + 10; // past "gws_rd=ssl"
+                            // If next char is &, skip it too
+                            if (f_next_url[remaining] == '&') remaining++;
+                            while (f_next_url[remaining]) {
+                                f_next_url[k++] = f_next_url[remaining++];
+                            }
+                            f_next_url[k] = 0;
+                        }
+                    } else {
+                        // No prefix, just shift over it
+                        int remaining = param_start + 10;
+                        while (f_next_url[remaining]) {
+                            f_next_url[param_start++] = f_next_url[remaining++];
+                        }
+                        f_next_url[param_start] = 0;
+                    }
+                    sys->print("[REDIR] Stripped gws_rd=ssl: ");
+                    sys->print(f_next_url); sys->print("\n");
+                }
             }
             
             if (f_next_url[0]) {
@@ -1057,7 +1133,7 @@ start_fetch:
                         dom_node_t* err = &nodes[node_count++];
                         sys->memset(err, 0, sizeof(dom_node_t));
                         err->type = 0;
-                        sys->strcpy(err->text, "Error: The site redirected to itself in an infinite loop.");
+                        sys->strcpy(err->text, "Error: Redirect loop detected.");
                         sys->strcpy(err->tag, "text");
                         err->color = 0xFFFF0000;
                         err->font_size = 16;
@@ -1065,7 +1141,15 @@ start_fetch:
                         err = &nodes[node_count++];
                         sys->memset(err, 0, sizeof(dom_node_t));
                         err->type = 0;
-                        sys->strcpy(err->text, "(This typically happens because the site requires browser cookies to continue)");
+                        sys->strcpy(err->text, "This site enforces HTTPS, but CamelOS TLS has limited ECDH support.");
+                        sys->strcpy(err->tag, "text");
+                        err->color = 0xFF888888;
+                        err->font_size = 16;
+                        
+                        err = &nodes[node_count++];
+                        sys->memset(err, 0, sizeof(dom_node_t));
+                        err->type = 0;
+                        sys->strcpy(err->text, "Try a site that works over HTTP, e.g. http://lite.duckduckgo.com/");
                         sys->strcpy(err->tag, "text");
                         err->color = 0xFF888888;
                         err->font_size = 16;
@@ -1242,7 +1326,7 @@ cdl_exports_t* cdl_main(kernel_api_t* api) {
     active_tab = 0;
     tab_count = 1;
     
-    sys->print("[BROWSER] Default homepage: Google (with gbv=1 auto-bypass)\n");
+    sys->print("[BROWSER] Default homepage: Google\n");
     
     frame_buffer = (uint32_t*)sys->malloc(CONTENT_W * CONTENT_H * 4);
     if (frame_buffer) {
