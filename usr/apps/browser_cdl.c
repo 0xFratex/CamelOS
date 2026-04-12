@@ -1,8 +1,8 @@
 // ============================================================================
 // VERSION INFO
 // ============================================================================
-#define BROWSER_VERSION "4.8"
-#define BROWSER_VERSION_NUM 480
+#define BROWSER_VERSION "4.9"
+#define BROWSER_VERSION_NUM 490
 
 #include "../../sys/cdl_defs.h"
 #include "../lib/camel_framework.h"
@@ -313,6 +313,28 @@ static void parse_html(const char* html) {
         } else if(html[i] == '>') {
             in_tag = 0;
             if(tag_len > 0 && current_tag_buf[0] != '/') {
+                // CRITICAL FIX: Implicit <head> closure — HTML5 allows omitting </head>.
+                // If we encounter <body> (or other body-level tags) while still
+                // inside <head>, automatically close the head section so body
+                // content is not silently discarded.
+                if (in_hidden && hidden_tag_name[0] != 0 &&
+                    (is_tag(current_tag_buf, "body") || is_tag(current_tag_buf, "div") ||
+                     is_tag(current_tag_buf, "p") || is_tag(current_tag_buf, "table") ||
+                     is_tag(current_tag_buf, "h1") || is_tag(current_tag_buf, "h2") ||
+                     is_tag(current_tag_buf, "h3") || is_tag(current_tag_buf, "h4") ||
+                     is_tag(current_tag_buf, "h5") || is_tag(current_tag_buf, "h6") ||
+                     is_tag(current_tag_buf, "ul") || is_tag(current_tag_buf, "ol") ||
+                     is_tag(current_tag_buf, "form") || is_tag(current_tag_buf, "main") ||
+                     is_tag(current_tag_buf, "section") || is_tag(current_tag_buf, "article") ||
+                     is_tag(current_tag_buf, "nav") || is_tag(current_tag_buf, "footer") ||
+                     is_tag(current_tag_buf, "header"))) {
+                    sys->print("[PARSE] Implicit </head> closure - body-level tag <");
+                    sys->print(current_tag_buf);
+                    sys->print("> encountered while in_hidden\n");
+                    in_hidden = 0;
+                    hidden_tag_name[0] = 0;
+                }
+
                 if (is_tag(current_tag_buf, "script")) in_script = 1;
                 if (is_tag(current_tag_buf, "title")) in_title = 1;
                 
@@ -427,15 +449,22 @@ static void parse_html(const char* html) {
                 if (is_tag(current_tag_buf + 1, "title")) in_title = 0;
                 if (is_tag(current_tag_buf + 1, "noscript")) {
                     in_noscript = 0;
-                    // If we were inside <head> before <noscript>, restore hidden state
-                    // This handles <head><noscript>...</noscript> properly
-                    if (hidden_tag_name[0] != 0 && is_tag(hidden_tag_name, "head")) {
+                    // If we were inside <head> before <noscript>, restore hidden state.
+                    // But ONLY restore if we haven't already left the hidden section
+                    // via an explicit </head> or implicit closure (in_hidden already 0).
+                    if (in_hidden == 0 && hidden_tag_name[0] != 0 && is_tag(hidden_tag_name, "head")) {
                         in_hidden = 1;
                     }
                 }
+                // Un-hide: closing tag matches the hidden tag name.
+                // The +1 skips the '/' prefix in the closing tag buffer.
+                // This handles </head>, </style>, </svg> etc.
                 if (in_hidden && is_tag(current_tag_buf + 1, hidden_tag_name)) {
+                    sys->print("[PARSE] Un-hiding on </");
+                    sys->print(hidden_tag_name);
+                    sys->print("> tag\n");
                     in_hidden = 0;
-                    hidden_tag_name[0] = 0;
+                    sys->memset(hidden_tag_name, 0, sizeof(hidden_tag_name));
                 }
                 
                 // Skip </noscript> closing tag from being added as node
@@ -900,18 +929,11 @@ start_fetch:
     meta_refresh_triggered = 0;
     meta_refresh_url[0] = 0;
     
-    // --- PROACTIVE GOOGLE BYPASS ---
-    if (sys->strstr(f_final_url, "google.") != 0 && sys->strstr(f_final_url, "gbv=1") == 0) {
-        if (sys->strstr(f_final_url, "?")) {
-            if (sys->strlen(f_final_url) < MAX_URL - 7) sys->sprintf(f_temp, "%s&gbv=1", f_final_url);
-        } else {
-            if (sys->strlen(f_final_url) < MAX_URL - 7) sys->sprintf(f_temp, "%s?gbv=1", f_final_url);
-        }
-        sys->strcpy(f_final_url, f_temp);
-        sys->strcpy(tabs[active_tab].url, f_final_url); 
-        tabs[active_tab].url_len = sys->strlen(f_final_url);
-        sys->print("[BYPASS] Auto-injected Google Basic Version (gbv=1) to prevent Cookie loops.\n");
-    }
+    // --- GOOGLE gbv=1 REMOVED ---
+    // Google dropped basic-view (?gbv=1) support around 2019.
+    // The parameter is now silently ignored and Google serves the full
+    // JS-required page regardless. Prepending it provides zero benefit
+    // and only clutters the URL.
     // -------------------------------
     
     sys->print("FETCHING: "); sys->print(f_final_url); sys->print("\n");

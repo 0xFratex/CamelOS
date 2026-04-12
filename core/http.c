@@ -511,6 +511,12 @@ static int http_get_internal(const char* url, char* response, int response_size,
             is_https = 0;  // Continue with HTTP
             tls_session = NULL;
             tried_http_fallback = 1;  // Mark that we fell back to HTTP
+
+            // CRITICAL WARNING: TLS handshake failed — falling back to plaintext HTTP.
+            // This means the connection is UNENCRYPTED. The page content will still
+            // be fetched, but any sensitive data is transmitted in the clear.
+            // This fallback exists because CamelOS's TLS stack has limited ECDH support.
+            s_printf("[HTTP] WARNING: TLS handshake failed - falling back to HTTP (unencrypted)\n");
         }
         
         current_tls_session = tls_session;
