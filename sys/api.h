@@ -3,7 +3,7 @@
 #include "../fs/pfs32.h"
 
 // Forward declarations
-extern void* kmalloc(unsigned long size);
+extern void* kmalloc(size_t size);
 extern void kfree(void* ptr);
 
 // --- System ---

@@ -6,18 +6,23 @@
 
 #include "../../sys/cdl_defs.h"
 #include "../lib/camel_framework.h"
-#include "elk.h"
 
 kernel_api_t* sys = 0;
+
+// JS Engine wrappers
+typedef int   (*jscore_init_t)();
+typedef const char* (*jscore_eval_t)(const char*);
+typedef void  (*jscore_cleanup_t)();
+
+static jscore_init_t    js_init = 0;
+static jscore_eval_t    js_eval = 0;
+static jscore_cleanup_t js_cleanup = 0;
 
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 
-// --- Proper Soft-float implementation for Elk JS Engine ---
-// Replaces the broken stubs that returned wrong values
-// These are now implemented in softfloat.h with real IEEE 754 arithmetic
-#include "../lib/softfloat.h"
+// Soft-float removed to reduce size
 
 // ============================================================================
 // CONFIGURATION
@@ -90,35 +95,9 @@ static char f_base_url[MAX_URL];
 static char mouse_new_url[MAX_URL];
 
 // JavaScript Engine State
-static struct js *js_vm = 0;
-static uint8_t js_mem[65536];  // 64KB for JS heap (was 32KB)
+// JS engine loaded separately
 
-static jsval_t js_alert(struct js *js, jsval_t *args, int nargs) {
-    if (nargs > 0) {
-        size_t len;
-        char *str = js_getstr(js, args[0], &len);
-        if (str) {
-            sys->print("JS ALERT: ");
-            sys->print(str);
-            sys->print("\n");
-        }
-    }
-    return js_mkundef();
-}
-
-// console.log implementation
-static jsval_t js_console_log(struct js *js, jsval_t *args, int nargs) {
-    for (int i = 0; i < nargs; i++) {
-        size_t len;
-        char *str = js_getstr(js, args[i], &len);
-        if (str) {
-            sys->print(str);
-            if (i < nargs - 1) sys->print(" ");
-        }
-    }
-    sys->print("\n");
-    return js_mkundef();
-}
+// JS functions moved to jscore.c
 
 typedef struct dom_node {
     int type; // 0=text, 1=element, 2=closing element
@@ -137,29 +116,7 @@ static dom_node_t* nodes = 0;
 static dom_node_t* temp_nodes = 0;
 static int node_count = 0;
 
-// document.write implementation - appends text to the DOM
-static jsval_t js_document_write(struct js *js, jsval_t *args, int nargs) {
-    for (int i = 0; i < nargs; i++) {
-        size_t len;
-        char *str = js_getstr(js, args[i], &len);
-        if (str && node_count < MAX_NODES) {
-            dom_node_t* n = &nodes[node_count++];
-            sys->memset(n, 0, sizeof(dom_node_t));
-            n->type = 0;
-            sys->strncpy(n->text, str, 127);
-            sys->strcpy(n->tag, "text");
-            n->color = 0xFF000000;
-            n->font_size = 16;
-        }
-    }
-    return js_mkundef();
-}
-
-// document.getElementById stub - returns a simple object
-static jsval_t js_document_getById(struct js *js, jsval_t *args, int nargs) {
-    // Return null for now - full DOM support would need element tracking
-    return js_mknull();
-}
+// JS functions moved to jscore.c
 
 // Case insensitive tag comparison
 static int is_tag(const char* tag, const char* name) {
@@ -276,13 +233,18 @@ static void parse_html(const char* html) {
                         if (sys->strstr(parse_text_buffer, "Reflect")) looks_simple = 0;
                     }
                     
-                    if (js_vm && text_len > 0 && looks_simple) {
+                    if (js_eval && text_len > 0 && looks_simple) {
                         sys->print("[JS] Evaluating script (");
                         char num_buf[16];
                         sys->itoa(text_len, num_buf);
                         sys->print(num_buf);
                         sys->print(" bytes)\n");
-                        js_eval(js_vm, parse_text_buffer, text_len);
+                        const char* result = js_eval(parse_text_buffer);
+                        if (result && sys->strcmp(result, "ok") != 0) {
+                            sys->print("[JS] Script execution error: ");
+                            sys->print(result);
+                            sys->print("\n");
+                        }
                     } else if (text_len > 0) {
                         sys->print("[JS] Skipping complex script (");
                         char num_buf[16];
@@ -1304,6 +1266,15 @@ static cdl_exports_t exports = { .lib_name = "Browser", .version = BROWSER_VERSI
 
 cdl_exports_t* cdl_main(kernel_api_t* api) {
     sys = api;
+
+    // Load JS engine
+    void* jsmod = sys->cdl_load("/usr/libs/jscore.cdl");
+    if (jsmod) {
+        js_init = (jscore_init_t) sys->cdl_sym(jsmod, "jscore_init");
+        js_eval = (jscore_eval_t) sys->cdl_sym(jsmod, "jscore_eval");
+        js_cleanup = (jscore_cleanup_t) sys->cdl_sym(jsmod, "jscore_cleanup");
+        if (js_init) js_init();
+    }
     
     nodes = (dom_node_t*)sys->malloc(MAX_NODES * sizeof(dom_node_t));
     temp_nodes = (dom_node_t*)sys->malloc(MAX_NODES * sizeof(dom_node_t));
@@ -1335,26 +1306,7 @@ cdl_exports_t* cdl_main(kernel_api_t* api) {
     
     main_win = sys->create_window("Camel Browser", BROWSER_W, BROWSER_H, on_paint, on_input, on_mouse);
     
-    js_vm = js_create(js_mem, sizeof(js_mem));
-    if (js_vm) {
-        js_set(js_vm, js_glob(js_vm), "alert", js_mkfun(js_alert));
-        
-        // Create console object with log method
-        jsval_t console_obj = js_mkobj(js_vm);
-        js_set(js_vm, console_obj, "log", js_mkfun(js_console_log));
-        js_set(js_vm, console_obj, "error", js_mkfun(js_console_log));
-        js_set(js_vm, console_obj, "warn", js_mkfun(js_console_log));
-        js_set(js_vm, console_obj, "info", js_mkfun(js_console_log));
-        js_set(js_vm, js_glob(js_vm), "console", console_obj);
-        
-        // Create document object
-        jsval_t doc_obj = js_mkobj(js_vm);
-        js_set(js_vm, doc_obj, "write", js_mkfun(js_document_write));
-        js_set(js_vm, doc_obj, "getElementById", js_mkfun(js_document_getById));
-        js_set(js_vm, js_glob(js_vm), "document", doc_obj);
-        
-        sys->print("[JS] Engine initialized with console and document APIs\n");
-    }
+    // JS engine loaded separately
     
     return &exports;
 }

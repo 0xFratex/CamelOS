@@ -6,6 +6,8 @@
 #include "../hal/drivers/serial.h"
 #include "../core/window_server.h"
 #include "../kernel/assets.h"
+
+typedef unsigned int uintptr_t;
 #include "elf.h"
 #include "../hal/cpu/timer.h"
 #include "socket.h"
@@ -216,6 +218,9 @@ void wrap_process_events() {
 }
 
 // === THE FIXED API TABLE ===
+void* wrap_cdl_load(const char* path);
+void* wrap_cdl_sym(void* module, const char* name);
+
 kernel_api_t g_kernel_api = {
     .print = k_print_wrapper, .malloc = k_malloc_wrapper, .realloc = k_realloc_wrapper, .free = k_free_wrapper,
     .exit = wrap_exit, .exec = wrap_exec, .exec_with_args = wrap_exec_with_args, .get_launch_args = wrap_get_args,
@@ -235,7 +240,9 @@ kernel_api_t g_kernel_api = {
     .net_get_interface_info = wrap_net_get_if_info, .dns_resolve = wrap_dns_resolve,
     .http_get = http_get_simple,
     .process_events = wrap_process_events,
-    .draw_pixels = sys_gfx_draw_image
+    .draw_pixels = sys_gfx_draw_image,
+    .cdl_load = wrap_cdl_load,
+    .cdl_sym = wrap_cdl_sym
 };
 
 // ... (ELF Loader implementation remains the same) ...
@@ -560,3 +567,17 @@ void* internal_get_proc_address(int lib_handle, const char* symbol_name) {
 }
 void internal_unload_library(int lib_handle) { if(lib_handle >= 0 && loaded_libraries[lib_handle].active) loaded_libraries[lib_handle].active = 0; }
 void internal_cdl_list_libraries() {}
+
+void* wrap_cdl_load(const char* path);
+void* wrap_cdl_sym(void* module, const char* name);
+
+void* wrap_cdl_load(const char* path) {
+    char unique_name[32];
+    extract_unique_name(path, unique_name);
+    if (find_loaded_library(unique_name) >= 0) return (void*)1; // Already loaded
+    return (void*)(uintptr_t)internal_load_library(path);
+}
+
+void* wrap_cdl_sym(void* module, const char* name) {
+    return internal_get_proc_address((int)(uintptr_t)module, name);
+}

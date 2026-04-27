@@ -13,12 +13,13 @@ INSTALLER_LDFLAGS	=	$(LDFLAGS)
 #	CDL	Flags	(Position	Independent	Code	for	Apps)
 #	FIX:	Added	-mno-sse	-mno-mmx	-msoft-float	to	prevent	#UD	(Int	6)	exceptions
 #	caused	by	the	compiler	generating	SSE	instructions	when	the	kernel	hasn't	enabled	them.
-CDL_CFLAGS	=	-m32	-fno-stack-protector	-fno-builtin	-nostdinc	-O2	\
-	-Iinclude	-Icore	-Isys	-Iusr	-Ikernel	-fPIC	-g	-Wall	-Wno-unused-parameter	\
+CDL_CFLAGS	=	-m32	-fno-stack-protector	-fno-builtin	-O2	\
+	-Iinclude	-Icore	-Isys	-Iusr	-Ikernel	-I/usr/include	-fPIC	-g	-Wall	-Wno-unused-parameter	\
+	-ffunction-sections	-fdata-sections	\
 	-march=i386	-mtune=i386	\
 	-mno-sse	-mno-sse2	-mno-sse3	-mno-ssse3	-mno-sse4	-mno-sse4.1	-mno-sse4.2	\
 	-mno-avx	-mno-avx2	-mno-mmx	-mno-3dnow	\
-	-mno-80387	-msoft-float	-mno-fp-ret-in-387	\
+	-mno-80387	-mno-fp-ret-in-387	\
 	-mgeneral-regs-only	\
 	-fno-tree-loop-distribute-patterns	\
 	-fno-strict-aliasing	\
@@ -35,7 +36,7 @@ CDL_CFLAGS	=	-m32	-fno-stack-protector	-fno-builtin	-nostdinc	-O2	\
 #	CDL	Flags
 #	-shared	creates	a	relocatable	ELF	(like	a	DLL)
 #	-Bsymbolic	ensures	internal	function	calls	bind	locally
-CDL_LDFLAGS	=	-m	elf_i386	-shared	-Bsymbolic	--no-undefined	-e	cdl_main	-T	linker_cdl.ld	-L/usr/lib/gcc/x86_64-linux-gnu/13/32	-lgcc
+CDL_LDFLAGS	=	-m	elf_i386	-shared	-Bsymbolic	-e	cdl_main	-T	linker_cdl.ld	-L/usr/lib/gcc/x86_64-linux-gnu/13/32	-lgcc
 
 COMMON_SRC	=	common/font.c
 
@@ -46,7 +47,7 @@ HAL_SRC	=	hal/drivers/vga.c	hal/drivers/ata.c	hal/drivers/serial.c	\
 	hal/drivers/net_e1000.c	hal/drivers/ahci.c	\
 	hal/drivers/usb_xhci.c	hal/drivers/usb.c	hal/drivers/wifi_rtl.c	\
 	hal/drivers/rtc.c	hal/drivers/sb16.c	\
-	hal/cpu/apic.c	hal/cpu/idt.c	hal/cpu/isr.c	hal/cpu/gdt.c	hal/cpu/timer.c	hal/cpu/paging.c	\
+	hal/cpu/apic.c	hal/cpu/idt.c	hal/cpu/isr.c	hal/cpu/gdt.c	hal/cpu/timer.c	hal/cpu/paging.c	hal/cpu/syscall.c	\
 	hal/video/gfx_hal.c	hal/video/compositor.c	hal/video/animation.c	hal/video/loading_animation.c
 	
 CORE_SRC	=	core/kernel.c	core/panic.c	sys/api.c	core/string.c	core/memory.c	core/task.c	core/cdl_loader.c	core/window_server.c	core/net.c	core/net_if.c	core/net_dhcp.c	core/socket.c	core/tcp.c	core/http.c	core/tls.c	core/tls13.c	core/http2.c	core/tls_ca_store.c	core/app_switcher.c	core/dns.c	core/debug.c	core/arp.c	core/scheduler.c	core/firewall.c
@@ -242,12 +243,19 @@ textedit.cdl:	usr/apps/textedit_cdl.c	usr/lib/camel_framework.c
 	$(CC)	$(CDL_CFLAGS)	-c	usr/lib/camel_framework.c	-o	camel_framework.o
 	$(LD)	$(CDL_LDFLAGS)	-o	textedit.cdl	textedit.o	camel_framework.o
 
-#	Browser	App
-browser.cdl:	usr/apps/browser_cdl.c	usr/lib/camel_framework.c	usr/apps/elk.c
+#	JS Core Lib
+jscore.cdl:	usr/libs/jscore.c	usr/apps/mujs_min.c
+	$(CC)	$(CDL_CFLAGS)	-c	usr/libs/jscore.c	-o	jscore.o
+	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/mujs_min.c	-o	mujs.o
+	$(LD)	$(CDL_LDFLAGS)	-o	jscore.cdl	jscore.o	mujs.o	-lgcc
+
+#	Browser App
+browser.cdl:	usr/apps/browser_cdl.c	usr/lib/camel_framework.c	usr/apps/setjmp.S
 	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/browser_cdl.c	-o	browser.o
 	$(CC)	$(CDL_CFLAGS)	-c	usr/lib/camel_framework.c	-o	camel_framework.o
-	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/elk.c	-o	elk.o
-	$(LD)	$(CDL_LDFLAGS)	-o	browser.cdl	browser.o	camel_framework.o	elk.o	-lgcc
+	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/mujs_min.c	-o	mujs.o
+	$(AS)	-f	elf32	usr/apps/setjmp.S	-o	setjmp.o
+	$(LD)	$(CDL_LDFLAGS)	-o	browser.cdl	browser.o	camel_framework.o	setjmp.o	-lgcc
 #	Settings	App
 settings.cdl:	usr/apps/settings_cdl.c	usr/lib/camel_framework.c
 	$(CC)	$(CDL_CFLAGS)	-c	usr/apps/settings_cdl.c	-o	settings.o

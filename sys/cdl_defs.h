@@ -93,6 +93,10 @@ typedef struct {
     // 8. Custom Additions
     void (*draw_pixels)(int x, int y, int w, int h, const uint32_t* data);
 
+    // 9. CDL Module Loading
+    void* (*cdl_load)(const char* path);
+    void* (*cdl_sym)(void* module, const char* name);
+
 } kernel_api_t;
 
 typedef struct { char name[32]; void* func_ptr; } cdl_symbol_t;
