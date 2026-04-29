@@ -11,13 +11,15 @@
 static volatile int pfs_lock = 0;
 
 static inline void pfs_spin_lock(void) {
+    asm volatile("cli");
     while(__sync_lock_test_and_set(&pfs_lock, 1)) {
-        asm volatile("pause");
+        asm volatile("sti; pause; cli");
     }
 }
 
 static inline void pfs_spin_unlock(void) {
     __sync_lock_release(&pfs_lock);
+    asm volatile("sti");
 }
 
 #define PFS_LOCK()   pfs_spin_lock()
@@ -62,7 +64,7 @@ void pfs_int_to_str(int num, char* buf) {
 }
 
 // --- FAT CACHE (LRU Implementation PERF-004) ---
-#define FAT_CACHE_SIZE 8
+#define FAT_CACHE_SIZE 256
 static uint32_t fat_cache_block[FAT_CACHE_SIZE];
 static uint32_t fat_cache_data[FAT_CACHE_SIZE][PFS32_BLOCK_SIZE/4];
 static int fat_cache_dirty[FAT_CACHE_SIZE];
@@ -73,8 +75,8 @@ static uint32_t fat_access_counter = 0;        // Logical clock
 static uint32_t last_alloc_search_ptr = 0;
 
 // Forward Declarations
-char* get_basename(const char* path);
-char* get_parent_path(const char* path);
+void get_basename(const char* path, char* out_buf);
+void get_parent_path(const char* path, char* out_buf);
 int find_entry_in_dir(uint32_t dir_start, const char* name, pfs32_direntry_t* out, uint32_t* out_blk, int* out_idx);
 
 // --- Helper: Disk I/O with Bounds Checking ---
@@ -379,13 +381,14 @@ int pfs32_format(const char* label, uint32_t total) {
     sb.magic = PFS32_MAGIC;
     sb.version = PFS32_VERSION;
     sb.block_size = PFS32_BLOCK_SIZE;
+    sb.cluster_blocks = 8; // 4KB clusters
     sb.total_blocks = total;
-    
-    uint32_t fat_blocks = (total + 127) / 128;
+
+    uint32_t total_clusters = total / sb.cluster_blocks;
+    uint32_t fat_blocks = (total_clusters + 127) / 128;
     sb.fat_blocks = fat_blocks;
     sb.data_start_block = 1 + fat_blocks;
     sb.root_dir_block = sb.data_start_block;
-    strncpy(sb.volume_label, label, 31);
     sb.free_blocks = total - sb.data_start_block;
 
     mounted = 1;
@@ -478,8 +481,10 @@ int get_dir_block(const char* path, uint32_t* block_out) {
 int pfs32_create_node(const char* path, int is_dir) {
     if(!mounted) return PFS_ERR_NO_FS;
 
-    char* parent = get_parent_path(path);
-    char* name = get_basename(path);
+    char parent[128];
+    char name[64];
+    get_parent_path(path, parent);
+    get_basename(path, name);
     if (strlen(name) == 0) return PFS_ERR_PARAM;
 
     uint32_t pblk;
@@ -574,12 +579,16 @@ int pfs32_write_file(const char* path, uint8_t* data, uint32_t size) {
     if (res != PFS_OK && res != PFS_ERR_EXISTS) return res;
 
     uint32_t pblk;
-    if(get_dir_block(get_parent_path(path), &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char parent[128];
+    get_parent_path(path, parent);
+    if(get_dir_block(parent, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     uint32_t entry_blk;
     int entry_idx;
     pfs32_direntry_t entry;
-    if(find_entry_in_dir(pblk, get_basename(path), &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char name[64];
+    get_basename(path, name);
+    if(find_entry_in_dir(pblk, name, &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     if (!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_WRITE)) return PFS_ERR_ACCESS;
 
@@ -622,10 +631,14 @@ int pfs32_read_file(const char* path, uint8_t* buffer, uint32_t max) {
     if(!mounted) return PFS_ERR_NO_FS;
     pfs32_direntry_t entry;
     uint32_t entry_blk; int entry_idx;
-    
+
     uint32_t pblk;
-    get_dir_block(get_parent_path(path), &pblk);
-    if(find_entry_in_dir(pblk, get_basename(path), &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char parent[128];
+    get_parent_path(path, parent);
+    get_dir_block(parent, &pblk);
+    char name[64];
+    get_basename(path, name);
+    if(find_entry_in_dir(pblk, name, &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     if (!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_READ)) return PFS_ERR_ACCESS;
     if(entry.attributes & PFS32_ATTR_DIRECTORY) return PFS_ERR_PARAM;
@@ -654,13 +667,17 @@ int pfs32_read_file(const char* path, uint8_t* buffer, uint32_t max) {
 // --- FEAT-001: Truncate ---
 int pfs32_truncate(const char* path, uint32_t new_size) {
     if(!mounted) return PFS_ERR_NO_FS;
-    
+
     uint32_t pblk;
-    if(get_dir_block(get_parent_path(path), &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char parent[128];
+    get_parent_path(path, parent);
+    if(get_dir_block(parent, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     pfs32_direntry_t entry;
     uint32_t entry_blk; int entry_idx;
-    if(find_entry_in_dir(pblk, get_basename(path), &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char name[64];
+    get_basename(path, name);
+    if(find_entry_in_dir(pblk, name, &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
     if(!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_WRITE)) return PFS_ERR_ACCESS;
 
     if (new_size == entry.file_size) return PFS_OK;
@@ -747,43 +764,17 @@ int pfs32_copy(const char* src, const char* dst) {
     while(copied < size) {
         uint32_t chunk = (size - copied < buf_size) ? size - copied : buf_size;
 
-        // Seek to where we are
         pfs32_seek(h_src, copied);
         pfs32_seek(h_dst, copied);
 
         int bytes_read = pfs32_read_handle(h_src, buf, chunk);
-        if (bytes_read > 0) {
-            // Write to destination
-            // Note: We need a pfs32_write_handle. If missing, we fallback to stateless write
-            // But stateless write appends or overwrites? The provided pfs32_write_file
-            // overwrites from block 0.
-            
-            // To fix this properly without write_handle, we must use `pfs32_write_file`
-            // but we have to read the WHOLE file into memory if we can't seek write.
-            // Assuming we added pfs32_write_handle logic similar to read_handle:
-            
-            // Fallback: Since pfs32_write_file writes *size* bytes, it truncates?
-            // The provided `pfs32_write_file` implementation assumes writing the *whole* buffer.
-            
-            // Implementation for small systems: Read whole, Write whole.
-            // For larger files, we need the Handle Write API.
-        }
+        if (bytes_read <= 0) break;
 
-        // Since the current API is limited, we break the loop if we can't do chunked writes easily
-        // without adding `pfs32_write_handle`.
-        // Let's implement the "Read Whole / Write Whole" fallback for now to make it work.
-        break;
-    }
-    
-    // Fallback implementation: Load entire file to RAM and write back
-    // Warning: Fails for files > Available RAM
-    if (size > 0) {
-        uint8_t* big_buf = (uint8_t*)kmalloc(size);
-        if (big_buf) {
-            pfs32_read_file(src, big_buf, size);
-            pfs32_write_file(dst, big_buf, size);
-            kfree(big_buf);
-        }
+        int bytes_written = pfs32_write_handle(h_dst, buf, bytes_read);
+        if (bytes_written <= 0) break;
+
+        copied += bytes_written;
+        if (bytes_written < bytes_read) break; // Partial write, stop
     }
 
     pfs32_close(h_src);
@@ -805,13 +796,17 @@ void free_chain(uint32_t start_block) {
 
 int pfs32_delete(const char* path) {
     if(!mounted) return PFS_ERR_NO_FS;
-    
+
     uint32_t pblk;
-    if(get_dir_block(get_parent_path(path), &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char parent[128];
+    get_parent_path(path, parent);
+    if(get_dir_block(parent, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     pfs32_direntry_t entry;
     uint32_t entry_blk; int entry_idx;
-    if(find_entry_in_dir(pblk, get_basename(path), &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char name[64];
+    get_basename(path, name);
+    if(find_entry_in_dir(pblk, name, &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     if(!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_WRITE)) return PFS_ERR_ACCESS;
 
@@ -833,16 +828,20 @@ int pfs32_delete(const char* path) {
 int pfs32_rename(const char* oldpath, const char* newpath) {
     if(!mounted) return PFS_ERR_NO_FS;
     // Same parent check
-    char* p1 = get_parent_path(oldpath);
-    char* p2 = get_parent_path(newpath);
-    if(strcmp(p1, p2) != 0) return PFS_ERR_PARAM; 
+    char p1[128];
+    char p2[128];
+    get_parent_path(oldpath, p1);
+    get_parent_path(newpath, p2);
+    if(strcmp(p1, p2) != 0) return PFS_ERR_PARAM;
 
     uint32_t pblk;
     if(get_dir_block(p1, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     pfs32_direntry_t entry;
     uint32_t entry_blk; int entry_idx;
-    if(find_entry_in_dir(pblk, get_basename(oldpath), &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char old_name[64];
+    get_basename(oldpath, old_name);
+    if(find_entry_in_dir(pblk, old_name, &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
 
     if(!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_WRITE)) return PFS_ERR_ACCESS;
 
@@ -850,9 +849,11 @@ int pfs32_rename(const char* oldpath, const char* newpath) {
     disk_rw(0, entry_blk, buf);
     pfs32_direntry_t* de = (pfs32_direntry_t*)buf;
     memset(de[entry_idx].filename, 0, 40);
-    sanitize_name(de[entry_idx].filename, get_basename(newpath), 39);
+    char new_name[64];
+    get_basename(newpath, new_name);
+    sanitize_name(de[entry_idx].filename, new_name, 39);
     de[entry_idx].modify_time = pfs32_time_now();
-    
+
     disk_rw(1, entry_blk, buf);
     return PFS_OK;
 }
@@ -902,9 +903,13 @@ int pfs32_listdir(uint32_t block, pfs32_direntry_t* buf, uint32_t max) {
 }
 
 int pfs32_stat(const char* path, pfs32_direntry_t* out) {
-    uint32_t pblk; 
-    if(get_dir_block(get_parent_path(path), &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
-    return find_entry_in_dir(pblk, get_basename(path), out, 0, 0);
+    uint32_t pblk;
+    char parent[128];
+    get_parent_path(path, parent);
+    if(get_dir_block(parent, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char name[64];
+    get_basename(path, name);
+    return find_entry_in_dir(pblk, name, out, 0, 0);
 }
 
 int pfs32_create_file(const char* path) { return pfs32_create_node(path, 0); }
@@ -912,30 +917,26 @@ int pfs32_create_directory(const char* path) { return pfs32_create_node(path, 1)
 int pfs32_sync() { flush_fat(); return PFS_OK; }
 
 // --- String Helpers ---
-char* get_basename(const char* path) {
-    static char b[64];
+void get_basename(const char* path, char* out_buf) {
     const char* s = strrchr(path, '/');
-    if (!s) strncpy(b, path, 63);
-    else strncpy(b, s+1, 63);
-    b[63] = 0;
-    int len = strlen(b);
-    if(len > 0 && b[len-1] == '/') b[len-1] = 0;
-    return b;
+    if (!s) strncpy(out_buf, path, 63);
+    else strncpy(out_buf, s+1, 63);
+    out_buf[63] = 0;
+    int len = strlen(out_buf);
+    if(len > 0 && out_buf[len-1] == '/') out_buf[len-1] = 0;
 }
 
-char* get_parent_path(const char* path) {
-    static char p[128];
-    strncpy(p, path, 127); p[127] = 0;
-    int len = strlen(p);
-    if(len > 1 && p[len-1] == '/') p[len-1] = 0;
-    char* s = strrchr(p, '/');
+void get_parent_path(const char* path, char* out_buf) {
+    strncpy(out_buf, path, 127); out_buf[127] = 0;
+    int len = strlen(out_buf);
+    if(len > 1 && out_buf[len-1] == '/') out_buf[len-1] = 0;
+    char* s = strrchr(out_buf, '/');
     if(s) {
-        if(s == p) { p[1] = 0; } // Root
+        if(s == out_buf) { out_buf[1] = 0; } // Root
         else *s = 0;
     } else {
-        strcpy(p, "/");
+        strcpy(out_buf, "/");
     }
-    return p;
 }
 
 // Helper to check existence
@@ -1022,8 +1023,12 @@ int pfs32_open(const char* path, int flags) {
     int entry_idx;
     uint32_t pblk;
 
-    if (get_dir_block(get_parent_path(path), &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
-    if (find_entry_in_dir(pblk, get_basename(path), &entry, &entry_blk, &entry_idx) != PFS_OK) {
+    char parent[128];
+    get_parent_path(path, parent);
+    if (get_dir_block(parent, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    char name[64];
+    get_basename(path, name);
+    if (find_entry_in_dir(pblk, name, &entry, &entry_blk, &entry_idx) != PFS_OK) {
         return PFS_ERR_NOT_FOUND;
     }
 
@@ -1105,4 +1110,62 @@ int pfs32_read_handle(int handle, void* buffer, uint32_t len) {
         }
     }
     return read;
+}
+
+int pfs32_write_handle(int handle, const void* buffer, uint32_t len) {
+    if (handle < 0 || handle >= MAX_FILE_HANDLES || !handles[handle].active) return PFS_ERR_PARAM;
+    if (!(handles[handle].flags & 1)) return PFS_ERR_ACCESS; // Not opened for write
+
+    uint32_t written = 0;
+    uint32_t available = len; // Can write up to len
+
+    const uint8_t* ptr = (const uint8_t*)buffer;
+
+    while(written < len) {
+        // Calculate offset within current block
+        uint32_t block_offset = handles[handle].current_offset % 512;
+        uint32_t to_write = 512 - block_offset;
+        if (to_write > (len - written)) to_write = (len - written);
+
+        uint8_t buf[512];
+        // Read-modify-write if not full block
+        if (to_write < 512 || block_offset > 0) {
+            if (disk_rw(0, handles[handle].current_block, buf) != PFS_OK) break;
+        } else {
+            memset(buf, 0, 512);
+        }
+
+        memcpy(buf + block_offset, ptr + written, to_write);
+        if (disk_rw(1, handles[handle].current_block, buf) != PFS_OK) break;
+
+        written += to_write;
+        handles[handle].current_offset += to_write;
+
+        // Advance block if we hit boundary and need more
+        if ((handles[handle].current_offset % 512) == 0 && written < len) {
+            uint32_t next = get_fat(handles[handle].current_block);
+            if (next == PFS32_END_BLOCK || next == 0) {
+                next = alloc_block();
+                if (next == 0) break;
+                set_fat(handles[handle].current_block, next);
+                set_fat(next, PFS32_END_BLOCK);
+                flush_fat();
+            }
+            handles[handle].current_block = next;
+        }
+    }
+
+    // Update file size if extended
+    if (handles[handle].current_offset > handles[handle].size) {
+        handles[handle].size = handles[handle].current_offset;
+        // Update directory entry
+        uint8_t dbuf[512];
+        if (disk_rw(0, handles[handle].dir_entry_block, dbuf) == PFS_OK) {
+            ((pfs32_direntry_t*)dbuf)[handles[handle].dir_entry_idx].file_size = handles[handle].size;
+            ((pfs32_direntry_t*)dbuf)[handles[handle].dir_entry_idx].modify_time = pfs32_time_now();
+            disk_rw(1, handles[handle].dir_entry_block, dbuf);
+        }
+    }
+
+    return written;
 }

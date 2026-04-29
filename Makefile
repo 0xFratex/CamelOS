@@ -59,7 +59,7 @@ USR_SRC	=	usr/shell.c	usr/bubbleview.c	usr/desktop.c	usr/framework.c	usr/dock.c	
 KERNEL_OBJ	=	system/entry.o	$(HAL_SRC:.c=.o)	$(CORE_SRC:.c=.o)	$(FS_SRC:.c=.o)	$(USR_SRC:.c=.o)	$(ASSETS_SRC:.c=.o)	$(COMMON_SRC:.c=.o)
 
 #	Installer	objects	-	explicitly	list	them	to	avoid	dependency	issues
-INSTALLER_OBJ	=	installer/entry.o	installer/installer_main.o	installer/panic_framework.o	sys/api_installer.o	core/string.o	core/memory.o	core/task.o	core/scheduler.o	core/panic.o	hal/drivers/ata.o	hal/drivers/vga.o	hal/video/gfx_hal.o	hal/drivers/serial.o	hal/cpu/apic.o	hal/cpu/timer.o	hal/cpu/paging.o	fs/pfs32.o	fs/disk.o	hal/drivers/keyboard.o	hal/drivers/mouse.o	hal/drivers/rtc.o	installer/payload.o	common/font.o	kernel/assets.o	installer/arp_stub.o	installer/disk_tools.o
+INSTALLER_OBJ	=	installer/entry.o	installer/installer_main.o	installer/panic_framework.o	sys/api_installer.o	core/string.o	core/memory.o	core/task.o	core/scheduler.o	core/panic.o	hal/drivers/ata.o	hal/drivers/vga.o	hal/video/gfx_hal.o	hal/drivers/serial.o	hal/cpu/apic.o	hal/cpu/timer.o	hal/cpu/paging.o	fs/pfs32.o	fs/disk.o	hal/drivers/keyboard.o	hal/drivers/mouse.o	hal/drivers/rtc.o	installer/payload.o	common/font.o	kernel/assets.o	installer/arp_stub.o	installer/disk_tools.o	installer/sys_requirements.o	installer/disk_health.o
 
 #	---	QEMU	AUDIO	CONFIG	---
 #	Try	SDL	first,	it	usually	works	best	out	of	the	box

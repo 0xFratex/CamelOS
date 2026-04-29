@@ -19,7 +19,7 @@ typedef struct {
     int drive_index;
     char model[41];
     char serial[21];
-    uint32_t total_sectors;
+    uint64_t total_sectors;
     uint32_t power_on_hours;
     uint32_t spin_up_count;
     uint32_t reallocated_sectors;

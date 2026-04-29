@@ -13,7 +13,7 @@ void ata_identify_device(int drive);
 
 // Device information structure
 typedef struct {
-    uint32_t sectors;
+    uint64_t sectors;
     char model[41];
     int present;
 } ide_device_t;

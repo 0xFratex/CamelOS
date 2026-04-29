@@ -140,89 +140,138 @@ int disk_benchmark_run(int drive_index, DiskBenchmark* bench, BenchmarkType type
         strcpy(bench->status_message, "Drive not found");
         return 0;
     }
-    
+
     bench->test_complete = 0;
     bench->test_progress = 0;
     strcpy(bench->status_message, "Running benchmark...");
-    
+
     uint8_t buffer[512];
     uint32_t total_sectors = ide_devices[drive_index].sectors;
     uint32_t test_sectors = total_sectors > 100000 ? 100000 : total_sectors; // Limit test size
     bench->test_sectors = test_sectors;
-    
-    // Test buffer for sequential read
-    uint32_t start_time = get_tick_count();
-    uint32_t sectors_read = 0;
-    
-    for (uint32_t i = 0; i < test_sectors; i += 64) {
-        ata_read_sector(drive_index, i, buffer);
-        sectors_read++;
-        bench->test_progress = (i * 50) / test_sectors;
+
+    int do_sequential_read = 0;
+    int do_sequential_write = 0;
+    int do_random_read = 0;
+    int do_random_write = 0;
+
+    switch (type) {
+        case BENCHMARK_SEQUENTIAL_READ:
+            do_sequential_read = 1;
+            break;
+        case BENCHMARK_SEQUENTIAL_WRITE:
+            do_sequential_write = 1;
+            break;
+        case BENCHMARK_RANDOM_READ:
+            do_random_read = 1;
+            break;
+        case BENCHMARK_RANDOM_WRITE:
+            do_random_write = 1;
+            break;
+        case BENCHMARK_MIXED:
+            do_sequential_read = 1;
+            do_random_read = 1;
+            break;
+        case BENCHMARK_FULL:
+        default:
+            do_sequential_read = 1;
+            do_sequential_write = 1;
+            do_random_read = 1;
+            break;
     }
     
-    uint32_t end_time = get_tick_count();
-    uint32_t elapsed = end_time - start_time;
-    if (elapsed == 0) elapsed = 1;
-    
-    // Calculate read speed (sectors * 512 bytes / time)
-    bench->read_speed_kb = (sectors_read * 512) / elapsed; // KB/s assuming 1 tick = 1ms
-    
-    // Sequential write test (if not read-only)
-    bench->test_progress = 50;
-    strcpy(bench->status_message, "Testing write speed...");
-    
-    // Use a safe test area (last 1000 sectors)
-    uint32_t write_start = total_sectors > 1000 ? total_sectors - 1000 : 0;
-    start_time = get_tick_count();
-    
-    for (uint32_t i = 0; i < 1000; i++) {
-        // Fill buffer with test pattern
-        for (int j = 0; j < 512; j++) {
-            buffer[j] = (uint8_t)(i + j);
+    // Sequential read test
+    if (do_sequential_read) {
+        strcpy(bench->status_message, "Testing sequential read...");
+        uint32_t start_time = get_tick_count();
+        uint32_t sectors_read = 0;
+
+        for (uint32_t i = 0; i < test_sectors; i += 64) {
+            ata_read_sector(drive_index, i, buffer);
+            sectors_read++;
+            bench->test_progress = (i * 25) / test_sectors;
         }
-        ata_write_sector(drive_index, write_start + i, buffer);
-        bench->test_progress = 50 + (i * 25) / 1000;
+
+        uint32_t end_time = get_tick_count();
+        uint32_t elapsed = end_time - start_time;
+        if (elapsed == 0) elapsed = 1;
+
+        // Calculate read speed (sectors * 512 bytes / time)
+        bench->read_speed_kb = (sectors_read * 512) / elapsed; // KB/s assuming 1 tick = 1ms
     }
     
-    end_time = get_tick_count();
-    elapsed = end_time - start_time;
-    if (elapsed == 0) elapsed = 1;
-    
-    bench->write_speed_kb = (1000 * 512) / elapsed;
+    // Sequential write test
+    if (do_sequential_write) {
+        bench->test_progress = do_sequential_read ? 25 : 0;
+        strcpy(bench->status_message, "Testing sequential write...");
+
+        // Use a safe test area (last 1000 sectors)
+        uint32_t write_start = total_sectors > 1000 ? total_sectors - 1000 : 0;
+        uint32_t start_time = get_tick_count();
+
+        for (uint32_t i = 0; i < 1000; i++) {
+            // Fill buffer with test pattern
+            for (int j = 0; j < 512; j++) {
+                buffer[j] = (uint8_t)(i + j);
+            }
+            ata_write_sector(drive_index, write_start + i, buffer);
+            bench->test_progress = (do_sequential_read ? 25 : 0) + (i * 25) / 1000;
+        }
+
+        uint32_t end_time = get_tick_count();
+        uint32_t elapsed = end_time - start_time;
+        if (elapsed == 0) elapsed = 1;
+
+        bench->write_speed_kb = (1000 * 512) / elapsed;
+    }
     
     // Random access test
-    strcpy(bench->status_message, "Testing random access...");
-    start_time = get_tick_count();
-    
-    for (int i = 0; i < 1000; i++) {
-        uint32_t random_sector = bench_random() % test_sectors;
-        ata_read_sector(drive_index, random_sector, buffer);
-        bench->test_progress = 75 + (i * 25) / 1000;
+    if (do_random_read) {
+        int progress_base = (do_sequential_read ? 25 : 0) + (do_sequential_write ? 25 : 0);
+        bench->test_progress = progress_base;
+        strcpy(bench->status_message, "Testing random access...");
+        uint32_t start_time = get_tick_count();
+
+        for (int i = 0; i < 1000; i++) {
+            uint32_t random_sector = bench_random() % test_sectors;
+            ata_read_sector(drive_index, random_sector, buffer);
+            bench->test_progress = progress_base + (i * (100 - progress_base)) / 1000;
+        }
+
+        uint32_t end_time = get_tick_count();
+        uint32_t elapsed = end_time - start_time;
+        if (elapsed == 0) elapsed = 1;
+
+        bench->random_read_speed = (1000 * 512) / elapsed;
+        bench->access_time_ms = elapsed; // ms for 1000 random reads
+
+        // Calculate average access time
+        bench->access_time_ms = elapsed / 1000;
     }
     
-    end_time = get_tick_count();
-    elapsed = end_time - start_time;
-    if (elapsed == 0) elapsed = 1;
-    
-    bench->random_read_speed = (1000 * 512) / elapsed;
-    bench->access_time_ms = elapsed; // ms for 1000 random reads
-    
-    // Calculate average access time
-    bench->access_time_ms = elapsed / 1000;
-    
-    // SSD detection heuristic
-    bench->is_ssd = (bench->access_time_ms < 1) ? 1 : 0;
-    
+    // SSD detection heuristic (only if we did random read test)
+    if (do_random_read) {
+        bench->is_ssd = (bench->access_time_ms < 1) ? 1 : 0;
+    }
+
     bench->test_progress = 100;
     bench->test_complete = 1;
     strcpy(bench->status_message, "Benchmark complete");
-    
+
     return 1;
 }
 
 void disk_benchmark_stop(DiskBenchmark* bench) {
     bench->test_complete = 1;
     strcpy(bench->status_message, "Benchmark stopped");
+}
+
+// Async version - for now just calls the sync version
+// In a real implementation, this would run in a background task
+int disk_benchmark_run_async(int drive_index, DiskBenchmark* bench, BenchmarkType type) {
+    // For now, just run synchronously
+    // TODO: Implement actual async execution using task system
+    return disk_benchmark_run(drive_index, bench, type);
 }
 
 void disk_benchmark_render(int x, int y, DiskBenchmark* bench) {

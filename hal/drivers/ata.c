@@ -112,7 +112,13 @@ void ata_identify_device(int drive) {
     for(int i=0; i<256; i++) data[i] = inw(ATA_DATA);
     
     ide_devices[drive].present = 1;
-    ide_devices[drive].sectors = (uint32_t)data[60] | ((uint32_t)data[61] << 16);
+    // Check if LBA48 is supported (Word 83, Bit 10)
+    int lba48_supported = (data[83] & (1 << 10)) != 0;
+    if (lba48_supported) {
+        ide_devices[drive].sectors = (uint64_t)data[100] | ((uint64_t)data[101] << 16) | ((uint64_t)data[102] << 32) | ((uint64_t)data[103] << 48);
+    } else {
+        ide_devices[drive].sectors = (uint32_t)data[60] | ((uint32_t)data[61] << 16);
+    }
     
     char* model = ide_devices[drive].model;
     for(int i=0; i<20; i++) {

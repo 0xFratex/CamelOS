@@ -45,14 +45,15 @@ typedef struct {
     uint32_t magic;
     uint32_t version;
     uint32_t block_size;
+    uint32_t cluster_blocks; // Blocks per cluster
     uint32_t total_blocks;
     uint32_t fat_blocks;
     uint32_t data_start_block;
     uint32_t root_dir_block;
-    uint32_t free_blocks;      
-    uint32_t total_files;      
+    uint32_t free_blocks;
+    uint32_t total_files;
     char volume_label[32];
-    uint8_t reserved[480];
+    uint8_t reserved[476];
 } __attribute__((packed)) pfs32_superblock_t;
 
 // Directory Entry (Modified for SEC-002 and FEAT-003)
