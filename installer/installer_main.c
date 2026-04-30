@@ -79,13 +79,6 @@ extern uint8_t app_waterhole_start[], app_waterhole_end[];
 extern uint8_t app_nettools_start[], app_nettools_end[];
 extern uint8_t app_textedit_start[], app_textedit_end[];
 extern uint8_t app_browser_start[], app_browser_end[];
-extern uint8_t lib_math_start[], lib_math_end[];
-extern uint8_t lib_usr32_start[], lib_usr32_end[];
-extern uint8_t lib_syskernel_start[], lib_syskernel_end[];
-extern uint8_t lib_proc_start[], lib_proc_end[];
-extern uint8_t lib_timer_start[], lib_timer_end[];
-extern uint8_t lib_gui_start[], lib_gui_end[];
-extern uint8_t lib_sysmon_start[], lib_sysmon_end[];
 
 // --- Design Configuration ---
 #define WIN_W 1024
@@ -1592,29 +1585,19 @@ int install_file(const char* path, uint8_t* start, uint8_t* end) {
 
 typedef struct { const char* path; uint8_t* start; uint8_t* end; } install_file_entry_t;
 static install_file_entry_t install_files[] = {
-    {"/usr/lib/math.cdl",       0,0}, {"/usr/lib/usr32.cdl",     0,0},
-    {"/usr/lib/syskernel.cdl",  0,0}, {"/usr/lib/proc.cdl",      0,0},
-    {"/usr/lib/timer.cdl",      0,0}, {"/usr/lib/gui.cdl",       0,0},
-    {"/usr/lib/sysmon.cdl",     0,0}, {"/usr/apps/Terminal.cdl", 0,0},
-    {"/usr/apps/Files.cdl",     0,0}, {"/usr/apps/Waterhole.cdl",0,0},
-    {"/usr/apps/NetTools.cdl",  0,0}, {"/usr/apps/TextEdit.cdl", 0,0},
-    {"/usr/apps/Browser.cdl",   0,0}, {0,0,0}
+    {"/usr/apps/Terminal.cdl",  0,0}, {"/usr/apps/Files.cdl",     0,0},
+    {"/usr/apps/Waterhole.cdl", 0,0}, {"/usr/apps/NetTools.cdl",  0,0},
+    {"/usr/apps/TextEdit.cdl",  0,0}, {"/usr/apps/Browser.cdl",   0,0},
+    {0,0,0}
 };
 
 void init_install_files(void) {
-    install_files[0].start=lib_math_start;     install_files[0].end=lib_math_end;
-    install_files[1].start=lib_usr32_start;    install_files[1].end=lib_usr32_end;
-    install_files[2].start=lib_syskernel_start;install_files[2].end=lib_syskernel_end;
-    install_files[3].start=lib_proc_start;     install_files[3].end=lib_proc_end;
-    install_files[4].start=lib_timer_start;    install_files[4].end=lib_timer_end;
-    install_files[5].start=lib_gui_start;      install_files[5].end=lib_gui_end;
-    install_files[6].start=lib_sysmon_start;   install_files[6].end=lib_sysmon_end;
-    install_files[7].start=app_terminal_start; install_files[7].end=app_terminal_end;
-    install_files[8].start=app_files_start;    install_files[8].end=app_files_end;
-    install_files[9].start=app_waterhole_start;install_files[9].end=app_waterhole_end;
-    install_files[10].start=app_nettools_start;install_files[10].end=app_nettools_end;
-    install_files[11].start=app_textedit_start;install_files[11].end=app_textedit_end;
-    install_files[12].start=app_browser_start; install_files[12].end=app_browser_end;
+    install_files[0].start=app_terminal_start; install_files[0].end=app_terminal_end;
+    install_files[1].start=app_files_start;    install_files[1].end=app_files_end;
+    install_files[2].start=app_waterhole_start;install_files[2].end=app_waterhole_end;
+    install_files[3].start=app_nettools_start; install_files[3].end=app_nettools_end;
+    install_files[4].start=app_textedit_start; install_files[4].end=app_textedit_end;
+    install_files[5].start=app_browser_start;  install_files[5].end=app_browser_end;
 }
 
 void install_tick(void) {
