@@ -9,6 +9,8 @@
 #include "../sys/api.h"
 #include "../hal/drivers/serial.h"
 
+typedef unsigned int uintptr_t;
+
 // Kernel API bridge
 static void* g_kernel_api_ptr = 0;
 
