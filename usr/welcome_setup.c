@@ -1,11 +1,12 @@
 // usr/welcome_setup.c - Camel OS Welcome Setup Implementation
-// A warm first-boot experience with user, timezone, and theme configuration
+// Enhanced with encrypted password, macOS-like directory structure, and screenlock integration
 
 #include "welcome_setup.h"
 #include "screenlock.h"
 #include "lib/camel_framework.h"
 #include "../hal/video/gfx_hal.h"
 #include "../core/string.h"
+#include "../core/sha256.h"
 #include "../common/time.h"
 #include "../sys/api.h"
 #include "../fs/pfs32.h"
@@ -30,6 +31,8 @@ static WelcomeSetup g_setup;
 #define C_INPUT_BG        0xFFF2F2F7
 #define C_BORDER          0xFFC6C6C8
 #define C_SUCCESS         0xFF34C759
+#define C_ERROR           0xFFFF3B30
+#define C_LOCK_ICON       0xFF8E8E93
 
 // Timezone data (major timezones)
 static TimeZone timezones[] = {
@@ -74,12 +77,19 @@ void welcome_setup_init(void) {
     memset(&g_setup, 0, sizeof(g_setup));
     g_setup.state = SETUP_STATE_WELCOME;
     g_setup.current_step = 0;
-    g_setup.total_steps = 4;
+    g_setup.total_steps = 5;  // Now 5 steps: Welcome, User, Password, Timezone, Theme
     g_setup.selected_tz_idx = 0;
     g_setup.selected_theme_idx = 0;
     g_setup.input_buffer[0] = 0;
     g_setup.input_cursor = 0;
     g_setup.anim_progress = 0.0f;
+    g_setup.password_buffer[0] = 0;
+    g_setup.password_confirm[0] = 0;
+    g_setup.password_cursor = 0;
+    g_setup.confirm_cursor = 0;
+    g_setup.password_active = 1;
+    g_setup.password_match_error = 0;
+    g_setup.password_step = 0;
     
     welcome_setup_set_defaults();
     welcome_setup_load_config();
@@ -88,30 +98,45 @@ void welcome_setup_init(void) {
 void welcome_setup_set_defaults(void) {
     strcpy(g_setup.config.username, "User");
     strcpy(g_setup.config.computer_name, "CamelOS");
+    g_setup.config.password_hash[0] = 0;
     memcpy(&g_setup.config.timezone, &timezones[0], sizeof(TimeZone));
     g_setup.config.theme = THEME_AQUA;
     g_setup.config.is_configured = 0;
-    g_setup.config.config_version = 1;
+    g_setup.config.auto_lock = 1;
+    g_setup.config.lock_timeout = 10;
+    g_setup.config.config_version = 2;  // Bumped for encrypted password support
 }
 
 // --- Persistence ---
 
 void welcome_setup_load_config(void) {
-    // Try to load config from /etc/system.conf
-    char buffer[256];
-    int result = sys_fs_read("/etc/system.conf", buffer, sizeof(buffer) - 1);
+    // Try to load config from /Library/Preferences/system.conf (macOS-like path)
+    // Fall back to /etc/system.conf for backward compatibility
+    char buffer[1024];
+    int result = sys_fs_read("/Library/Preferences/system.conf", buffer, sizeof(buffer) - 1);
+    
+    if (result <= 0) {
+        // Try legacy path
+        result = sys_fs_read("/etc/system.conf", buffer, sizeof(buffer) - 1);
+    }
     
     if (result > 0) {
         buffer[result] = 0;
         
-        // Parse simple config format
+        // Parse config format
         char* line = buffer;
         while (line && *line) {
             char* next = strchr(line, '\n');
             if (next) *next++ = 0;
             
+            // Skip comments
+            if (line[0] == '#') { line = next; continue; }
+            
             if (strncmp(line, "username=", 9) == 0) {
                 strncpy(g_setup.config.username, line + 9, SETUP_USERNAME_MAX - 1);
+            } else if (strncmp(line, "password_hash=", 14) == 0) {
+                strncpy(g_setup.config.password_hash, line + 14, 64);
+                g_setup.config.password_hash[64] = 0;
             } else if (strncmp(line, "timezone=", 9) == 0) {
                 for (int i = 0; i < (int)TIMEZONE_COUNT; i++) {
                     if (strcmp(line + 9, timezones[i].name) == 0) {
@@ -128,6 +153,15 @@ void welcome_setup_load_config(void) {
                 }
             } else if (strncmp(line, "configured=", 11) == 0) {
                 g_setup.config.is_configured = (line[11] == '1');
+            } else if (strncmp(line, "auto_lock=", 10) == 0) {
+                g_setup.config.auto_lock = (line[10] == '1');
+            } else if (strncmp(line, "lock_timeout=", 13) == 0) {
+                g_setup.config.lock_timeout = 0;
+                const char* p = line + 13;
+                while (*p >= '0' && *p <= '9') {
+                    g_setup.config.lock_timeout = g_setup.config.lock_timeout * 10 + (*p - '0');
+                    p++;
+                }
             }
             
             line = next;
@@ -136,37 +170,100 @@ void welcome_setup_load_config(void) {
 }
 
 void welcome_setup_save_config(void) {
-    char buffer[512];
+    char buffer[1024];
     int pos = 0;
     
-    pos += sprintf(buffer + pos, "# Camel OS System Configuration\n");
+    pos += sprintf(buffer + pos, "# CamelOS System Configuration\n");
+    pos += sprintf(buffer + pos, "# Version 2 - Encrypted password storage\n");
     pos += sprintf(buffer + pos, "username=%s\n", g_setup.config.username);
     pos += sprintf(buffer + pos, "computer=%s\n", g_setup.config.computer_name);
+    pos += sprintf(buffer + pos, "password_hash=%s\n", g_setup.config.password_hash);
     pos += sprintf(buffer + pos, "timezone=%s\n", g_setup.config.timezone.name);
     pos += sprintf(buffer + pos, "theme=%d\n", g_setup.config.theme);
+    pos += sprintf(buffer + pos, "auto_lock=%d\n", g_setup.config.auto_lock);
+    pos += sprintf(buffer + pos, "lock_timeout=%d\n", g_setup.config.lock_timeout);
     pos += sprintf(buffer + pos, "configured=1\n");
     
-    // Create /etc directory if needed
-    sys_fs_create("/etc", 1);
+    // Create macOS-like directory structure
+    sys_fs_create("/Library", 1);
+    sys_fs_create("/Library/Preferences", 1);
     
-    // Write config
+    // Write config to macOS-like path
+    sys_fs_write("/Library/Preferences/system.conf", buffer, pos);
+    
+    // Also write to legacy path for backward compatibility during transition
+    sys_fs_create("/etc", 1);
     sys_fs_write("/etc/system.conf", buffer, pos);
     
-    // Create user home directory
-    char home_path[64];
-    strcpy(home_path, "/home/");
+    // Create macOS-like user directory structure
+    char home_path[128];
+    
+    // /Users/<name> (macOS-like, replaces /home/<name>)
+    strcpy(home_path, "/Users/");
     strcat(home_path, g_setup.config.username);
     sys_fs_create(home_path, 1);
     
-    // Create Desktop folder
+    // Desktop
     strcat(home_path, "/Desktop");
     sys_fs_create(home_path, 1);
     
-    // Create Documents folder
-    strcpy(home_path, "/home/");
+    // Documents
+    strcpy(home_path, "/Users/");
     strcat(home_path, g_setup.config.username);
     strcat(home_path, "/Documents");
     sys_fs_create(home_path, 1);
+    
+    // Downloads
+    strcpy(home_path, "/Users/");
+    strcat(home_path, g_setup.config.username);
+    strcat(home_path, "/Downloads");
+    sys_fs_create(home_path, 1);
+    
+    // Pictures
+    strcpy(home_path, "/Users/");
+    strcat(home_path, g_setup.config.username);
+    strcat(home_path, "/Pictures");
+    sys_fs_create(home_path, 1);
+    
+    // Music
+    strcpy(home_path, "/Users/");
+    strcat(home_path, g_setup.config.username);
+    strcat(home_path, "/Music");
+    sys_fs_create(home_path, 1);
+    
+    // Movies
+    strcpy(home_path, "/Users/");
+    strcat(home_path, g_setup.config.username);
+    strcat(home_path, "/Movies");
+    sys_fs_create(home_path, 1);
+    
+    // Public
+    strcpy(home_path, "/Users/");
+    strcat(home_path, g_setup.config.username);
+    strcat(home_path, "/Public");
+    sys_fs_create(home_path, 1);
+    
+    // Also create legacy /home/desktop symlink for compatibility
+    sys_fs_create("/home/desktop", 1);
+    
+    // Create macOS system directories
+    sys_fs_create("/Applications", 1);
+    sys_fs_create("/System", 1);
+    sys_fs_create("/System/Library", 1);
+    sys_fs_create("/System/Library/Frameworks", 1);
+    sys_fs_create("/System/Library/CoreServices", 1);
+    sys_fs_create("/Library/Application Support", 1);
+    sys_fs_create("/Library/Fonts", 1);
+    sys_fs_create("/private", 1);
+    sys_fs_create("/private/var", 1);
+    sys_fs_create("/private/tmp", 1);
+    sys_fs_create("/usr", 1);
+    sys_fs_create("/usr/apps", 1);  // Legacy compatibility
+    sys_fs_create("/usr/lib", 1);   // Legacy compatibility
+    sys_fs_create("/bin", 1);
+    sys_fs_create("/sbin", 1);
+    sys_fs_create("/dev", 1);
+    sys_fs_create("/Volumes", 1);
 }
 
 // --- State Management ---
@@ -189,10 +286,23 @@ int welcome_setup_is_active(void) {
 
 void welcome_setup_finish(void) {
     g_setup.config.is_configured = 1;
+    
+    // Hash the password if one was set
+    if (g_setup.password_buffer[0] != 0) {
+        sha256_hash_password(g_setup.password_buffer, g_setup.config.password_hash);
+    } else {
+        // No password set - store empty hash
+        g_setup.config.password_hash[0] = 0;
+    }
+    
     welcome_setup_save_config();
     
-    // Configure screenlock with user
-    screenlock_create_user(g_setup.config.username, "", g_setup.config.theme);
+    // Configure screenlock with user and hashed password
+    screenlock_create_user(g_setup.config.username, g_setup.config.password_hash, g_setup.config.theme);
+    
+    // Configure screenlock timeout
+    screenlock_set_inactivity_timeout(g_setup.config.lock_timeout);
+    screenlock_set_inactivity_enabled(g_setup.config.auto_lock);
     
     g_setup.state = SETUP_STATE_COMPLETE;
 }
@@ -268,7 +378,7 @@ static int draw_button(int x, int y, int w, int h, const char* label, int primar
     return hover && click;
 }
 
-static void draw_text_field(int x, int y, int w, int h, const char* value, int active, int mx, int my, int click) {
+static void draw_text_field(int x, int y, int w, int h, const char* value, int active, int is_password, int mx, int my, int click) {
     int hover = (mx >= x && mx <= x + w && my >= y && my <= y + h);
     
     uint32_t bg = active ? C_TEXT_LIGHT : (hover ? C_INPUT_BG : C_CARD_BG);
@@ -277,13 +387,28 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
     gfx_fill_rounded_rect(x, y, w, h, bg, 8);
     gfx_draw_rect(x, y, w, h, border);
     
-    // Draw text
+    // Draw text (password dots or regular text)
     int text_x = x + 12;
     int text_y = y + (h - 16) / 2;
-    if (value && value[0]) {
-        gfx_draw_string(text_x, text_y, value, C_TEXT_DARK);
+    
+    if (is_password) {
+        // Draw password dots
+        int len = 0;
+        if (value) { const char* p = value; while (*p++) len++; }
+        
+        if (len > 0) {
+            for (int i = 0; i < len; i++) {
+                gfx_fill_rounded_rect(text_x + i * 14 + 4, text_y + 4, 8, 8, C_TEXT_DARK, 4);
+            }
+        } else {
+            gfx_draw_string(text_x, text_y, "Enter password...", C_TEXT_MUTED);
+        }
     } else {
-        gfx_draw_string(text_x, text_y, "Enter name...", C_TEXT_MUTED);
+        if (value && value[0]) {
+            gfx_draw_string(text_x, text_y, value, C_TEXT_DARK);
+        } else {
+            gfx_draw_string(text_x, text_y, "Enter name...", C_TEXT_MUTED);
+        }
     }
     
     // Cursor
@@ -291,7 +416,14 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
         static int blink = 0;
         blink++;
         if ((blink / 30) % 2 == 0) {
-            int cursor_x = text_x + strlen(value) * 8;
+            int cursor_x;
+            if (is_password) {
+                int len = 0;
+                if (value) { const char* p = value; while (*p++) len++; }
+                cursor_x = text_x + len * 14 + 6;
+            } else {
+                cursor_x = text_x + strlen(value) * 8;
+            }
             gfx_fill_rect(cursor_x, text_y, 1, 16, C_ACCENT);
         }
     }
@@ -314,12 +446,13 @@ static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int cli
     char* features[] = {
         "Fast and lightweight performance",
         "Beautiful macOS-inspired interface",
+        "Encrypted user authentication",
         "Built-in apps and utilities",
         "Secure and private by design"
     };
     
-    for (int i = 0; i < 4; i++) {
-        gfx_draw_string(cx - 160, feat_y + i * 25, "•", C_ACCENT);
+    for (int i = 0; i < 5; i++) {
+        gfx_draw_string(cx - 160, feat_y + i * 25, ">", C_ACCENT);
         gfx_draw_string(cx - 145, feat_y + i * 25, features[i], C_TEXT_DARK);
     }
     
@@ -368,7 +501,7 @@ static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int 
     
     // Username field
     draw_text_field(cx - 150, card_y + 210, 300, 44, 
-                   g_setup.input_buffer, g_setup.input_active, mx, my, click);
+                   g_setup.input_buffer, g_setup.input_active, 0, mx, my, click);
     
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
@@ -379,13 +512,120 @@ static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int 
     if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Continue", 1, mx, my, click)) {
         if (g_setup.input_buffer[0]) {
             strcpy(g_setup.config.username, g_setup.input_buffer);
-            g_setup.state = SETUP_STATE_TIMEZONE;
+            g_setup.state = SETUP_STATE_PASSWORD;
             g_setup.current_step = 2;
+            g_setup.password_buffer[0] = 0;
+            g_setup.password_confirm[0] = 0;
+            g_setup.password_cursor = 0;
+            g_setup.confirm_cursor = 0;
+            g_setup.password_active = 1;
+            g_setup.password_step = 0;
+            g_setup.password_match_error = 0;
         }
     }
     
     // Progress dots
     draw_progress_dots(cx, h - 80, 1, g_setup.total_steps);
+}
+
+static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
+    // Card
+    int card_w = 480;
+    int card_h = 400;
+    int card_x = cx - card_w / 2;
+    int card_y = cy - card_h / 2;
+    
+    draw_card(card_x, card_y, card_w, card_h);
+    
+    // Lock icon at top
+    int icon_y = card_y + 20;
+    gfx_fill_rounded_rect(cx - 15, icon_y, 30, 24, C_LOCK_ICON, 4);
+    gfx_fill_rounded_rect(cx - 10, icon_y - 10, 20, 16, 0x00000000, 8); // Arch
+    gfx_fill_rounded_rect(cx - 8, icon_y + 4, 16, 12, C_TEXT_LIGHT, 3);  // Keyhole
+    
+    // Title
+    if (g_setup.password_step == 0) {
+        char* title = "Set Your Password";
+        gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
+                              card_y + 50, title, C_TEXT_DARK, 2);
+        char* subtitle = "This protects your account and locks your screen";
+        gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
+                       card_y + 85, subtitle, C_TEXT_MUTED);
+    } else {
+        char* title = "Confirm Password";
+        gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
+                              card_y + 50, title, C_TEXT_DARK, 2);
+        char* subtitle = "Enter your password again to confirm";
+        gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
+                       card_y + 85, subtitle, C_TEXT_MUTED);
+    }
+    
+    // Password field
+    if (g_setup.password_step == 0) {
+        draw_text_field(cx - 150, card_y + 130, 300, 44,
+                       g_setup.password_buffer, g_setup.password_active == 1, 1, mx, my, click);
+    } else {
+        // Show first password as confirmed dots
+        gfx_draw_string(cx - 140, card_y + 120, "Password set", C_SUCCESS);
+        
+        // Confirm field
+        draw_text_field(cx - 150, card_y + 150, 300, 44,
+                       g_setup.password_confirm, g_setup.password_active == 2, 1, mx, my, click);
+    }
+    
+    // Optional hint
+    char* hint = "Leave blank to skip password protection";
+    gfx_draw_string(cx - strlen(hint) * 3, card_y + 220, hint, C_TEXT_MUTED);
+    
+    // Error message
+    if (g_setup.password_match_error) {
+        char* error = "Passwords do not match. Try again.";
+        gfx_draw_string(cx - strlen(error) * 3, card_y + 250, error, C_ERROR);
+    }
+    
+    // Security note
+    char* security = "Your password is encrypted with SHA-256";
+    gfx_draw_string(cx - strlen(security) * 3, card_y + 280, security, C_TEXT_MUTED);
+    
+    // Buttons
+    if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
+        g_setup.state = SETUP_STATE_USER;
+        g_setup.current_step = 1;
+        g_setup.password_match_error = 0;
+    }
+    
+    if (g_setup.password_step == 0) {
+        if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Next", 1, mx, my, click)) {
+            if (g_setup.password_buffer[0] == 0) {
+                // No password - skip confirmation, go to timezone
+                g_setup.state = SETUP_STATE_TIMEZONE;
+                g_setup.current_step = 3;
+            } else {
+                // Move to confirm step
+                g_setup.password_step = 1;
+                g_setup.password_active = 2;
+                g_setup.password_confirm[0] = 0;
+                g_setup.confirm_cursor = 0;
+                g_setup.password_match_error = 0;
+            }
+        }
+    } else {
+        if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Continue", 1, mx, my, click)) {
+            // Verify passwords match
+            if (strcmp(g_setup.password_buffer, g_setup.password_confirm) == 0) {
+                g_setup.state = SETUP_STATE_TIMEZONE;
+                g_setup.current_step = 3;
+                g_setup.password_match_error = 0;
+            } else {
+                g_setup.password_match_error = 1;
+                g_setup.password_confirm[0] = 0;
+                g_setup.confirm_cursor = 0;
+            }
+        }
+    }
+    
+    // Progress dots
+    draw_progress_dots(cx, h - 80, 2, g_setup.total_steps);
 }
 
 static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
@@ -459,18 +699,18 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
     
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
-        g_setup.state = SETUP_STATE_USER;
-        g_setup.current_step = 1;
+        g_setup.state = SETUP_STATE_PASSWORD;
+        g_setup.current_step = 2;
     }
     
     if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Continue", 1, mx, my, click)) {
         memcpy(&g_setup.config.timezone, &timezones[g_setup.selected_tz_idx], sizeof(TimeZone));
         g_setup.state = SETUP_STATE_THEME;
-        g_setup.current_step = 3;
+        g_setup.current_step = 4;
     }
     
     // Progress dots
-    draw_progress_dots(cx, h - 80, 2, g_setup.total_steps);
+    draw_progress_dots(cx, h - 80, 3, g_setup.total_steps);
 }
 
 static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
@@ -488,7 +728,7 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
                           card_y + 24, title, C_TEXT_DARK, 2);
     
     // Subtitle
-    char* subtitle = "Personalize your Camel OS experience";
+    char* subtitle = "Personalize your CamelOS experience";
     gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
                    card_y + 60, subtitle, C_TEXT_MUTED);
     
@@ -544,24 +784,24 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
         
         // Selection checkmark
         if (is_selected) {
-            gfx_draw_string(theme_x + theme_w - 20, theme_y + 5, "✓", C_ACCENT);
+            gfx_draw_string(theme_x + theme_w - 20, theme_y + 5, "OK", C_ACCENT);
         }
     }
     
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
         g_setup.state = SETUP_STATE_TIMEZONE;
-        g_setup.current_step = 2;
+        g_setup.current_step = 3;
     }
     
-    if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Continue", 1, mx, my, click)) {
+    if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Get Started", 1, mx, my, click)) {
         g_setup.config.theme = g_setup.selected_theme_idx;
         welcome_setup_finish();
         g_setup.state = SETUP_STATE_COMPLETE;
     }
     
     // Progress dots
-    draw_progress_dots(cx, h - 80, 3, g_setup.total_steps);
+    draw_progress_dots(cx, h - 80, 4, g_setup.total_steps);
 }
 
 // --- Main Render ---
@@ -590,6 +830,9 @@ void welcome_setup_render(uint32_t* buffer, int w, int h, int mx, int my) {
             break;
         case SETUP_STATE_USER:
             render_user_setup(cx, cy, w, h, mx, my, 0);
+            break;
+        case SETUP_STATE_PASSWORD:
+            render_password_setup(cx, cy, w, h, mx, my, 0);
             break;
         case SETUP_STATE_TIMEZONE:
             render_timezone_setup(cx, cy, w, h, mx, my, 0);
@@ -622,13 +865,68 @@ int welcome_setup_handle_key(int key) {
             // Enter - accept and continue
             if (g_setup.input_buffer[0]) {
                 strcpy(g_setup.config.username, g_setup.input_buffer);
-                g_setup.state = SETUP_STATE_TIMEZONE;
+                g_setup.state = SETUP_STATE_PASSWORD;
                 g_setup.current_step = 2;
+                g_setup.password_active = 1;
+                g_setup.password_step = 0;
             }
         } else if (key >= 0x20 && key < 0x7F && g_setup.input_cursor < SETUP_USERNAME_MAX - 1) {
             g_setup.input_buffer[g_setup.input_cursor] = (char)key;
             g_setup.input_cursor++;
             g_setup.input_buffer[g_setup.input_cursor] = 0;
+        }
+        return 1;
+    }
+    
+    // Password step input
+    if (g_setup.state == SETUP_STATE_PASSWORD) {
+        if (key == 0x08 || key == 0x7F) {
+            // Backspace
+            if (g_setup.password_step == 0 && g_setup.password_cursor > 0) {
+                g_setup.password_cursor--;
+                g_setup.password_buffer[g_setup.password_cursor] = 0;
+            } else if (g_setup.password_step == 1 && g_setup.confirm_cursor > 0) {
+                g_setup.confirm_cursor--;
+                g_setup.password_confirm[g_setup.confirm_cursor] = 0;
+            }
+            g_setup.password_match_error = 0;
+        } else if (key == 0x0D || key == '\n') {
+            // Enter
+            if (g_setup.password_step == 0) {
+                if (g_setup.password_buffer[0] == 0) {
+                    // No password - skip to timezone
+                    g_setup.state = SETUP_STATE_TIMEZONE;
+                    g_setup.current_step = 3;
+                } else {
+                    // Move to confirm
+                    g_setup.password_step = 1;
+                    g_setup.password_active = 2;
+                    g_setup.password_confirm[0] = 0;
+                    g_setup.confirm_cursor = 0;
+                }
+            } else {
+                // Verify passwords match
+                if (strcmp(g_setup.password_buffer, g_setup.password_confirm) == 0) {
+                    g_setup.state = SETUP_STATE_TIMEZONE;
+                    g_setup.current_step = 3;
+                    g_setup.password_match_error = 0;
+                } else {
+                    g_setup.password_match_error = 1;
+                    g_setup.password_confirm[0] = 0;
+                    g_setup.confirm_cursor = 0;
+                }
+            }
+        } else if (key >= 0x20 && key < 0x7F) {
+            if (g_setup.password_step == 0 && g_setup.password_cursor < SETUP_PASSWORD_MAX - 1) {
+                g_setup.password_buffer[g_setup.password_cursor] = (char)key;
+                g_setup.password_cursor++;
+                g_setup.password_buffer[g_setup.password_cursor] = 0;
+            } else if (g_setup.password_step == 1 && g_setup.confirm_cursor < SETUP_PASSWORD_MAX - 1) {
+                g_setup.password_confirm[g_setup.confirm_cursor] = (char)key;
+                g_setup.confirm_cursor++;
+                g_setup.password_confirm[g_setup.confirm_cursor] = 0;
+            }
+            g_setup.password_match_error = 0;
         }
         return 1;
     }
@@ -652,6 +950,9 @@ int welcome_setup_handle_click(int mx, int my) {
             break;
         case SETUP_STATE_USER:
             render_user_setup(cx, cy, w, h, mx, my, 1);
+            break;
+        case SETUP_STATE_PASSWORD:
+            render_password_setup(cx, cy, w, h, mx, my, 1);
             break;
         case SETUP_STATE_TIMEZONE:
             render_timezone_setup(cx, cy, w, h, mx, my, 1);

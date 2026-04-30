@@ -212,6 +212,19 @@ void kernel_main(void* mboot_ptr) {
     extern void internal_cdl_init_system();
     internal_cdl_init_system();
     s_printf("[KERNEL] CDL System Initialized.\n");
+    
+    // Initialize Objective-C Runtime and Foundation framework for macOS app compat
+    extern void objc_runtime_init(void);
+    objc_runtime_init();
+    s_printf("[KERNEL] Objective-C Runtime Initialized.\n");
+    
+    extern void foundation_init(void);
+    foundation_init();
+    s_printf("[KERNEL] Foundation Framework Initialized.\n");
+    
+    // Initialize SHA-256 module (used for encrypted passwords)
+    // No init needed - it's stateless
+    s_printf("[KERNEL] SHA-256 Hash Module Ready.\n");
 
     int m = sys_fs_mount();
     s_printf("[DBG] sys_fs_mount returned ");

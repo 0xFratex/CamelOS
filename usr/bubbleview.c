@@ -1,4 +1,5 @@
-// usr/bubbleview.c
+// usr/bubbleview.c - Main GUI Event Loop
+// Enhanced with screenlock integration, welcome setup, and macOS-like paths
 #include "../sys/api.h"
 #include "framework.h"
 #include "dock.h"
@@ -11,6 +12,8 @@
 #include "../hal/video/animation.h"
 #include "../core/app_switcher.h"
 #include "desktop.h" // For desktop_is_ctx_open
+#include "screenlock.h"
+#include "welcome_setup.h"
 
 // Extern for destroying window
 extern void ws_destroy_window(window_t* win);
@@ -19,27 +22,46 @@ extern void ws_destroy_window(window_t* win);
 void desktop_refresh();
 
 // Launch helper
+// macOS-like application paths (both /Applications/ and legacy /usr/apps/ supported)
+#define APP_FILES       "/Applications/Files.app"
+#define APP_TERMINAL    "/Applications/Terminal.app"
+#define APP_TEXTEDIT    "/Applications/TextEdit.app"
+#define APP_BROWSER     "/Applications/Browser.app"
+#define APP_SETTINGS    "/Applications/Settings.app"
+#define APP_LEGACY_PREFIX "/usr/apps/"
+#define APP_NEW_PREFIX    "/Applications/"
+
+// Resolve app path - try macOS path first, fall back to legacy
+static const char* resolve_app_path(const char* app_name) {
+    static char resolved[128];
+    // Try /Applications/ first
+    strcpy(resolved, APP_NEW_PREFIX);
+    strcat(resolved, app_name);
+    if (sys_fs_exists(resolved)) return resolved;
+    // Try legacy /usr/apps/
+    strcpy(resolved, APP_LEGACY_PREFIX);
+    strcat(resolved, app_name);
+    if (sys_fs_exists(resolved)) return resolved;
+    // Return new path as default even if doesn't exist yet
+    strcpy(resolved, APP_NEW_PREFIX);
+    strcat(resolved, app_name);
+    return resolved;
+}
+
 void desktop_execute_item(const char* path, int is_dir) {
+    extern int wrap_exec_with_args(const char*, const char*);
+    extern int wrap_exec(const char*);
+    
     if (is_dir) {
         // Open Files App pointing to this path
-        // We use the new API wrapper for exec with args
-        // Note: In kernel mode we can access wrappers directly or via sys_exec logic
-        // Since bubbleview is part of kernel image in this build, we call wrapper.
-        extern int wrap_exec_with_args(const char*, const char*);
-        wrap_exec_with_args("/usr/apps/Files.app", path);
+        wrap_exec_with_args(resolve_app_path("Files.app"), path);
     } else {
-        // Try to execute it if it's an app, or open with if it's a file
-        // For simplicity, we just exec. If it's a text file, it might fail or need "Open With" logic.
-        // We check extension.
         int len = strlen(path);
         if (len > 4 && strcmp(path + len - 4, ".app") == 0) {
-            extern int wrap_exec(const char*);
             wrap_exec(path);
         } else {
-            // "Open With" behavior default: Text files -> Terminal?
-            // Or force Files app to open containing folder?
-            // Let's open Terminal for now as a text viewer test
-            // wrap_exec_with_args("/usr/apps/Terminal.app", path); // Needs terminal support
+            // Open with TextEdit by default for text files
+            wrap_exec_with_args(resolve_app_path("TextEdit.app"), path);
         }
     }
 }
@@ -584,12 +606,12 @@ void ctx_menu_handle_click(int mx, int my) {
     extern int wrap_exec_with_args(const char*, const char*);
 
     switch(action) {
-        case 1: { /* New Folder */ char new_path[256]; strcpy(new_path, "/home/desktop/New Folder"); int counter = 1; char test_path[256]; while(1) { strcpy(test_path, new_path); if(counter > 1) { char num[10]; int_to_str(counter, num); strcat(test_path, " "); strcat(test_path, num); } strcat(test_path, "/"); if(!sys_fs_exists(test_path)) { strcpy(new_path, test_path); new_path[strlen(new_path)-1] = 0; break; } counter++; } sys_fs_create(new_path, 1); desktop_refresh(); } break;
-        case 2: /* New File */ sys_fs_create("/home/desktop/New_Text.txt", 0); desktop_refresh(); break;
+        case 1: { /* New Folder */ char new_path[256]; strcpy(new_path, "/Users/Desktop/New Folder"); if (!sys_fs_exists("/Users/Desktop")) strcpy(new_path, "/home/desktop/New Folder"); int counter = 1; char test_path[256]; while(1) { strcpy(test_path, new_path); if(counter > 1) { char num[10]; int_to_str(counter, num); strcat(test_path, " "); strcat(test_path, num); } strcat(test_path, "/"); if(!sys_fs_exists(test_path)) { strcpy(new_path, test_path); new_path[strlen(new_path)-1] = 0; break; } counter++; } sys_fs_create(new_path, 1); desktop_refresh(); } break;
+        case 2: /* New File */ { const char* dp = sys_fs_exists("/Users/Desktop") ? "/Users/Desktop/New_Text.txt" : "/home/desktop/New_Text.txt"; sys_fs_create(dp, 0); desktop_refresh(); } break;
         case 3: /* Rename */ renaming_mode = 1; rename_cursor = 0; rename_buffer[0] = 0; menu_rect_x = mx; menu_rect_y = my + 20; g_ctx_menu.active = 0; break;
         case 4: /* Delete */ sys_fs_delete_recursive(target_name); desktop_refresh(); break;
         case 5: /* Copy */ strcpy(clip_file_path, target_name); clip_is_cut = 0; clip_active = 1; break;
-        case 6: /* Paste */ if (clip_active) { char dest[128] = "/home/desktop/"; strcat(dest, "Copy_of_File"); sys_fs_copy(clip_file_path, dest); desktop_refresh(); } break;
+        case 6: /* Paste */ if (clip_active) { char dest[128]; strcpy(dest, sys_fs_exists("/Users/Desktop") ? "/Users/Desktop/" : "/home/desktop/"); strcat(dest, "Copy_of_File"); sys_fs_copy(clip_file_path, dest); desktop_refresh(); } break;
         case 7: /* Cut */ break; // TODO
         case 10: /* Open (Default) */ desktop_execute_item(target_name, 0); break;
     }
@@ -762,7 +784,9 @@ void handle_input(int mx, int my, int lb, int rb) {
             if (hit_idx != -1) {
                 // If clicking the ALREADY selected item -> Trigger open
                 if (hit_idx == last_select_idx) {
-                    char path[128]; strcpy(path, "/home/desktop/"); strcat(path, desk_entries[hit_idx].filename);
+                    char path[128]; 
+                    strcpy(path, sys_fs_exists("/Users/Desktop") ? "/Users/Desktop/" : "/home/desktop/");
+                    strcat(path, desk_entries[hit_idx].filename);
                     desktop_execute_item(path, (desk_entries[hit_idx].attributes & 0x10));
                     last_select_idx = -1; // Reset
                     return;
@@ -777,6 +801,10 @@ void handle_input(int mx, int my, int lb, int rb) {
     }
 }
 
+// Screenlock + Welcome Setup state
+static int g_setup_mode = 0;   // 1 = showing welcome setup wizard
+static int g_first_boot_lock = 0;  // 1 = need to lock screen after setup
+
 void start_bubble_view() {
     sys_gfx_init();
     
@@ -786,14 +814,35 @@ void start_bubble_view() {
     ws_init();
     dock_init();
     
-    // Add debug print
     sys_print("[GUI] Framework Initialized.\n");
+    
+    // Initialize screenlock and load user from config
+    screenlock_init();
+    screenlock_load_user();
+    
+    // Initialize welcome setup
+    welcome_setup_init();
     
     desktop_init();
     
     // Explicitly reset menu state
     g_ctx_menu.active = 0;
     frames_drawn = 0;
+
+    // Check if we need to run the welcome setup wizard
+    if (welcome_setup_needs_setup()) {
+        g_setup_mode = 1;
+        welcome_setup_start();
+        sys_print("[GUI] First boot detected - showing welcome setup.\n");
+    } else {
+        // User is configured - lock screen at uptime
+        g_setup_mode = 0;
+        if (screenlock_get_user()->has_password) {
+            screenlock_lock();
+            g_first_boot_lock = 1;
+            sys_print("[GUI] Screen locked at boot - waiting for authentication.\n");
+        }
+    }
 
     int mx = 0, my = 0;
     last_fs_gen = sys_get_fs_generation();
@@ -820,11 +869,92 @@ void start_bubble_view() {
 
         // Polling
         char k = sys_get_key();
+        int click = (lb && !prev_lb);
+
+        // ============================================
+        // WELCOME SETUP MODE - First boot configuration
+        // ============================================
+        if (g_setup_mode && welcome_setup_is_active()) {
+            // Update
+            welcome_setup_update(0.02f);
+            
+            // Handle input
+            if (k) welcome_setup_handle_key(k);
+            welcome_setup_handle_mouse(mx, my, click, 0);
+            
+            // Render
+            buffer = gfx_get_active_buffer();
+            welcome_setup_render(buffer, 1024, 768, mx, my);
+            
+            // Draw cursor on top
+            cm_draw_image(buffer, "cursor", mx, my, 12, 19);
+            
+            sys_vsync();
+            extern void gfx_swap_buffers();
+            gfx_swap_buffers();
+            
+            // Check if setup is complete
+            if (!welcome_setup_is_active()) {
+                g_setup_mode = 0;
+                // Lock screen after setup if password was set
+                if (screenlock_get_user()->has_password) {
+                    screenlock_lock();
+                    g_first_boot_lock = 1;
+                }
+            }
+            
+            prev_lb = lb;
+            prev_rb = rb;
+            frames_drawn++;
+            continue;
+        }
+
+        // ============================================
+        // SCREENLOCK MODE - Password entry / Lock screen
+        // ============================================
+        // Filter all events through screenlock when locked
+        {
+            int key_arg = k;
+            int mx_arg = mx, my_arg = my, click_arg = click;
+            if (screenlock_filter_event(&key_arg, &mx_arg, &my_arg, &click_arg)) {
+                // Screen is locked - consume the event
+                k = 0;  // Don't pass key to other handlers
+                
+                // Update screenlock animation
+                screenlock_update(0.02f);
+                
+                // Render lock screen ON TOP of everything
+                buffer = gfx_get_active_buffer();
+                desktop_draw(buffer);
+                
+                for(int i=0; i<MAX_WINDOWS; i++) {
+                    window_t* w = ws_get_window_at_index(i);
+                    if(!w || !w->is_visible) continue;
+                    draw_window_animated(w, mx, my);
+                }
+                
+                // Draw lock screen overlay
+                screenlock_render(buffer, 1024, 768, mx, my);
+                
+                sys_vsync();
+                extern void gfx_swap_buffers();
+                gfx_swap_buffers();
+                
+                prev_lb = lb;
+                prev_rb = rb;
+                frames_drawn++;
+                continue;
+            }
+            // If we get here, screen is unlocked - k was already consumed if needed
+        }
+
+        // ============================================
+        // NORMAL GUI MODE - Desktop interaction
+        // ============================================
 
         // App Switcher Logic
-        // Assuming 'ctrl' maps to Command for this demo
         int ctrl = 0, shift = 0, alt = 0;
-        sys_kbd_state(&ctrl, &shift, &alt); // Get modifier state
+        sys_kbd_state(&ctrl, &shift, &alt);
 
         if (ctrl) {
             if (k == '\t') app_switcher_handle_key(15, 1, shift);
@@ -837,17 +967,16 @@ void start_bubble_view() {
              ((icb)active_win->input_callback)((int)k);
         }
 
-        uint32_t* buffer = gfx_get_active_buffer();
+        buffer = gfx_get_active_buffer();
         desktop_draw(buffer);
 
         for(int i=0; i<MAX_WINDOWS; i++) {
             window_t* w = ws_get_window_at_index(i);
             if(!w || !w->is_visible) continue;
-            // Draw all visible windows (even minimizing ones until anim ends)
             draw_window_animated(w, mx, my);
         }
 
-            frame_counter++;
+        frame_counter++;
 
         // Auto Refresh
         uint32_t gen = sys_get_fs_generation();
@@ -858,11 +987,9 @@ void start_bubble_view() {
 
         // Handle rename mode input
         if (renaming_mode) {
-            // Draw text input box
             sys_gfx_rect(menu_rect_x, menu_rect_y, 200, 30, 0xFFFFFFFF);
             sys_gfx_rect(menu_rect_x, menu_rect_y, 200, 30, 0xFF000000);
             sys_gfx_string(menu_rect_x + 5, menu_rect_y + 8, rename_buffer, 0xFF000000);
-            // Draw cursor (simple blinking using frame counter)
             static int cursor_frame = 0;
             cursor_frame++;
             if ((cursor_frame / 30) % 2) {
@@ -870,45 +997,46 @@ void start_bubble_view() {
                 sys_gfx_rect(cursor_x, menu_rect_y + 10, 1, 12, 0xFF000000);
             }
 
-            // Handle keyboard input
-            char k = sys_get_key();
-            if (k) {
-                if (k == 13) { // Enter
-                    // Apply rename
+            char rk = sys_get_key();
+            if (rk) {
+                if (rk == 13) {
                     if (strlen(rename_buffer) > 0 && rename_target_idx >= 0 && rename_target_idx < 32) {
                         char old_path[128], new_path[128];
-                        strcpy(old_path, "/home/desktop/");
+                        strcpy(old_path, "/Users/");
+                        SystemConfig* cfg = welcome_setup_get_config();
+                        strcat(old_path, cfg->username);
+                        strcat(old_path, "/Desktop/");
                         strcat(old_path, desk_entries[rename_target_idx].filename);
-                        strcpy(new_path, "/home/desktop/");
+                        strcpy(new_path, "/Users/");
+                        strcat(new_path, cfg->username);
+                        strcat(new_path, "/Desktop/");
                         strcat(new_path, rename_buffer);
                         sys_fs_rename(old_path, new_path);
                         desktop_refresh();
                     }
                     renaming_mode = 0;
-                } else if (k == 8) { // Backspace
+                } else if (rk == 8) {
                     if (rename_cursor > 0) {
                         rename_buffer[--rename_cursor] = 0;
                     }
-                } else if (k >= 32 && k <= 126 && rename_cursor < 63) {
-                    rename_buffer[rename_cursor++] = k;
+                } else if (rk >= 32 && rk <= 126 && rename_cursor < 63) {
+                    rename_buffer[rename_cursor++] = rk;
                     rename_buffer[rename_cursor] = 0;
                 }
             }
         }
 
-    // Draw Snap Preview Overlay
-    if (snap_preview_active) {
-        gfx_fill_rounded_rect(snap_preview_rect.x, snap_preview_rect.y,
-                              snap_preview_rect.w, snap_preview_rect.h,
-                              SNAP_PREVIEW_COLOR, 15);
-    }
+        // Draw Snap Preview Overlay
+        if (snap_preview_active) {
+            gfx_fill_rounded_rect(snap_preview_rect.x, snap_preview_rect.y,
+                                  snap_preview_rect.w, snap_preview_rect.h,
+                                  SNAP_PREVIEW_COLOR, 15);
+        }
 
         dock_render(buffer, 1024, 768, mx, my);
         process_global_bar(mx, my, (lb && !prev_lb));
         cm_draw_image(buffer, "cursor", mx, my, 12, 19);
 
-        // Draw the new context menu on top of desktop but below windows (or on top of everything?)
-        // Usually Context Menu is topmost.
         ctx_menu_draw();
 
         // Render Overlays

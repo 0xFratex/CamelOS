@@ -24,13 +24,15 @@ int dock_count = 0;
 
 void dock_init() {
     dock_count = 0;
-    // Register Default Apps
-    dock_add_app("Finder",   "/usr/apps/Files.app",     "folder");
-    dock_add_app("Terminal", "/usr/apps/Terminal.app",  "terminal");
-    dock_add_app("Monitor",  "/usr/apps/Waterhole.app", "waterhole");
-    dock_add_app("NetTools", "/usr/apps/NetTools.app",  "networking");
-    dock_add_app("TextEdit", "/usr/apps/TextEdit.app",  "file");
-    dock_add_app("Browser",  "/usr/apps/Browser.app",   "browser");
+    // Register Default Apps - Using /Applications/ path (macOS-like)
+    // These .app bundles live in /Applications/ and resolve via app_bundle system
+    dock_add_app("Finder",   "/Applications/Files.app",      "folder");
+    dock_add_app("Terminal", "/Applications/Terminal.app",   "terminal");
+    dock_add_app("Monitor",  "/Applications/Waterhole.app",  "waterhole");
+    dock_add_app("NetTools", "/Applications/NetTools.app",   "networking");
+    dock_add_app("TextEdit", "/Applications/TextEdit.app",   "file");
+    dock_add_app("Browser",  "/Applications/Browser.app",    "browser");
+    dock_add_app("Settings", "/Applications/Settings.app",   "hdd_icon");
 }
 
 void dock_add_app(const char* label, const char* path, const char* icon_res) {

@@ -1,4 +1,5 @@
 // usr/welcome_setup.h - Camel OS Welcome Setup Header
+// Enhanced with encrypted password support and macOS-like directory structure
 #ifndef WELCOME_SETUP_H
 #define WELCOME_SETUP_H
 
@@ -7,6 +8,7 @@
 // Configuration limits
 #define SETUP_USERNAME_MAX  64
 #define SETUP_TIMEZONE_MAX  64
+#define SETUP_PASSWORD_MAX  32
 
 // Theme options
 typedef enum {
@@ -25,20 +27,24 @@ typedef struct {
     int offset_minutes;  // Offset from UTC in minutes
 } TimeZone;
 
-// System configuration
+// System configuration - now includes encrypted password hash
 typedef struct {
     char username[SETUP_USERNAME_MAX];
     char computer_name[SETUP_USERNAME_MAX];
+    char password_hash[65];      // SHA-256 hex hash (64 chars + null)
     TimeZone timezone;
     ThemeType theme;
     int is_configured;
+    int auto_lock;               // Auto-lock on startup
+    int lock_timeout;            // Inactivity timeout in minutes
     uint32_t config_version;
 } SystemConfig;
 
-// Setup wizard state
+// Setup wizard state - now includes password step
 typedef enum {
     SETUP_STATE_WELCOME,
     SETUP_STATE_USER,
+    SETUP_STATE_PASSWORD,
     SETUP_STATE_TIMEZONE,
     SETUP_STATE_THEME,
     SETUP_STATE_COMPLETE
@@ -58,6 +64,15 @@ typedef struct {
     int input_cursor;
     int input_active;
     float anim_progress;
+    
+    // Password entry state
+    char password_buffer[SETUP_PASSWORD_MAX];
+    char password_confirm[SETUP_PASSWORD_MAX];
+    int password_cursor;
+    int confirm_cursor;
+    int password_active;         // 1 = password field, 2 = confirm field
+    int password_match_error;    // Show password mismatch error
+    int password_step;           // 0 = enter, 1 = confirm
 } WelcomeSetup;
 
 // Public API

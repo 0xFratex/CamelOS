@@ -152,13 +152,86 @@ int wrap_net_get_if_info(char* name, char* out_ip, char* out_mac) {
 
 // ... (Other standard wrappers for graphics, fs, etc.) ...
 void wrap_exit() { if (active_win) { active_win->anim_state = 2; active_win->anim_t = 0.0f; } }
-int wrap_exec(const char* path) {
-    char actual_path[128]; strncpy(actual_path, path, 128);
+
+// Resolve .app bundle path to executable, handling both macOS-like and legacy paths
+static int resolve_and_load(const char* path) {
+    char actual_path[256];
+    strncpy(actual_path, path, 255);
+    actual_path[255] = 0;
     int len = strlen(path);
+    
     if(len > 4 && strcmp(path + len - 4, ".app") == 0) {
-        actual_path[len - 4] = '\0'; strcat(actual_path, ".cdl");
+        // Try macOS-style .app bundle layout: .app/Contents/MacOS/Executable
+        // First, extract the app name from path
+        const char* name_start = path;
+        const char* p = path;
+        while (*p) { if (*p == '/') name_start = p + 1; p++; }
+        int name_len = len - (name_start - path) - 4; // Remove .app
+        
+        // Try 1: .app/Contents/MacOS/<name>
+        if (name_len > 0 && name_len < 60) {
+            char bundle_exec[256];
+            strcpy(bundle_exec, path);
+            strcat(bundle_exec, "/Contents/MacOS/");
+            strncat(bundle_exec, name_start, name_len);
+            if (sys_fs_exists(bundle_exec)) {
+                // Check for Mach-O magic
+                char magic_buf[8];
+                int msize = sys_fs_read(bundle_exec, magic_buf, 4);
+                if (msize >= 4) {
+                    uint32_t magic = *(uint32_t*)magic_buf;
+                    extern int macho_check_magic(const uint8_t*, uint32_t);
+                    if (macho_check_magic((uint8_t*)magic_buf, 4)) {
+                        // Load as Mach-O
+                        extern loaded_macho_t* macho_load(const char*);
+                        loaded_macho_t* img = macho_load(bundle_exec);
+                        if (img) return 0;  // Success
+                    }
+                }
+                // Fall through to ELF loading
+                return internal_load_library(bundle_exec);
+            }
+        }
+        
+        // Try 2: /Applications/<name>.cdl (new macOS-like path)
+        if (name_len > 0 && name_len < 60) {
+            char cdl_path[256];
+            strcpy(cdl_path, "/Applications/");
+            strncat(cdl_path, name_start, name_len);
+            strcat(cdl_path, ".cdl");
+            if (sys_fs_exists(cdl_path)) {
+                return internal_load_library(cdl_path);
+            }
+        }
+        
+        // Try 3: Legacy /usr/apps/<name>.cdl
+        if (name_len > 0 && name_len < 60) {
+            char cdl_path[256];
+            strcpy(cdl_path, "/usr/apps/");
+            strncat(cdl_path, name_start, name_len);
+            strcat(cdl_path, ".cdl");
+            if (sys_fs_exists(cdl_path)) {
+                return internal_load_library(cdl_path);
+            }
+        }
+        
+        // Try 4: Simple .app -> .cdl conversion (legacy behavior)
+        strcpy(actual_path, path);
+        actual_path[len - 4] = '\0';
+        strcat(actual_path, ".cdl");
+        if (sys_fs_exists(actual_path)) {
+            return internal_load_library(actual_path);
+        }
+        
+        // Last resort: try the path as-is
+        return internal_load_library(path);
     }
+    
     return internal_load_library(actual_path);
+}
+
+int wrap_exec(const char* path) {
+    return resolve_and_load(path);
 }
 extern void int_to_str(int, char*);
 extern uint32_t k_get_free_mem();

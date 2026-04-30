@@ -21,4 +21,9 @@ extern int desktop_is_ctx_open();
 extern void ctx_menu_show(int x, int y, int type, void* target);
 extern void desktop_refresh();
 
+// Drag-to-Applications install support
+// Called when a .app bundle or .dmg is dragged to the dock/Applications area
+extern void desktop_install_app(const char* source_path);
+extern int desktop_is_droppable(int x, int y); // Check if position is the Applications drop zone
+
 #endif

@@ -1,10 +1,11 @@
 // usr/screenlock.c - Camel OS Screen Lock Implementation
-// Enhanced with visibility fix and inactivity timer
+// Enhanced with encrypted password verification (SHA-256) and boot-time lock
 
 #include "screenlock.h"
 #include "lib/camel_framework.h"
 #include "../hal/video/gfx_hal.h"
 #include "../core/string.h"
+#include "../core/sha256.h"
 #include "../common/time.h"
 #include "../sys/api.h"
 #include "../hal/cpu/timer.h"
@@ -43,30 +44,34 @@ void screenlock_init(void) {
     memset(&g_lock, 0, sizeof(g_lock));
     g_lock.state = LOCK_STATE_UNLOCKED;
     strcpy(g_lock.user.username, "User");
-    g_lock.user.password[0] = 0;
-    g_lock.user.password_len = 0;
+    g_lock.user.password_hash[0] = 0;
+    g_lock.user.has_password = 0;
     g_lock.user.avatar_color = 0;
     g_lock.blur_amount = 0;
     g_lock.anim_progress = 0.0f;
+    g_lock.entered_password[0] = 0;
+    g_lock.cursor_pos = 0;
+    g_lock.show_error = 0;
+    g_lock.error_timer = 0;
     last_activity_time = get_tick_count();
 }
 
 // --- User Management ---
 
-void screenlock_set_user(const char* username, const char* password) {
+void screenlock_set_user(const char* username, const char* password_hash) {
     if (username) {
         strncpy(g_lock.user.username, username, LOCK_USER_MAX - 1);
         g_lock.user.username[LOCK_USER_MAX - 1] = 0;
     }
-    if (password) {
-        strncpy(g_lock.user.password, password, LOCK_PASSWORD_MAX - 1);
-        g_lock.user.password[LOCK_PASSWORD_MAX - 1] = 0;
-        g_lock.user.password_len = strlen(password);
+    if (password_hash) {
+        strncpy(g_lock.user.password_hash, password_hash, LOCK_PASSWORD_MAX - 1);
+        g_lock.user.password_hash[LOCK_PASSWORD_MAX - 1] = 0;
+        g_lock.user.has_password = (password_hash[0] != 0) ? 1 : 0;
     }
 }
 
-void screenlock_create_user(const char* username, const char* password, int avatar_color) {
-    screenlock_set_user(username, password);
+void screenlock_create_user(const char* username, const char* password_hash, int avatar_color) {
+    screenlock_set_user(username, password_hash);
     if (avatar_color >= 0 && avatar_color < 8) {
         g_lock.user.avatar_color = avatar_color;
     }
@@ -74,6 +79,48 @@ void screenlock_create_user(const char* username, const char* password, int avat
 
 LockUserProfile* screenlock_get_user(void) {
     return &g_lock.user;
+}
+
+// Load user configuration from system.conf
+void screenlock_load_user(void) {
+    char buffer[1024];
+    int result = sys_fs_read("/Library/Preferences/system.conf", buffer, sizeof(buffer) - 1);
+    
+    if (result <= 0) {
+        // Try legacy path
+        result = sys_fs_read("/etc/system.conf", buffer, sizeof(buffer) - 1);
+    }
+    
+    if (result > 0) {
+        buffer[result] = 0;
+        
+        char* line = buffer;
+        while (line && *line) {
+            char* next = strchr(line, '\n');
+            if (next) *next++ = 0;
+            
+            if (strncmp(line, "username=", 9) == 0) {
+                strncpy(g_lock.user.username, line + 9, LOCK_USER_MAX - 1);
+                g_lock.user.username[LOCK_USER_MAX - 1] = 0;
+            } else if (strncmp(line, "password_hash=", 14) == 0) {
+                strncpy(g_lock.user.password_hash, line + 14, 64);
+                g_lock.user.password_hash[64] = 0;
+                g_lock.user.has_password = (g_lock.user.password_hash[0] != 0) ? 1 : 0;
+            } else if (strncmp(line, "auto_lock=", 10) == 0) {
+                inactivity_enabled = (line[10] == '1') ? 1 : 0;
+            } else if (strncmp(line, "lock_timeout=", 13) == 0) {
+                int timeout = 0;
+                const char* p = line + 13;
+                while (*p >= '0' && *p <= '9') {
+                    timeout = timeout * 10 + (*p - '0');
+                    p++;
+                }
+                if (timeout > 0) inactivity_timeout_seconds = timeout * 60;
+            }
+            
+            line = next;
+        }
+    }
 }
 
 // --- Inactivity Tracking ---
@@ -95,6 +142,7 @@ void screenlock_on_activity(void) {
 int screenlock_check_inactivity(void) {
     if (!inactivity_enabled) return 0;
     if (g_lock.state != LOCK_STATE_UNLOCKED) return 0;
+    if (!g_lock.user.has_password) return 0;  // Don't auto-lock if no password set
     
     uint32_t now = get_tick_count();
     uint32_t elapsed = now - last_activity_time;
@@ -149,8 +197,15 @@ int screenlock_handle_key(int key) {
     // Handle password input
     if (key == 0x0D || key == '\n') {
         // Enter - check password
-        if (g_lock.user.password_len == 0 ||
-            strcmp(g_lock.entered_password, g_lock.user.password) == 0) {
+        if (!g_lock.user.has_password) {
+            // No password set - unlock immediately
+            screenlock_unlock();
+            last_activity_time = get_tick_count();
+            return 1;
+        }
+        
+        // Hash the entered password and compare with stored hash
+        if (sha256_verify_password(g_lock.entered_password, g_lock.user.password_hash)) {
             screenlock_unlock();
             // Reset activity timer on unlock
             last_activity_time = get_tick_count();
@@ -169,7 +224,7 @@ int screenlock_handle_key(int key) {
             g_lock.entered_password[g_lock.cursor_pos] = 0;
         }
         g_lock.show_error = 0;
-    } else if (key >= 0x20 && key < 0x7F && g_lock.cursor_pos < LOCK_PASSWORD_MAX - 1) {
+    } else if (key >= 0x20 && key < 0x7F && g_lock.cursor_pos < LOCK_RAW_PASSWORD_MAX - 1) {
         // Character input
         g_lock.entered_password[g_lock.cursor_pos] = (char)key;
         g_lock.cursor_pos++;
@@ -295,8 +350,6 @@ static void draw_password_dots(int x, int y, int count, int max_dots, int show_e
 
 void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     (void)buffer;
-    (void)mx;
-    (void)my;
     
     if (g_lock.state == LOCK_STATE_UNLOCKED) {
         return;
@@ -349,7 +402,7 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     gfx_draw_string_scaled(cx - strlen(time_str) * 24, time_y, time_str, C_LOCK_TEXT, 4);
     
     // Date display (below time)
-    char date_str[32] = "Welcome to Camel OS";
+    char date_str[32] = "Welcome to CamelOS";
     gfx_draw_string_scaled(cx - strlen(date_str) * 6, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
     
     // Avatar
@@ -362,40 +415,47 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
                           avatar_y + avatar_size/2 + 30, 
                           g_lock.user.username, C_LOCK_TEXT, 1);
     
-    // Password input field
-    int input_y = avatar_y + avatar_size/2 + 80;
-    
-    // Input background
-    int field_w = 200;
-    int field_h = 36;
-    gfx_fill_rounded_rect(cx - field_w/2, input_y - field_h/2, 
-                          field_w, field_h, C_LOCK_INPUT_BG, 8);
-    
-    // Password dots
-    draw_password_dots(cx, input_y, g_lock.cursor_pos, 12, g_lock.show_error);
-    
-    // Blinking cursor
-    static int blink_timer = 0;
-    blink_timer++;
-    if ((blink_timer / 30) % 2 == 0) {
-        int cursor_x = cx + (g_lock.cursor_pos - 6) * 12 + 4;
-        gfx_fill_rect(cursor_x, input_y - 8, 2, 16, C_LOCK_TEXT);
-    }
-    
-    // Error message
-    if (g_lock.show_error) {
-        char* error_msg = "Incorrect password. Try again.";
-        gfx_draw_string(cx - strlen(error_msg) * 3, input_y + 30, error_msg, C_LOCK_ERROR);
+    // Password input field (only show if password is set)
+    if (g_lock.user.has_password) {
+        int input_y = avatar_y + avatar_size/2 + 80;
+        
+        // Input background
+        int field_w = 200;
+        int field_h = 36;
+        gfx_fill_rounded_rect(cx - field_w/2, input_y - field_h/2, 
+                              field_w, field_h, C_LOCK_INPUT_BG, 8);
+        
+        // Password dots
+        draw_password_dots(cx, input_y, g_lock.cursor_pos, 12, g_lock.show_error);
+        
+        // Blinking cursor
+        static int blink_timer = 0;
+        blink_timer++;
+        if ((blink_timer / 30) % 2 == 0) {
+            int cursor_x = cx + (g_lock.cursor_pos - 6) * 12 + 4;
+            gfx_fill_rect(cursor_x, input_y - 8, 2, 16, C_LOCK_TEXT);
+        }
+        
+        // Error message
+        if (g_lock.show_error) {
+            char* error_msg = "Incorrect password. Try again.";
+            gfx_draw_string(cx - strlen(error_msg) * 3, input_y + 30, error_msg, C_LOCK_ERROR);
+        }
+        
+        // Bottom hint
+        char* bottom_hint = "Enter password to unlock";
+        gfx_draw_string(cx - strlen(bottom_hint) * 3, h - 50, bottom_hint, C_LOCK_TEXT_DIM);
+    } else {
+        // No password - show "Click to unlock"
+        int input_y = avatar_y + avatar_size/2 + 80;
+        char* hint = "Click or press Enter to unlock";
+        gfx_draw_string(cx - strlen(hint) * 3, input_y, hint, C_LOCK_TEXT_DIM);
     }
     
     // Lock icon in corner
     int lock_x = w - 60;
     int lock_y = 30;
-    gfx_draw_string(lock_x - 10, lock_y, "🔒", C_LOCK_TEXT_DIM);
-    
-    // Bottom hint
-    char* bottom_hint = "Enter password to unlock";
-    gfx_draw_string(cx - strlen(bottom_hint) * 3, h - 50, bottom_hint, C_LOCK_TEXT_DIM);
+    gfx_draw_string(lock_x - 10, lock_y, "LOCK", C_LOCK_TEXT_DIM);
     
     // Draw mouse cursor
     if (g_lock.state == LOCK_STATE_LOCKED) {
@@ -432,6 +492,13 @@ int screenlock_filter_event(int* key, int* mx, int* my, int* click) {
             *key = 0; // Block the key from reaching other handlers
         }
         return consumed;
+    }
+    
+    // If no password set and locked, unlock on any click
+    if (!g_lock.user.has_password && click && *click) {
+        screenlock_unlock();
+        *click = 0;
+        return 1;
     }
     
     return 1;
