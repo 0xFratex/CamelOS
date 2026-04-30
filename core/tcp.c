@@ -397,7 +397,7 @@ void tcp_conn_set_data_callback(void* conn_ptr, void (*callback)(uint8_t*, uint1
 }
 
 // Set state change callback for a TCP connection
-void tcp_conn_set_state_callback(void* conn_ptr, void (*callback)(int, int)) {
+void tcp_conn_set_state_callback(void* conn_ptr, void (*callback)(uint8_t, uint8_t)) {
     tcp_connection_t* conn = (tcp_connection_t*)conn_ptr;
     if (conn) {
         conn->on_state_change = callback;

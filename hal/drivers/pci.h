@@ -36,6 +36,7 @@ void pci_init(void);
 uint32_t pci_read(pci_device_t dev, uint32_t field);
 void pci_write(pci_device_t dev, uint32_t field, uint32_t value);
 uint32_t pci_read_config_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+void pci_write_config_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
 void pci_enable_bus_master(pci_device_t* dev);
 
 // RTL8139 IRQ line

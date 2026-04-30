@@ -29,13 +29,15 @@ void dock_init() {
     dock_count = 0;
     // Register Default Apps - Using /Applications/ path (macOS-like)
     // These .app bundles live in /Applications/ and resolve via app_bundle system
-    dock_add_app("Finder",   "/Applications/Files.app",      "folder");
-    dock_add_app("Terminal", "/Applications/Terminal.app",   "terminal");
-    dock_add_app("Monitor",  "/Applications/Waterhole.app",  "waterhole");
-    dock_add_app("NetTools", "/Applications/NetTools.app",   "networking");
-    dock_add_app("TextEdit", "/Applications/TextEdit.app",   "file");
-    dock_add_app("Browser",  "/Applications/Browser.app",    "browser");
-    dock_add_app("Settings", "/Applications/Settings.app",   "hdd_icon");
+    // Note: Only apps with actual .cdl binaries will launch successfully
+    dock_add_app("Finder",    "/Applications/Files.app",      "folder");
+    dock_add_app("Terminal",  "/Applications/Terminal.app",   "terminal");
+    dock_add_app("Monitor",   "/Applications/Monitor.app",    "waterhole");
+    dock_add_app("NetDiag",   "/Applications/NetDiag.app",    "networking");
+    dock_add_app("NetTools",  "/Applications/NetTools.app",   "networking");
+    dock_add_app("TextEdit",  "/Applications/TextEdit.app",   "file");
+    dock_add_app("Browser",   "/Applications/Browser.app",    "browser");
+    dock_add_app("Settings",  "/Applications/Settings.app",   "hdd_icon");
 }
 
 void dock_add_app(const char* label, const char* path, const char* icon_res) {

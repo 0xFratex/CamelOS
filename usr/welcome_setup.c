@@ -130,11 +130,18 @@ void welcome_setup_load_config(void) {
             char* next = strchr(line, '\n');
             if (next) *next++ = 0;
             
-            // Skip comments
-            if (line[0] == '#') { line = next; continue; }
+            // Trim trailing CR if present (in case of CRLF line endings)
+            int llen = strlen(line);
+            while (llen > 0 && (line[llen-1] == '\r' || line[llen-1] == ' ')) {
+                line[--llen] = 0;
+            }
+            
+            // Skip comments and empty lines
+            if (line[0] == '#' || line[0] == 0) { line = next; continue; }
             
             if (strncmp(line, "username=", 9) == 0) {
                 strncpy(g_setup.config.username, line + 9, SETUP_USERNAME_MAX - 1);
+                g_setup.config.username[SETUP_USERNAME_MAX - 1] = 0;
             } else if (strncmp(line, "password_hash=", 14) == 0) {
                 strncpy(g_setup.config.password_hash, line + 14, 64);
                 g_setup.config.password_hash[64] = 0;
@@ -189,11 +196,25 @@ void welcome_setup_save_config(void) {
     sys_fs_create("/Library", 1);
     sys_fs_create("/Library/Preferences", 1);
     
-    // Write config to macOS-like path
-    sys_fs_write("/Library/Preferences/system.conf", buffer, pos);
+    // Delete old config file if it exists, then create fresh and write
+    sys_fs_delete("/Library/Preferences/system.conf");
+    sys_fs_create("/Library/Preferences/system.conf", 0);
+    int wres = sys_fs_write("/Library/Preferences/system.conf", buffer, pos);
+    
+    // Verify the write succeeded by reading back
+    if (wres > 0) {
+        char verify[64];
+        int vres = sys_fs_read("/Library/Preferences/system.conf", verify, sizeof(verify) - 1);
+        if (vres <= 0 || strncmp(verify, "# CamelOS", 9) != 0) {
+            // Primary write failed verification - try legacy path only
+            wres = -1;
+        }
+    }
     
     // Also write to legacy path for backward compatibility during transition
     sys_fs_create("/etc", 1);
+    sys_fs_delete("/etc/system.conf");
+    sys_fs_create("/etc/system.conf", 0);
     sys_fs_write("/etc/system.conf", buffer, pos);
     
     // Create macOS-like user directory structure
@@ -267,6 +288,9 @@ void welcome_setup_save_config(void) {
     sys_fs_create("/Volumes", 1);
     
     // CRITICAL: Flush all changes to disk so config persists across reboots
+    // Double-flush to ensure data reaches persistent storage
+    pfs32_sync();
+    disk_flush_cache();
     pfs32_sync();
     disk_flush_cache();
 }
@@ -394,12 +418,11 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
     
     // Calculate content dimensions for centering
     int text_y = y + (h - 16) / 2;
-    int content_w = 0;
     
     if (is_password) {
         // Use cursor_pos for accurate dot count (not strlen of hash)
         int len = cursor_pos;
-        content_w = len * 14;
+        int content_w = len * 14;
         int text_x = x + (w - content_w) / 2;  // Center dots in field
         
         if (len > 0) {
@@ -414,7 +437,7 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
         }
     } else {
         if (value && value[0]) {
-            content_w = strlen(value) * 8;
+            int content_w = strlen(value) * 8;
             int text_x = x + (w - content_w) / 2;  // Center text in field
             gfx_draw_string(text_x, text_y, value, C_TEXT_DARK);
         } else {
@@ -433,14 +456,24 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
             int cursor_x;
             if (is_password) {
                 int len = cursor_pos;
-                content_w = len * 14;
-                int text_x = x + (w - content_w) / 2;
-                cursor_x = text_x + len * 14 + 4;
+                if (len > 0) {
+                    int content_w = len * 14;
+                    int text_x = x + (w - content_w) / 2;
+                    cursor_x = text_x + len * 14 + 4;
+                } else {
+                    // Empty password: cursor in center
+                    cursor_x = x + w / 2;
+                }
             } else {
                 int vlen = value ? strlen(value) : 0;
-                content_w = vlen * 8;
-                int text_x = x + (w - content_w) / 2;
-                cursor_x = text_x + vlen * 8;
+                if (vlen > 0) {
+                    int content_w = vlen * 8;
+                    int text_x = x + (w - content_w) / 2;
+                    cursor_x = text_x + vlen * 8;
+                } else {
+                    // Empty field: cursor in center
+                    cursor_x = x + w / 2;
+                }
             }
             gfx_fill_rect(cursor_x, text_y, 1, 16, C_ACCENT);
         }

@@ -8,6 +8,8 @@
 #include "../hal/drivers/serial.h"
 
 extern void rtl8139_poll(void);
+extern uint32_t k_get_free_mem(void);
+extern int tcp_send(void* conn, uint8_t flags, const void* data, uint32_t len);
 
 // ============================================================================
 // DEBUG CONFIGURATION - Set to 0 for production

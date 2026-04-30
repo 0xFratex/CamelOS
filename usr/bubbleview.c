@@ -84,9 +84,6 @@ extern pfs32_direntry_t desk_entries[32];
 // Animation Constants
 #define ANIM_SPEED 10
 
-// Snapping Constants
-#define SNAP_MARGIN 20
-
 // -- State --
 static int prev_lb = 0;
 static int prev_rb = 0;
@@ -201,7 +198,7 @@ void ctx_menu_show(int x, int y, int type, void* target) {
         g_ctx_menu.items[3].enabled = clip_active;
     }
     else if (type == 1) { // File/Icon
-        g_ctx_menu.item_count = 5; // Reduced count for submenu
+        g_ctx_menu.item_count = 6; // Open, Open With, -, Copy, Rename, Delete
         strcpy(g_ctx_menu.items[0].label, "Open");             g_ctx_menu.items[0].action_id = 10;
         
         // "Open With" submenu

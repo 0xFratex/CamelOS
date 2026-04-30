@@ -22,6 +22,13 @@ extern int aes_gcm_decrypt(aes_gcm_ctx_t* ctx, const uint8_t* ciphertext, size_t
                            const uint8_t* aad, size_t aad_len,
                            const uint8_t* tag, uint8_t* plaintext);
 extern int aes_gcm_init(aes_gcm_ctx_t* ctx, const uint8_t* key, int key_bits, const uint8_t* iv);
+extern int dns_resolve(const char* hostname, char* ip_out, int max_len);
+
+static int local_atoi(const char* s) {
+    int v = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+    return v;
+}
 
 // ============================================================================
 // X25519 ELLIPTIC CURVE IMPLEMENTATION (RFC 7748)
@@ -1013,7 +1020,7 @@ int tls13_connect(tls13_session_t* session, const char* hostname, uint16_t port)
     uint32_t ip = 0;
     char* dot = ip_str;
     for (int i = 0; i < 4; i++) {
-        ip = (ip << 8) | atoi(dot);
+        ip = (ip << 8) | local_atoi(dot);
         dot = strchr(dot, '.');
         if (dot) dot++;
     }

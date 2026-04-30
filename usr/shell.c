@@ -149,79 +149,17 @@ int is_app_bundle(const char* filename) {
 }
 
 void execute_program(const char* path) {
-    char binary_path[128];
-    char resolved_path[128];
-    memset(binary_path, 0, 128);
-    memset(resolved_path, 0, 128);
+    sys_print("Launching App: "); sys_print(path); sys_print("\n");
     
-    if (is_app_bundle(path)) {
-        sys_print("Launching App: "); sys_print(path); sys_print("\n");
-
-        // Extract app name from path (e.g., /Applications/Files.app -> "Files")
-        int len = strlen(path);
-        const char* name_start = path;
-        const char* p = path;
-        while (*p) { if (*p == '/') name_start = p + 1; p++; }
-        int name_len = len - (name_start - path) - 4; // Remove .app
-        
-        if (name_len > 0 && name_len < 60) {
-            // Try 1: Same directory with .cdl extension (e.g., /Applications/Files.app -> /Applications/Files.cdl)
-            strncpy(binary_path, path, 127);
-            binary_path[len - 4] = '\0';
-            strcat(binary_path, ".cdl");
-            if (sys_fs_exists(binary_path)) {
-                strcpy(resolved_path, binary_path);
-                goto load_it;
-            }
-            
-            // Try 2: /usr/apps/<name>.cdl (legacy installed apps)
-            strcpy(binary_path, "/usr/apps/");
-            strncat(binary_path, name_start, name_len);
-            strcat(binary_path, ".cdl");
-            if (sys_fs_exists(binary_path)) {
-                strcpy(resolved_path, binary_path);
-                goto load_it;
-            }
-            
-            // Try 3: /Applications/<name>.cdl
-            strcpy(binary_path, "/Applications/");
-            strncat(binary_path, name_start, name_len);
-            strcat(binary_path, ".cdl");
-            if (sys_fs_exists(binary_path)) {
-                strcpy(resolved_path, binary_path);
-                goto load_it;
-            }
-            
-            // Try 4: .app/Contents/MacOS/<name> (macOS-style bundle)
-            strcpy(binary_path, path);
-            strcat(binary_path, "/Contents/MacOS/");
-            strncat(binary_path, name_start, name_len);
-            if (sys_fs_exists(binary_path)) {
-                strcpy(resolved_path, binary_path);
-                goto load_it;
-            }
-        }
-        
-        // Last resort: try the .cdl conversion anyway
-        strncpy(binary_path, path, 127);
-        binary_path[len - 4] = '\0';
-        strcat(binary_path, ".cdl");
-        strcpy(resolved_path, binary_path);
-    } else {
-        strcpy(resolved_path, path);
-    }
-
-load_it:
-    // Try to load it as a CDL (Dynamic App)
-    sys_print("Loading executable: "); sys_print(resolved_path); sys_print("\n");
+    // Use the unified resolve_and_load path from cdl_loader
+    // This ensures consistent app resolution across dock, desktop, and shell
+    extern int wrap_exec(const char*);
+    int result = wrap_exec(path);
     
-    int handle = sys_load_library(resolved_path);
-    if (handle >= 0) {
+    if (result >= 0) {
         sys_print("App loaded successfully (Handle "); 
-        char n[4]; int_to_str(handle, n); sys_print(n); 
+        char n[4]; int_to_str(result, n); sys_print(n); 
         sys_print(")\n");
-        // The CDL entry point (cdl_main) was already called by sys_load_library.
-        // That entry point typically creates the window and registers callbacks.
     } else {
         sys_print("Failed to execute. File not found or invalid format.\n");
     }

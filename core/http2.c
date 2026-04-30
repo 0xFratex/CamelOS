@@ -12,6 +12,12 @@
 // External declarations
 extern void rtl8139_poll(void);
 
+static int local_atoi(const char* s) {
+    int v = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+    return v;
+}
+
 // ============================================================================
 // HPACK HUFFMAN DECODING (Crucial for HTTP/2 responses from modern servers)
 // ============================================================================
@@ -1019,7 +1025,7 @@ http2_connection_t* http2_connect(const char* host, uint16_t port, int use_tls) 
     uint32_t ip = 0;
     char* dot = ip_str;
     for (int i = 0; i < 4; i++) {
-        ip = (ip << 8) | atoi(dot);
+        ip = (ip << 8) | local_atoi(dot);
         dot = strchr(dot, '.');
         if (dot) dot++;
     }

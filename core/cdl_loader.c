@@ -217,6 +217,17 @@ static int resolve_and_load(const char* path) {
             }
         }
         
+        // Try 3b: /usr/lib/<name>.cdl (system libraries that are also apps)
+        if (name_len > 0 && name_len < 60) {
+            char cdl_path[256];
+            strcpy(cdl_path, "/usr/lib/");
+            strncat(cdl_path, name_start, name_len);
+            strcat(cdl_path, ".cdl");
+            if (sys_fs_exists(cdl_path)) {
+                return internal_load_library(cdl_path);
+            }
+        }
+        
         // Try 4: Simple .app -> .cdl conversion (legacy behavior)
         strcpy(actual_path, path);
         actual_path[len - 4] = '\0';
@@ -647,7 +658,8 @@ void* wrap_cdl_sym(void* module, const char* name);
 void* wrap_cdl_load(const char* path) {
     char unique_name[32];
     extract_unique_name(path, unique_name);
-    if (find_loaded_library(unique_name) >= 0) return (void*)1; // Already loaded
+    int existing = find_loaded_library(unique_name);
+    if (existing >= 0) return (void*)(uintptr_t)existing; // Return actual slot index
     return (void*)(uintptr_t)internal_load_library(path);
 }
 

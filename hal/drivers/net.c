@@ -1,6 +1,7 @@
 #include "vga.h"
 #include "serial.h"
 #include "../../core/string.h"
+#include "../../sys/api.h"
 
 void net_init_realtek_8811au() {
     vga_print("\n[NET] Initializing Realtek 802.11ac NIC (RTL8811AU)...\n");

@@ -73,12 +73,15 @@ extern uint8_t system_bin_start[], system_bin_end[];
 extern uint8_t mbr_bin_start[];
 extern uint32_t _bss_end;
 
-extern uint8_t app_terminal_start[], app_terminal_end[];
-extern uint8_t app_files_start[], app_files_end[];
-extern uint8_t app_waterhole_start[], app_waterhole_end[];
-extern uint8_t app_nettools_start[], app_nettools_end[];
-extern uint8_t app_textedit_start[], app_textedit_end[];
-extern uint8_t app_browser_start[], app_browser_end[];
+extern uint8_t app_math_start[], app_math_end[];
+extern uint8_t app_usr32_start[], app_usr32_end[];
+extern uint8_t app_syskernel_start[], app_syskernel_end[];
+extern uint8_t app_proc_start[], app_proc_end[];
+extern uint8_t app_timer_start[], app_timer_end[];
+extern uint8_t app_gui_start[], app_gui_end[];
+extern uint8_t app_sysmon_start[], app_sysmon_end[];
+extern uint8_t app_jsengine_start[], app_jsengine_end[];
+extern uint8_t app_netdiag_start[], app_netdiag_end[];
 
 // --- Design Configuration ---
 #define WIN_W 1024
@@ -1606,19 +1609,28 @@ int install_file(const char* path, uint8_t* start, uint8_t* end) {
 
 typedef struct { const char* path; uint8_t* start; uint8_t* end; } install_file_entry_t;
 static install_file_entry_t install_files[] = {
-    {"/usr/apps/Terminal.cdl",  0,0}, {"/usr/apps/Files.cdl",     0,0},
-    {"/usr/apps/Waterhole.cdl", 0,0}, {"/usr/apps/NetTools.cdl",  0,0},
-    {"/usr/apps/TextEdit.cdl",  0,0}, {"/usr/apps/Browser.cdl",   0,0},
+    {"/usr/lib/math.cdl",        0,0},
+    {"/usr/lib/usr32.cdl",       0,0},
+    {"/usr/lib/syskernel.cdl",   0,0},
+    {"/usr/lib/proc.cdl",        0,0},
+    {"/usr/lib/timer.cdl",       0,0},
+    {"/usr/lib/gui.cdl",         0,0},
+    {"/usr/lib/sysmon.cdl",      0,0},
+    {"/usr/lib/jsengine.cdl",    0,0},
+    {"/usr/apps/NetDiag.cdl",    0,0},
     {0,0,0}
 };
 
 void init_install_files(void) {
-    install_files[0].start=app_terminal_start; install_files[0].end=app_terminal_end;
-    install_files[1].start=app_files_start;    install_files[1].end=app_files_end;
-    install_files[2].start=app_waterhole_start;install_files[2].end=app_waterhole_end;
-    install_files[3].start=app_nettools_start; install_files[3].end=app_nettools_end;
-    install_files[4].start=app_textedit_start; install_files[4].end=app_textedit_end;
-    install_files[5].start=app_browser_start;  install_files[5].end=app_browser_end;
+    install_files[0].start=app_math_start;       install_files[0].end=app_math_end;
+    install_files[1].start=app_usr32_start;      install_files[1].end=app_usr32_end;
+    install_files[2].start=app_syskernel_start;  install_files[2].end=app_syskernel_end;
+    install_files[3].start=app_proc_start;       install_files[3].end=app_proc_end;
+    install_files[4].start=app_timer_start;      install_files[4].end=app_timer_end;
+    install_files[5].start=app_gui_start;        install_files[5].end=app_gui_end;
+    install_files[6].start=app_sysmon_start;     install_files[6].end=app_sysmon_end;
+    install_files[7].start=app_jsengine_start;   install_files[7].end=app_jsengine_end;
+    install_files[8].start=app_netdiag_start;    install_files[8].end=app_netdiag_end;
 }
 
 void install_tick(void) {
@@ -1720,7 +1732,7 @@ void install_tick(void) {
             }
             return;
         }
-        if (install_file_idx < 6) {
+        if (install_file_idx < 9) {
             install_file_entry_t* f = &install_files[install_file_idx];
             if (f->path && f->start && f->end) {
                 strcpy(install_status, "Installing: "); strcat(install_status, f->path);
@@ -1730,19 +1742,20 @@ void install_tick(void) {
                 }
             }
             install_file_idx++;
-            install_target_pct = 47 + (install_file_idx * 43) / 6;
+            install_target_pct = 47 + (install_file_idx * 43) / 9;
             return;
         }
         // Create .app bundle directory stubs in /Applications/ for dock compatibility
-        // Each .app directory acts as a pointer to the actual .cdl in /usr/apps/
+        // Each .app directory acts as a pointer to the actual .cdl binary
         {
             const char* app_bundles[] = {
                 "/Applications/Files.app", "/Applications/Terminal.app",
                 "/Applications/Waterhole.app", "/Applications/NetTools.app",
-                "/Applications/TextEdit.app", "/Applications/Browser.app",
-                "/Applications/Settings.app"
+                "/Applications/NetDiag.app", "/Applications/TextEdit.app",
+                "/Applications/Browser.app", "/Applications/Settings.app",
+                "/Applications/Monitor.app"
             };
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < 9; i++) {
                 pfs32_create_directory(app_bundles[i]);
             }
         }
