@@ -15,6 +15,7 @@
 #include "../sys/api.h"
 #include "../fs/pfs32.h"
 #include "../hal/drivers/serial.h"
+#include "window_server.h"
 
 // =========================================================================
 // Internal Constants
