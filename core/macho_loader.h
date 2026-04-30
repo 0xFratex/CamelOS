@@ -199,6 +199,8 @@ void macho_unload(loaded_macho_t* image);
 
 // Resolve Objective-C class from a loaded Mach-O
 // Uses the __objc_classlist section to find registered classes
+struct objc_class; // Forward declaration
+typedef struct objc_class* Class;
 Class macho_get_objc_class(loaded_macho_t* image, const char* class_name);
 
 // Execute a Mach-O application (calls entry point)
