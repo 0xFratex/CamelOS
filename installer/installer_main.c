@@ -175,6 +175,7 @@ uint32_t last_animation_tick = 0;
 extern int mouse_x, mouse_y, mouse_btn_left;
 int mx = 512, my = 384;
 int mb_left = 0, mb_prev = 0;
+int mb_clicked = 0;  // 1 for exactly one frame when a click (press) is detected
 
 // Log window state
 int logs_window_open = 0;
@@ -255,6 +256,9 @@ void poll_input(void) {
     static uint8_t packet[3];
     static int cycle = 0;
 
+    mb_prev = mb_left;
+    mb_clicked = 0;  // Reset click flag each poll
+
     while ((inb(PS2_STATUS_PORT) & 1)) {
         uint8_t b = inb(PS2_MOUSE_PORT);
         if (cycle == 0 && !(b & 0x08)) { cycle = 0; continue; }
@@ -264,7 +268,10 @@ void poll_input(void) {
             if (packet[0] & 0xC0) continue;
             mx += (int8_t)packet[1];
             my -= (int8_t)packet[2];
-            mb_left = packet[0] & 1;
+            int new_left = packet[0] & 1;
+            // Detect rising edge: button just pressed this packet
+            if (new_left && !mb_left) mb_clicked = 1;
+            mb_left = new_left;
             if (mx < 0) mx = 0;
             if (mx >= WIN_W) mx = WIN_W - 1;
             if (my < 0) my = 0;
@@ -403,12 +410,16 @@ void render_disk_mini_map(int x, int y, int w, int h, int drive_idx) {
     }
 
     uint64_t total = ide_devices[drive_idx].sectors;
+    int max_px = x + w - 2;  // right boundary of the container
     int px = x + 2;
     for (int k = 0; k < 4; k++) {
         mbr_entry_t* p = &disk_mbr[drive_idx].partitions[k];
         if (p->type == 0) continue;
         int pw = (int)((uint64_t)p->lba_length * (w - 4) / total);
         if (pw < 4) pw = 4;
+        // Clamp so partition bar never extends beyond the container
+        if (px + pw > max_px) pw = max_px - px;
+        if (pw <= 0) break;  // no more room, skip remaining partitions
         gfx_fill_rounded_rect(px, y + 2, pw, h - 4, get_part_color(p->type), 3);
         px += pw;
     }
@@ -596,7 +607,7 @@ int ui_button(int x, int y, int w, int h, const char* label, uint32_t color) {
     int tlen = strlen(label) * 8;
     uint32_t tcol = (color == C_WHITE || color == C_BG) ? C_TEXT_DARK : C_WHITE;
     gfx_draw_string(x + (w-tlen)/2, y + (h-16)/2 + (pressed?1:0), label, tcol);
-    return (hover && mb_left && !mb_prev);
+    return (hover && mb_clicked);
 }
 
 // Small icon button (no shadow)
@@ -608,7 +619,7 @@ int ui_icon_button(int x, int y, int w, int h, const char* label, uint32_t bg, u
     gfx_fill_rounded_rect(x, y, w, h, draw_bg, 6);
     gfx_draw_rect(x, y, w, h, hover ? C_ACCENT_HOVER : C_BORDER);
     gfx_draw_string(x + 8, y + (h-14)/2, label, draw_fg);
-    return (hover && mb_left && !mb_prev);
+    return (hover && mb_clicked);
 }
 
 // =============================================================================
@@ -772,10 +783,10 @@ void render_logs_window(void) {
     int close_x = wx + win_w - 25, close_y = wy + 6;
     gfx_fill_rounded_rect(close_x, close_y, 18, 18, C_DANGER, 3);
     gfx_draw_string(close_x + 4, close_y + 2, "x", 0xFFFFFFFF);
-    if (mx >= close_x && mx < close_x+18 && my >= close_y && my < close_y+18 && mb_left && !mb_prev)
+    if (mx >= close_x && mx < close_x+18 && my >= close_y && my < close_y+18 && mb_clicked)
         logs_window_open = 0;
 
-    if (mx >= wx && mx < wx+win_w && my >= wy && my < wy+30 && mb_left && !mb_prev) {
+    if (mx >= wx && mx < wx+win_w && my >= wy && my < wy+30 && mb_clicked) {
         log_window_dragging = 1; log_window_drag_x = mx; log_window_drag_y = my;
     }
     if (!mb_left) log_window_dragging = 0;
@@ -842,7 +853,7 @@ void render_modal(void) {
             gfx_draw_rect(bx+16, oy, box_w-32, 46, hover ? C_ACCENT_HOVER : C_BORDER);
             gfx_draw_string(bx+28, oy+8, opts[i].label, fg);
             gfx_draw_string(bx+28, oy+26, opts[i].desc, sg);
-            if (hover && mb_left && !mb_prev) action_format_partition(opts[i].type);
+            if (hover && mb_clicked) action_format_partition(opts[i].type);
             oy += 52;
         }
     }
@@ -853,7 +864,7 @@ void render_modal(void) {
     gfx_fill_rounded_rect(bx+16, btn_y, 110, 42, cancel_hov ? C_TEXT_DARK : C_SIDEBAR, 8);
     gfx_draw_rect(bx+16, btn_y, 110, 42, C_BORDER);
     gfx_draw_string(bx+44, btn_y+13, "Cancel", cancel_hov ? C_WHITE : C_TEXT_DARK);
-    if (cancel_hov && mb_left && !mb_prev) modal_active = 0;
+    if (cancel_hov && mb_clicked) modal_active = 0;
 
     if (!is_format) {
         int act_hov = (mx >= bx+box_w-146 && mx <= bx+box_w-16 && my >= btn_y && my <= btn_y+42);
@@ -862,7 +873,7 @@ void render_modal(void) {
             act_bg = act_hov ? 0xFFCC0020 : C_DANGER;
         gfx_fill_rounded_rect(bx+box_w-146, btn_y, 130, 42, act_bg, 8);
         gfx_draw_string(bx+box_w-146+10, btn_y+13, modal_action_label, C_WHITE);
-        if (act_hov && mb_left && !mb_prev && modal_callback) modal_callback();
+        if (act_hov && mb_clicked && modal_callback) modal_callback();
     }
 }
 
@@ -1098,7 +1109,7 @@ void render_select_disk(void) {
             }
             gfx_draw_string(CX + 150, card_y + 42, part_info, C_TEXT_MUTED);
 
-            if (hover && mb_left && !mb_prev) selected_drive_idx = i;
+            if (hover && mb_clicked) selected_drive_idx = i;
         } else {
             gfx_draw_string(CX-236, card_y+40, "No drive detected in this bay", C_TEXT_MUTED);
         }
@@ -1166,7 +1177,7 @@ void render_disk_utility(void) {
             gfx_draw_string(24, sy + 20, "Empty Bay", muted);
         }
 
-        if (!modal_active && mx >= 8 && mx < 242 && my >= sy && my < sy+58 && mb_left && ide_devices[i].present) {
+        if (!modal_active && mx >= 8 && mx < 242 && my >= sy && my < sy+58 && mb_clicked && ide_devices[i].present) {
             util_drive_idx = i; util_part_idx = -1;
         }
         sy += 68;
@@ -1219,12 +1230,16 @@ void render_disk_utility(void) {
 
     if (disk_has_mbr[util_drive_idx]) {
         uint32_t total = dev->sectors;
+        int max_px = cx + bar_w - 4;  // right boundary of the partition bar
         int px = cx + 4;
         for (int k = 0; k < 4; k++) {
             mbr_entry_t* part = &disk_mbr[util_drive_idx].partitions[k];
             if (part->type == 0) continue;
             int pw = (int)((uint64_t)part->lba_length * (bar_w-8) / total);
             if (pw < 8) pw = 8;
+            // Clamp so partition bar never extends beyond the container
+            if (px + pw > max_px) pw = max_px - px;
+            if (pw <= 0) break;  // no more room, skip remaining partitions
             uint32_t col = get_part_color(part->type);
             if (util_part_idx == k) col = C_ACCENT_HOVER;
             gfx_fill_rounded_rect(px, bar_y+4, pw, bar_h-8, col, 5);
@@ -1233,7 +1248,7 @@ void render_disk_utility(void) {
                 char tn[16]; get_part_type_name(part->type, tn);
                 gfx_draw_string(px + 4, bar_y + bar_h/2 - 7, tn, 0xFFFFFFFF);
             }
-            if (!modal_active && mx >= px && mx < px+pw && my >= bar_y && my <= bar_y+bar_h && mb_left)
+            if (!modal_active && mx >= px && mx < px+pw && my >= bar_y && my <= bar_y+bar_h && mb_clicked)
                 util_part_idx = k;
             px += pw;
         }
@@ -1363,7 +1378,7 @@ void render_disk_tools_window(void) {
     int close_x = win_x + win_w - 28, close_y = win_y + 10;
     gfx_fill_rounded_rect(close_x, close_y, 18, 18, C_DANGER, 4);
     gfx_draw_string(close_x + 4, close_y + 3, "x", C_WHITE);
-    if (mx >= close_x && mx < close_x+18 && my >= close_y && my < close_y+18 && mb_left && !mb_prev) {
+    if (mx >= close_x && mx < close_x+18 && my >= close_y && my < close_y+18 && mb_clicked) {
         disk_tools_window_open = 0; disk_tool_selected = 0;
     }
 
@@ -1537,7 +1552,7 @@ void render_success(void) {
     gfx_draw_string(CX - 190, CY + 104, "Filesystem:", C_WHITE);
     gfx_draw_string(CX - 100, CY + 104, "PFS32 (Camel OS Native)", 0xFFFFFFFF);
     gfx_draw_string(CX - 190, CY + 124, "Files:",      C_WHITE);
-    gfx_draw_string(CX - 140, CY + 124, "13 system files installed", 0xFFFFFFFF);
+    gfx_draw_string(CX - 140, CY + 124, "6 system files installed", 0xFFFFFFFF);
 
     if (ui_button(CX - 110, CY + 166, 220, 50, "Restart Now", C_WHITE)) outb(0x64, 0xFE);
 }
@@ -1663,7 +1678,7 @@ void install_tick(void) {
             pfs32_create_directory("/usr/apps");
             install_sub_step=1; init_install_files(); install_file_idx=0; return;
         }
-        if (install_file_idx < 13) {
+        if (install_file_idx < 6) {
             install_file_entry_t* f = &install_files[install_file_idx];
             if (f->path && f->start && f->end) {
                 strcpy(install_status, "Installing: "); strcat(install_status, f->path);
@@ -1673,7 +1688,7 @@ void install_tick(void) {
                 }
             }
             install_file_idx++;
-            install_pct = 45 + (install_file_idx * 45) / 13;
+            install_pct = 45 + (install_file_idx * 45) / 6;
             return;
         }
         pfs32_sync(); disk_flush_cache();
@@ -1742,7 +1757,7 @@ int main(uint32_t magic, void* mb_ptr) {
         poll_input();
         gfx_fill_rect(0, 0, WIN_W, WIN_H, C_BG);
 
-        process_menu_bar(mx, my, mb_left && !mb_prev);
+        process_menu_bar(mx, my, mb_clicked);
 
         switch (current_state) {
             case STATE_WELCOME:    render_welcome();    break;
