@@ -1,6 +1,7 @@
 // core/tls.c - TLS 1.2+ Protocol Implementation
 // Implements: TLS 1.2 handshake, AES-GCM, SHA-256, RSA, Certificate validation
 #include "tls.h"
+#include "sha256.h"
 #include "socket.h"
 #include "string.h"
 #include "memory.h"
@@ -69,24 +70,6 @@ static const uint8_t aes_inv_sbox[256] = {
 // Rcon for key expansion
 static const uint8_t rcon[11] = {
     0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36
-};
-
-// SHA-256 initial hash values
-static const uint32_t sha256_init_state[8] = {
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-};
-
-// SHA-256 round constants
-static const uint32_t sha256_k[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
 // ============================================================================
@@ -204,142 +187,6 @@ uint8_t tls_get_random_byte(void) {
     uint8_t byte;
     tls_get_random(&byte, 1);
     return byte;
-}
-
-// ============================================================================
-// SHA-256 IMPLEMENTATION
-// ============================================================================
-
-#define ROTR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
-#define CH(x, y, z) (((x) & (y)) ^ (~(x) & (z)))
-#define MAJ(x, y, z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
-#define EP0(x) (ROTR32(x, 2) ^ ROTR32(x, 13) ^ ROTR32(x, 22))
-#define EP1(x) (ROTR32(x, 6) ^ ROTR32(x, 11) ^ ROTR32(x, 25))
-#define SIG0(x) (ROTR32(x, 7) ^ ROTR32(x, 18) ^ ((x) >> 3))
-#define SIG1(x) (ROTR32(x, 17) ^ ROTR32(x, 19) ^ ((x) >> 10))
-
-void sha256_init(sha256_ctx_t* ctx) {
-    for (int i = 0; i < 8; i++) {
-        ctx->state[i] = sha256_init_state[i];
-    }
-    ctx->count = 0;
-    memset(ctx->buffer, 0, SHA256_BLOCK_SIZE);
-}
-
-void sha256_transform(sha256_ctx_t* ctx, const uint8_t* data) {
-    uint32_t w[64];
-    uint32_t a, b, c, d, e, f, g, h;
-    uint32_t t1, t2;
-    
-    // Prepare message schedule
-    for (int i = 0; i < 16; i++) {
-        w[i] = tls_read_uint32(data + i * 4);
-    }
-    for (int i = 16; i < 64; i++) {
-        w[i] = SIG1(w[i-2]) + w[i-7] + SIG0(w[i-15]) + w[i-16];
-    }
-    
-    // Initialize working variables
-    a = ctx->state[0];
-    b = ctx->state[1];
-    c = ctx->state[2];
-    d = ctx->state[3];
-    e = ctx->state[4];
-    f = ctx->state[5];
-    g = ctx->state[6];
-    h = ctx->state[7];
-    
-    // Main loop
-    for (int i = 0; i < 64; i++) {
-        t1 = h + EP1(e) + CH(e, f, g) + sha256_k[i] + w[i];
-        t2 = EP0(a) + MAJ(a, b, c);
-        h = g;
-        g = f;
-        f = e;
-        e = d + t1;
-        d = c;
-        c = b;
-        b = a;
-        a = t1 + t2;
-    }
-    
-    // Add compressed chunk to current hash value
-    ctx->state[0] += a;
-    ctx->state[1] += b;
-    ctx->state[2] += c;
-    ctx->state[3] += d;
-    ctx->state[4] += e;
-    ctx->state[5] += f;
-    ctx->state[6] += g;
-    ctx->state[7] += h;
-}
-
-void sha256_update(sha256_ctx_t* ctx, const uint8_t* data, size_t len) {
-    size_t buffer_idx = ctx->count % SHA256_BLOCK_SIZE;
-    ctx->count += len;
-    
-    // If we have data in buffer, try to fill it
-    if (buffer_idx > 0) {
-        size_t space = SHA256_BLOCK_SIZE - buffer_idx;
-        if (len < space) {
-            memcpy(ctx->buffer + buffer_idx, data, len);
-            return;
-        }
-        memcpy(ctx->buffer + buffer_idx, data, space);
-        sha256_transform(ctx, ctx->buffer);
-        data += space;
-        len -= space;
-    }
-    
-    // Process complete blocks
-    while (len >= SHA256_BLOCK_SIZE) {
-        sha256_transform(ctx, data);
-        data += SHA256_BLOCK_SIZE;
-        len -= SHA256_BLOCK_SIZE;
-    }
-    
-    // Copy remaining data to buffer
-    if (len > 0) {
-        memcpy(ctx->buffer, data, len);
-    }
-}
-
-void sha256_final(sha256_ctx_t* ctx, uint8_t* digest) {
-    size_t buffer_idx = ctx->count % SHA256_BLOCK_SIZE;
-    
-    // Pad message
-    ctx->buffer[buffer_idx++] = 0x80;
-    
-    // If not enough room for length, pad and process
-    if (buffer_idx > 56) {
-        while (buffer_idx < SHA256_BLOCK_SIZE) {
-            ctx->buffer[buffer_idx++] = 0;
-        }
-        sha256_transform(ctx, ctx->buffer);
-        buffer_idx = 0;
-    }
-    
-    // Pad to 56 bytes
-    while (buffer_idx < 56) {
-        ctx->buffer[buffer_idx++] = 0;
-    }
-    
-    // Append length in bits (big-endian)
-    uint64_t bit_len = ctx->count * 8;
-    tls_write_uint64(bit_len, ctx->buffer + 56);
-    sha256_transform(ctx, ctx->buffer);
-    
-    // Output digest
-    for (int i = 0; i < 8; i++) {
-        tls_write_uint32(ctx->state[i], digest + i * 4);
-    }
-}
-
-void sha256_hash(const uint8_t* data, size_t len, uint8_t* digest) {
-    sha256_ctx_t ctx;
-    sha256_init(&ctx);
-    sha256_update(&ctx, data, len);
-    sha256_final(&ctx, digest);
 }
 
 // ============================================================================

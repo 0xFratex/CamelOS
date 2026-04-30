@@ -229,18 +229,15 @@ typedef struct {
 } aes_gcm_ctx_t;
 
 // ============================================================================
-// SHA-256/384 CONTEXT
+// SHA-256 CONTEXT (from sha256.h)
 // ============================================================================
-#define SHA256_BLOCK_SIZE  64
+#include "sha256.h"
+
+// TLS-specific SHA defines (block size for compression, not digest)
+#define SHA256_COMPRESS_BLOCK  64
 #define SHA256_DIGEST_SIZE 32
 #define SHA384_DIGEST_SIZE 48
 #define SHA512_DIGEST_SIZE 64
-
-typedef struct {
-    uint32_t state[8];
-    uint64_t count;
-    uint8_t buffer[SHA256_BLOCK_SIZE];
-} sha256_ctx_t;
 
 typedef struct {
     uint64_t state[8];
@@ -379,11 +376,7 @@ int tls_verify_cert_chain(x509_cert_t* chain, int count, const char* hostname);
 // CRYPTOGRAPHIC PRIMITIVES
 // ============================================================================
 
-// SHA-256
-void sha256_init(sha256_ctx_t* ctx);
-void sha256_update(sha256_ctx_t* ctx, const uint8_t* data, size_t len);
-void sha256_final(sha256_ctx_t* ctx, uint8_t* digest);
-void sha256_hash(const uint8_t* data, size_t len, uint8_t* digest);
+// SHA-256 functions are provided by sha256.h (included above)
 
 // SHA-384 (uses SHA-512 internally with different initial values)
 void sha384_hash(const uint8_t* data, size_t len, uint8_t* digest);

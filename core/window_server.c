@@ -99,6 +99,21 @@ void ws_destroy_window(window_t* win) {
     }
 }
 
+void ws_set_geometry(window_t* win, int x, int y, int w, int h) {
+    if(!win) return;
+    win->x = x;
+    win->y = y;
+    win->width = w;
+    win->height = h;
+}
+
+void ws_set_colors(window_t* win, uint32_t title_bar, uint32_t border, uint32_t bg) {
+    if(!win) return;
+    win->title_bar_color = title_bar;
+    win->border_color = border;
+    win->background_color = bg;
+}
+
 window_t* ws_get_window_by_id(int id) {
     for(int i=0; i<MAX_WINDOWS; i++) {
         if(window_store[i].is_active && window_store[i].id == id) {
