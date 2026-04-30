@@ -59,6 +59,10 @@ void desktop_execute_item(const char* path, int is_dir) {
         int len = strlen(path);
         if (len > 4 && strcmp(path + len - 4, ".app") == 0) {
             wrap_exec(path);
+        } else if (len > 4 && strcmp(path + len - 4, ".dmg") == 0) {
+            // DMG file - use the app installer for drag-to-Applications
+            extern int app_installer_open_dmg(const char*);
+            app_installer_open_dmg(path);
         } else {
             // Open with TextEdit by default for text files
             wrap_exec_with_args(resolve_app_path("TextEdit.app"), path);

@@ -36,6 +36,8 @@ static pfs32_stats_t stats = {0};
 // --- APFS+ Compatibility State ---
 static uint32_t* block_bitmap = 0;       // Full-disk block bitmap (1=used, 0=free)
 static uint32_t block_bitmap_blocks = 0; // Blocks occupied by the bitmap
+static uint32_t block_bitmap_size = 0;   // Size of in-memory bitmap in bytes
+static int block_bitmap_dirty = 0;       // In-memory bitmap needs flush
 static uint32_t* cow_bitmap = 0;         // CoW bitmap for current transaction
 static pfs32_snapshot_t snapshots[PFS32_MAX_SNAPSHOTS];
 static pfs32_clone_entry_t clones[PFS32_MAX_CLONES];
@@ -286,23 +288,28 @@ uint32_t alloc_block() {
         start_search = sb.data_start_block;
     }
 
+    // Search bitmap first (authoritative tracker) if in-memory bitmap loaded
     for(uint32_t i = start_search; i < sb.total_blocks; i++) {
-        if(get_fat(i) == PFS32_FREE_BLOCK) {
+        if(pfs32_bitmap_test(i) == 0 && get_fat(i) == PFS32_FREE_BLOCK) {
             set_fat(i, PFS32_END_BLOCK);
+            pfs32_bitmap_set(i);
             uint8_t z[512]; memset(z, 0, 512);
             disk_rw(1, i, z);
             last_alloc_search_ptr = i + 1;
+            if(sb.free_blocks > 0) sb.free_blocks--;
             return i;
         }
     }
     
     // Wrap around
     for(uint32_t i = sb.data_start_block; i < start_search; i++) {
-        if(get_fat(i) == PFS32_FREE_BLOCK) {
+        if(pfs32_bitmap_test(i) == 0 && get_fat(i) == PFS32_FREE_BLOCK) {
             set_fat(i, PFS32_END_BLOCK);
+            pfs32_bitmap_set(i);
             uint8_t z[512]; memset(z, 0, 512);
             disk_rw(1, i, z);
             last_alloc_search_ptr = i + 1;
+            if(sb.free_blocks > 0) sb.free_blocks--;
             return i;
         }
     }
@@ -384,6 +391,41 @@ int pfs32_init(uint32_t start, uint32_t total) {
     if (sb.magic != PFS32_MAGIC) return PFS_ERR_NO_FS;
 
     mounted = 1;
+
+    // Load block bitmap into memory for fast allocation tracking
+    if (sb.block_bitmap_start && sb.block_bitmap_blocks > 0) {
+        // Free old bitmap if re-initializing
+        if (block_bitmap) {
+            kfree(block_bitmap);
+            block_bitmap = 0;
+        }
+
+        block_bitmap_size = (sb.total_blocks + 7) / 8;
+        // Align allocation to uint32_t boundary
+        uint32_t alloc_size = (block_bitmap_size + 3) & ~3;
+        block_bitmap = (uint32_t*)kmalloc(alloc_size);
+        if (block_bitmap) {
+            memset(block_bitmap, 0, alloc_size);
+            uint8_t* bmp = (uint8_t*)block_bitmap;
+            // Read bitmap blocks from disk into in-memory bitmap
+            for (uint32_t i = 0; i < sb.block_bitmap_blocks; i++) {
+                uint8_t buf[512];
+                if (disk_rw(0, sb.block_bitmap_start + i, buf) == PFS_OK) {
+                    uint32_t offset = i * PFS32_BLOCK_SIZE;
+                    uint32_t chunk = PFS32_BLOCK_SIZE;
+                    if (offset + chunk > block_bitmap_size) {
+                        chunk = block_bitmap_size - offset;
+                    }
+                    if (chunk > 0) memcpy(bmp + offset, buf, chunk);
+                }
+            }
+            block_bitmap_dirty = 0;
+            s_printf("[PFS] Block bitmap loaded into memory\n");
+        } else {
+            s_printf("[PFS] WARNING: Could not allocate bitmap memory\n");
+        }
+    }
+
     return PFS_OK;
 }
 
@@ -411,8 +453,9 @@ int pfs32_format(const char* label, uint32_t total) {
     uint32_t fat_blocks = (total_clusters + 127) / 128;
     sb.fat_blocks = fat_blocks;
     
-    // Layout: [Superblock][Block Bitmap][FAT][Data...]
-    sb.data_start_block = 1 + block_bitmap_blocks + fat_blocks;
+    // Layout: [Superblock][Block Bitmap][FAT][Bad Block List][Data...]
+    sb.data_start_block = 1 + block_bitmap_blocks + fat_blocks + 1; // +1 for bad block list
+    sb.bad_block_list_start = 1 + block_bitmap_blocks + fat_blocks;
     sb.root_dir_block = sb.data_start_block;
     sb.free_blocks = total - sb.data_start_block;
     sb.free_pages = sb.free_blocks / PFS32_PAGE_BLOCKS;
@@ -444,6 +487,9 @@ int pfs32_format(const char* label, uint32_t total) {
     for(uint32_t i=1; i <= fat_blocks; i++) {
         disk_write_block(disk_start + 1 + block_bitmap_blocks + i - 1, zero);
     }
+
+    // Initialize bad block list (1 block, all zeros)
+    disk_write_block(disk_start + sb.bad_block_list_start, zero);
 
     // Mark system blocks as used in FAT and bitmap
     for(uint32_t i=0; i <= sb.root_dir_block; i++) {
@@ -894,6 +940,8 @@ void free_chain(uint32_t start_block) {
     while(curr != PFS32_END_BLOCK && curr != 0) {
         uint32_t next = get_fat(curr);
         set_fat(curr, PFS32_FREE_BLOCK);
+        pfs32_bitmap_clear(curr);
+        sb.free_blocks++;
         curr = next;
     }
 }
@@ -1284,9 +1332,17 @@ void pfs32_bitmap_set(uint32_t block) {
     if (!mounted || !sb.block_bitmap_start) return;
     uint32_t byte_idx = block / 8;
     uint32_t bit_idx = block % 8;
+
+    // Update in-memory bitmap if loaded
+    if (block_bitmap && byte_idx < block_bitmap_size) {
+        uint8_t* bmp = (uint8_t*)block_bitmap;
+        bmp[byte_idx] |= (1 << bit_idx);
+        block_bitmap_dirty = 1;
+    }
+
+    // Also update on-disk bitmap
     uint32_t bitmap_block = sb.block_bitmap_start + (byte_idx / PFS32_BLOCK_SIZE);
     uint32_t offset_in_block = byte_idx % PFS32_BLOCK_SIZE;
-    
     uint8_t buf[512];
     if(disk_rw(0, bitmap_block, buf) == PFS_OK) {
         buf[offset_in_block] |= (1 << bit_idx);
@@ -1299,9 +1355,17 @@ void pfs32_bitmap_clear(uint32_t block) {
     if (!mounted || !sb.block_bitmap_start) return;
     uint32_t byte_idx = block / 8;
     uint32_t bit_idx = block % 8;
+
+    // Update in-memory bitmap if loaded
+    if (block_bitmap && byte_idx < block_bitmap_size) {
+        uint8_t* bmp = (uint8_t*)block_bitmap;
+        bmp[byte_idx] &= ~(1 << bit_idx);
+        block_bitmap_dirty = 1;
+    }
+
+    // Also update on-disk bitmap
     uint32_t bitmap_block = sb.block_bitmap_start + (byte_idx / PFS32_BLOCK_SIZE);
     uint32_t offset_in_block = byte_idx % PFS32_BLOCK_SIZE;
-    
     uint8_t buf[512];
     if(disk_rw(0, bitmap_block, buf) == PFS_OK) {
         buf[offset_in_block] &= ~(1 << bit_idx);
@@ -1309,14 +1373,21 @@ void pfs32_bitmap_clear(uint32_t block) {
     }
 }
 
-// Test bit in block bitmap. Returns: 0=free, 1=used, 0xFE=bad
+// Test bit in block bitmap. Returns: 0=free, 1=used
 int pfs32_bitmap_test(uint32_t block) {
     if (!mounted || !sb.block_bitmap_start) return 0;
     uint32_t byte_idx = block / 8;
     uint32_t bit_idx = block % 8;
+
+    // Use in-memory bitmap if loaded (fast path, no disk I/O)
+    if (block_bitmap && byte_idx < block_bitmap_size) {
+        uint8_t* bmp = (uint8_t*)block_bitmap;
+        return (bmp[byte_idx] >> bit_idx) & 1;
+    }
+
+    // Fall back to on-disk bitmap
     uint32_t bitmap_block = sb.block_bitmap_start + (byte_idx / PFS32_BLOCK_SIZE);
     uint32_t offset_in_block = byte_idx % PFS32_BLOCK_SIZE;
-    
     uint8_t buf[512];
     if(disk_rw(0, bitmap_block, buf) != PFS_OK) return 0;
     return (buf[offset_in_block] >> bit_idx) & 1;
@@ -1332,11 +1403,27 @@ void pfs32_bitmap_set_bad(uint32_t block) {
 
 // Flush entire bitmap to disk
 void pfs32_flush_bitmap(void) {
-    // Bitmap is written through in pfs32_bitmap_set/clear, so this is a no-op
-    // except for the superblock update
-    if(mounted) {
-        disk_write_block(disk_start, &sb);
+    if(!mounted) return;
+
+    // Flush in-memory bitmap to disk if loaded and dirty
+    if (block_bitmap && block_bitmap_dirty && sb.block_bitmap_start) {
+        uint8_t* bmp = (uint8_t*)block_bitmap;
+        for (uint32_t i = 0; i < sb.block_bitmap_blocks; i++) {
+            uint32_t offset = i * PFS32_BLOCK_SIZE;
+            uint32_t chunk = PFS32_BLOCK_SIZE;
+            if (offset + chunk > block_bitmap_size) {
+                chunk = block_bitmap_size - offset;
+            }
+            uint8_t buf[512];
+            memset(buf, 0, 512);
+            if (chunk > 0) memcpy(buf, bmp + offset, chunk);
+            disk_rw(1, sb.block_bitmap_start + i, buf);
+        }
+        block_bitmap_dirty = 0;
     }
+
+    // Always update superblock
+    disk_write_block(disk_start, &sb);
 }
 
 // --- Fletcher-64 Checksum (APFS-like block integrity) ---
@@ -1908,6 +1995,78 @@ uint32_t pfs32_get_usable_blocks(void) {
 }
 
 uint32_t pfs32_get_utilization_percent(void) {
+    if (!mounted || sb.total_blocks == 0) return 0;
+    uint32_t usable = sb.total_blocks - sb.bad_block_count;
+    return (usable * 100) / sb.total_blocks;
+}
+
+// --- Reclaim Lost Blocks ---
+// Scans bitmap vs FAT and reconciles any blocks that are free in one but not the other.
+// Returns the number of blocks reclaimed.
+uint32_t pfs32_reclaim_lost_blocks(void) {
+    if (!mounted) return 0;
+    uint32_t reclaimed = 0;
+
+    s_printf("[PFS] Reclaiming lost blocks...\n");
+
+    for (uint32_t blk = sb.data_start_block; blk < sb.total_blocks; blk++) {
+        int bitmap_used = pfs32_bitmap_test(blk);
+        uint32_t fat_val = get_fat(blk);
+        int fat_used = (fat_val != PFS32_FREE_BLOCK) ? 1 : 0;
+
+        // Skip bad blocks
+        if (fat_val == PFS32_BAD_BLOCK) continue;
+
+        if (bitmap_used && !fat_used) {
+            // Bitmap says used, FAT says free -> block is lost
+            // Reclaim: clear bitmap so block can be allocated
+            pfs32_bitmap_clear(blk);
+            reclaimed++;
+            s_printf("[PFS] Reclaimed lost block (bitmap used, FAT free): ");
+            char buf[16];
+            int_to_str(blk, buf);
+            s_printf(buf);
+            s_printf("\n");
+        } else if (!bitmap_used && fat_used) {
+            // Bitmap says free, FAT says used -> block is phantom-allocated
+            // Reclaim: free in FAT so block matches bitmap
+            set_fat(blk, PFS32_FREE_BLOCK);
+            reclaimed++;
+            s_printf("[PFS] Reclaimed lost block (bitmap free, FAT used): ");
+            char buf[16];
+            int_to_str(blk, buf);
+            s_printf(buf);
+            s_printf("\n");
+        }
+    }
+
+    // Recalculate free_blocks after reconciliation
+    sb.free_blocks = 0;
+    for (uint32_t blk = sb.data_start_block; blk < sb.total_blocks; blk++) {
+        if (pfs32_bitmap_test(blk) == 0 && get_fat(blk) == PFS32_FREE_BLOCK) {
+            sb.free_blocks++;
+        }
+    }
+    sb.free_pages = sb.free_blocks / PFS32_PAGE_BLOCKS;
+
+    if (reclaimed > 0) {
+        pfs32_flush_bitmap();
+        flush_fat();
+    }
+
+    char buf[16];
+    int_to_str(reclaimed, buf);
+    s_printf("[PFS] Reclaim complete. Blocks recovered: ");
+    s_printf(buf);
+    s_printf("\n");
+
+    return reclaimed;
+}
+
+// --- Disk Efficiency ---
+// Returns percentage (0-100) of how many blocks are actually usable vs total.
+// For 100% efficiency: (total_blocks - bad_blocks) / total_blocks * 100
+uint32_t pfs32_get_disk_efficiency(void) {
     if (!mounted || sb.total_blocks == 0) return 0;
     uint32_t usable = sb.total_blocks - sb.bad_block_count;
     return (usable * 100) / sb.total_blocks;

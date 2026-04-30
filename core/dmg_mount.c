@@ -6,6 +6,7 @@
 #include "dmg_mount.h"
 #include "string.h"
 #include "memory.h"
+#include "zlib_inflate.h"
 #include "../sys/api.h"
 #include "../fs/pfs32.h"
 #include "../hal/drivers/serial.h"
@@ -650,19 +651,21 @@ static int dmg_file_read_at(const char* path, uint64_t offset,
 }
 
 // =========================================================================
-// zlib Decompression Stub
+// zlib Decompression
 // =========================================================================
-// Placeholder - will be replaced with a real zlib implementation later.
+// Delegates to the standalone zlib_inflate implementation in zlib_inflate.c
 
 static int zlib_decompress(const uint8_t* src, uint32_t src_len,
                            uint8_t* dst, uint32_t dst_cap, uint32_t* dst_len) {
-    s_printf("[DMG] zlib decompression not yet implemented (compressed size=");
-    char sz[12];
-    int_to_str(src_len, sz);
-    s_printf(sz);
-    s_printf(")\n");
-    *dst_len = 0;
-    return -1; // Error: not implemented
+    int result = zlib_inflate(src, src_len, dst, dst_cap, dst_len);
+    if (result < 0) {
+        s_printf("[DMG] zlib decompression failed (compressed size=");
+        char sz[12];
+        int_to_str(src_len, sz);
+        s_printf(sz);
+        s_printf(")\n");
+    }
+    return result;
 }
 
 // =========================================================================

@@ -9,6 +9,8 @@
 
 // DMG mounter for .dmg install support
 #include "../core/dmg_mount.h"
+// App installer for drag-to-Applications
+#include "../core/app_installer.h"
 
 // Externs from bubbleview.c
 extern int desktop_rename_active;
@@ -115,6 +117,8 @@ void desktop_draw(uint32_t* buffer) {
         // Check for .app extension
         int len = strlen(desk_entries[i].filename);
         if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".app") == 0) icon = "terminal";
+        // Check for .dmg extension - show as disk image
+        if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".dmg") == 0) icon = "hdd_icon";
 
         cm_draw_image(buffer, icon, x, y, 48, 48);
 
@@ -246,32 +250,26 @@ void desktop_install_app(const char* source_path) {
     
     // Check what type of file we're installing
     if (len > 4 && strcmp(source_path + len - 4, ".dmg") == 0) {
-        // DMG file - mount and extract the .app from it
+        // DMG file - use the app_installer module for drag-to-Applications
         s_printf("[Desktop] Installing DMG: ");
         s_printf(source_path);
         s_printf("\n");
         
-        int mount_id = dmg_mount(source_path);
-        if (mount_id < 0) {
-            s_printf("[Desktop] Failed to mount DMG\n");
-            return;
-        }
-        
-        // List apps in the DMG and extract the first one
-        char app_names[256];
-        int app_count = dmg_list_apps(mount_id, app_names, 4, 64);
-        if (app_count > 0) {
-            s_printf("[Desktop] Found app in DMG: ");
-            s_printf(app_names);
-            s_printf("\n");
-            
-            dmg_extract_app(mount_id, app_names);
-            s_printf("[Desktop] App extracted to /Applications/\n");
+        install_result_t result = app_installer_quick_install(source_path);
+        if (result.success) {
+            s_printf("[Desktop] App installed successfully: ");
+            s_printf(result.app_path);
+            s_printf(" (");
+            char size_buf[16];
+            extern void int_to_str(int, char*);
+            int_to_str(result.bytes_copied, size_buf);
+            s_printf(size_buf);
+            s_printf(" bytes)\n");
         } else {
-            s_printf("[Desktop] No .app bundles found in DMG\n");
+            s_printf("[Desktop] DMG install failed: ");
+            s_printf(result.error_msg);
+            s_printf("\n");
         }
-        
-        dmg_unmount(mount_id);
         
     } else if (len > 4 && strcmp(source_path + len - 4, ".app") == 0) {
         // .app bundle - copy to /Applications/

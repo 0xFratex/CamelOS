@@ -44,6 +44,7 @@ typedef struct {
     uint32_t page_size;                // 4096
     uint32_t total_blocks;             // Absolute total disk blocks
     uint32_t total_pages;              // total_blocks / PAGE_BLOCKS
+    uint32_t cluster_blocks;           // Blocks per cluster (default 8 = 4KB)
     uint32_t fat_blocks;               // Blocks used by the Block Bitmap/FAT
     uint32_t data_start_block;         // First data block
     uint32_t root_dir_block;           // Root directory block
@@ -64,7 +65,7 @@ typedef struct {
     uint32_t bad_block_list_start;     // Bad block list location
     uint32_t bad_block_count;          // Number of bad blocks
     pfs32_checksum_t superblock_checksum; // Superblock integrity
-    uint8_t  reserved[396];            // Padding to 512 bytes
+    uint8_t  reserved[392];            // Padding to 512 bytes
 } __attribute__((packed)) pfs32_superblock_t;
 
 // =====================================================================
@@ -284,6 +285,8 @@ int pfs32_mark_bad_block(uint32_t block);
 int pfs32_scan_bad_blocks(void);
 uint32_t pfs32_get_usable_blocks(void);
 uint32_t pfs32_get_utilization_percent(void);
+uint32_t pfs32_reclaim_lost_blocks(void);
+uint32_t pfs32_get_disk_efficiency(void);
 
 // Space Sharing (APFS Container volumes)
 int pfs32_create_volume(const char* name, uint32_t quota_blocks);

@@ -222,6 +222,21 @@ void kernel_main(void* mboot_ptr) {
     foundation_init();
     s_printf("[KERNEL] Foundation Framework Initialized.\n");
     
+    // Initialize DMG mounter subsystem for macOS disk image support
+    extern void dmg_init_system(void);
+    dmg_init_system();
+    s_printf("[KERNEL] DMG Mounter Initialized.\n");
+    
+    // Initialize App Bundle loader
+    extern void app_bundle_init_system(void);
+    app_bundle_init_system();
+    s_printf("[KERNEL] App Bundle Loader Initialized.\n");
+    
+    // Initialize App Installer (drag-to-Applications)
+    extern void app_installer_init(void);
+    app_installer_init();
+    s_printf("[KERNEL] App Installer Initialized.\n");
+    
     // Initialize SHA-256 module (used for encrypted passwords)
     // No init needed - it's stateless
     s_printf("[KERNEL] SHA-256 Hash Module Ready.\n");

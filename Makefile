@@ -50,7 +50,7 @@ HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/seri
         hal/cpu/apic.c  hal/cpu/idt.c   hal/cpu/isr.c   hal/cpu/gdt.c   hal/cpu/timer.c hal/cpu/paging.c        hal/cpu/syscall.c       \
         hal/video/gfx_hal.c     hal/video/compositor.c  hal/video/animation.c   hal/video/loading_animation.c
         
-CORE_SRC        =       core/kernel.c   core/panic.c    sys/api.c       core/string.c   core/memory.c   core/task.c     core/cdl_loader.c       core/window_server.c    core/net.c      core/net_if.c   core/net_dhcp.c core/socket.c   core/tcp.c      core/http.c     core/tls.c      core/tls13.c    core/http2.c    core/tls_ca_store.c     core/app_switcher.c     core/dns.c      core/debug.c    core/arp.c      core/scheduler.c        core/firewall.c  core/sha256.c   core/objc_runtime.c    core/macho_loader.c    core/foundation_stub.c    core/app_bundle.c    core/dmg_mount.c
+CORE_SRC        =       core/kernel.c   core/panic.c    sys/api.c       core/string.c   core/memory.c   core/task.c     core/cdl_loader.c       core/window_server.c    core/net.c      core/net_if.c   core/net_dhcp.c core/socket.c   core/tcp.c      core/http.c     core/tls.c      core/tls13.c    core/http2.c    core/tls_ca_store.c     core/app_switcher.c     core/dns.c      core/debug.c    core/arp.c      core/scheduler.c        core/firewall.c  core/sha256.c   core/objc_runtime.c    core/macho_loader.c    core/foundation_stub.c    core/app_bundle.c    core/dmg_mount.c      core/zlib_inflate.c    core/app_installer.c
 ASSETS_SRC      =       kernel/assets.c
 FS_SRC  =       fs/pfs32.c      fs/disk.c
 USR_SRC =       usr/shell.c     usr/bubbleview.c        usr/desktop.c   usr/framework.c usr/dock.c      usr/clipboard.c usr/screenlock.c        usr/welcome_setup.c     usr/lib/camel_framework.c       usr/lib/camel_ui.c
@@ -83,22 +83,14 @@ system.bin:     $(KERNEL_OBJ)
         $(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L/usr/lib/gcc/x86_64-linux-gnu/13/32   -lgcc
         objcopy -O      binary  system.elf      system.bin
 
-#       ---     APP     COMPILATION     (Updated)       ---
-#       We      output  directly        to      .cdl    (which  is      now     an      ELF     file)
+#       ---     APP     COMPILATION     (Hybrid: .cdl legacy + .dmg/.app macOS)       ---
+#       Legacy .cdl apps use ELF shared objects (CDL format)
+#       New macOS apps use .app bundles with Info.plist
+#       .dmg disk images can be mounted and apps extracted via drag-to-Applications
 
-#       1.      Terminal        App
-terminal.cdl:   usr/apps/terminal_cdl.c usr/lib/camel_framework.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/terminal_cdl.c -o      terminal.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(LD)   $(CDL_LDFLAGS)  -o      terminal.cdl    terminal.o      camel_framework.o
+#       ---     LEGACY CDL LIBRARIES (still needed for system libs)     ---
 
-#       2.      Files   App
-files.cdl:      usr/apps/files_cdl.c    usr/lib/camel_framework.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/files_cdl.c    -o      files.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(LD)   $(CDL_LDFLAGS)  -o      files.cdl       files.o camel_framework.o
-
-#       3.      Math    Lib
+#       Math    Lib
 math.cdl:       usr/lib/math.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/lib/math.c  -o      math.o
         $(LD)   $(CDL_LDFLAGS)  -o      math.cdl        math.o
@@ -115,37 +107,31 @@ proc.cdl:       usr/lib/proc.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/lib/proc.c  -o      proc.o
         $(LD)   $(CDL_LDFLAGS)  -o      proc.cdl        proc.o
 
-#       ---     NEW:    Timer   Lib     ---
 timer.cdl:      usr/lib/timer.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/lib/timer.c -o      timer.o
         $(LD)   $(CDL_LDFLAGS)  -o      timer.cdl       timer.o
 
-#       ---     NEW:    Network Diagnostic      Tool    ---
-netdiag.cdl:    usr/apps/netdiag.c      usr/lib/camel_framework.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/netdiag.c      -o      netdiag.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(LD)   $(CDL_LDFLAGS)  -o      netdiag.cdl     netdiag.o       camel_framework.o
-
-#       ---     NEW:    GUI     Library ---
 gui.cdl:        usr/lib/gui.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/lib/gui.c   -o      gui.o
         $(LD)   $(CDL_LDFLAGS)  -o      gui.cdl gui.o
 
-#       ---     NEW:    System  Monitor Lib     ---
 sysmon.cdl:     usr/lib/sysmon.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/lib/sysmon.c        -o      sysmon.o
         $(LD)   $(CDL_LDFLAGS)  -o      sysmon.cdl      sysmon.o
 
-#       ---     NEW:    JavaScript      Engine  Lib     ---
 jsengine.cdl:   usr/libs/js_engine.c
         $(CC)   $(CDL_CFLAGS)   -c      usr/libs/js_engine.c    -o      jsengine.o
         $(LD)   $(CDL_LDFLAGS)  -o      jsengine.cdl    jsengine.o
 
-#       ---     NEW:    Waterhole       App     ---
-waterhole.cdl:  usr/apps/waterhole_cdl.c        usr/lib/camel_framework.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/waterhole_cdl.c        -o      waterhole.o
+#       ---     HYBRID APP TARGETS (legacy .cdl apps, now loaded via .app bundles)     ---
+#       These create .cdl binaries that the .app bundle system can discover
+#       The .app wrapper is created at runtime by the installer
+
+#       Network Diagnostic App
+netdiag.cdl:    usr/apps/netdiag.c      usr/lib/camel_framework.c
+        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/netdiag.c      -o      netdiag.o
         $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(LD)   $(CDL_LDFLAGS)  -o      waterhole.cdl   waterhole.o     camel_framework.o
+        $(LD)   $(CDL_LDFLAGS)  -o      netdiag.cdl     netdiag.o       camel_framework.o
 
 #       ---     INSTALLER       ---
 
@@ -155,11 +141,11 @@ installer/entry.o:      boot/multiboot.asm
 installer/panic_framework.o:    installer/panic_framework.c
         $(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
 
-#       Add     ALL     CDL     files   to      payload
-installer/payload.o:    installer/payload.asm   system.bin      mbr.bin terminal.cdl    files.cdl       math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl waterhole.cdl   sysmon.cdl      nettools.cdl    textedit.cdl    browser.cdl     settings.cdl
+#       Add     ALL     CDL     files   to      payload (hybrid: legacy libs + hybrid apps)
+installer/payload.o:    installer/payload.asm   system.bin      mbr.bin math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl
         $(AS)   -f      elf32   $<      -o      $@
 
-installer.elf:  $(INSTALLER_OBJ)        terminal.cdl    files.cdl       math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl waterhole.cdl   sysmon.cdl      nettools.cdl    textedit.cdl    browser.cdl     settings.cdl
+installer.elf:  $(INSTALLER_OBJ)        math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl
         $(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L/usr/lib/gcc/x86_64-linux-gnu/13/32   -lgcc   -lm     -L/usr/lib32    -lm
 
 camel_install.iso:      installer.elf
@@ -231,33 +217,3 @@ hal/drivers/ahci.o:     hal/drivers/ahci.c
 #       TLS     CA      store   compilation     rule
 core/tls_ca_store.o:    core/tls_ca_store.c
         $(CC)   $(CFLAGS)       -c      $<      -o      $@
-
-#       NetTools        App
-nettools.cdl:   usr/apps/nettools_cdl.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/nettools_cdl.c -o      nettools.o
-        $(LD)   $(CDL_LDFLAGS)  -o      nettools.cdl    nettools.o
-
-#       TextEdit        App
-textedit.cdl:   usr/apps/textedit_cdl.c usr/lib/camel_framework.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/textedit_cdl.c -o      textedit.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(LD)   $(CDL_LDFLAGS)  -o      textedit.cdl    textedit.o      camel_framework.o
-
-#       JS Core Lib
-jscore.cdl:     usr/libs/jscore.c       usr/apps/mujs_min.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/libs/jscore.c       -o      jscore.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/mujs_min.c     -o      mujs.o
-        $(LD)   $(CDL_LDFLAGS)  -o      jscore.cdl      jscore.o        mujs.o  -lgcc
-
-#       Browser App
-browser.cdl:    usr/apps/browser_cdl.c  usr/lib/camel_framework.c       usr/apps/setjmp.S
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/browser_cdl.c  -o      browser.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/mujs_min.c     -o      mujs.o
-        $(AS)   -f      elf32   usr/apps/setjmp.S       -o      setjmp.o
-        $(LD)   $(CDL_LDFLAGS)  -o      browser.cdl     browser.o       camel_framework.o       setjmp.o        -lgcc
-#       Settings        App
-settings.cdl:   usr/apps/settings_cdl.c usr/lib/camel_framework.c
-        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/settings_cdl.c -o      settings.o
-        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-        $(LD)   $(CDL_LDFLAGS)  -o      settings.cdl    settings.o      camel_framework.o
