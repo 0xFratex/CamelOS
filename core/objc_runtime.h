@@ -86,12 +86,12 @@ SEL sel_getUid(const char* name);
 const char* sel_getName(SEL sel);
 BOOL sel_isEqual(SEL lhs, SEL rhs);
 
+typedef void* IMP;
+
 Method class_getInstanceMethod(Class cls, SEL name);
 Method class_getClassMethod(Class cls, SEL name);
 void* method_getImplementation(Method method);
 IMP class_replaceMethod(Class cls, SEL name, void* imp, const char* types);
-
-typedef void* IMP;
 
 BOOL class_addMethod(Class cls, SEL name, void* imp, const char* types);
 BOOL class_addIvar(Class cls, const char* name, size_t size, uint8_t alignment, const char* types);

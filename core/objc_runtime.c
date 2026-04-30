@@ -375,8 +375,8 @@ Protocol* objc_getProtocol(const char* name) {
     if (!name) return 0;
     
     for (int i = 0; i < g_protocol_count; i++) {
-        if (strcmp(g_protocols[i].name, name) == 0) {
-            return &g_protocols[i];
+        if (strcmp(g_protocols[i]->name, name) == 0) {
+            return g_protocols[i];
         }
     }
     return 0;
