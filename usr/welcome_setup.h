@@ -89,7 +89,7 @@ void welcome_setup_update(float dt);
 // Input handling
 int welcome_setup_handle_key(int key);
 int welcome_setup_handle_mouse(int mx, int my, int click, int pressed);
-int welcome_setup_handle_click(int mx, int my);
+int welcome_setup_handle_click(int mx, int my, int click);
 
 // Configuration access
 SystemConfig* welcome_setup_get_config(void);

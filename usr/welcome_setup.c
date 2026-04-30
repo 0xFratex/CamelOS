@@ -934,7 +934,7 @@ int welcome_setup_handle_key(int key) {
     return 0;
 }
 
-int welcome_setup_handle_click(int mx, int my) {
+int welcome_setup_handle_click(int mx, int my, int click) {
     if (g_setup.state == SETUP_STATE_COMPLETE) {
         return 0;
     }
@@ -946,19 +946,19 @@ int welcome_setup_handle_click(int mx, int my) {
     
     switch (g_setup.state) {
         case SETUP_STATE_WELCOME:
-            render_welcome(cx, cy, w, h, mx, my, 1);
+            render_welcome(cx, cy, w, h, mx, my, click);
             break;
         case SETUP_STATE_USER:
-            render_user_setup(cx, cy, w, h, mx, my, 1);
+            render_user_setup(cx, cy, w, h, mx, my, click);
             break;
         case SETUP_STATE_PASSWORD:
-            render_password_setup(cx, cy, w, h, mx, my, 1);
+            render_password_setup(cx, cy, w, h, mx, my, click);
             break;
         case SETUP_STATE_TIMEZONE:
-            render_timezone_setup(cx, cy, w, h, mx, my, 1);
+            render_timezone_setup(cx, cy, w, h, mx, my, click);
             break;
         case SETUP_STATE_THEME:
-            render_theme_setup(cx, cy, w, h, mx, my, 1);
+            render_theme_setup(cx, cy, w, h, mx, my, click);
             break;
         default:
             break;
@@ -1021,7 +1021,46 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
         }
     }
     
-    return welcome_setup_handle_click(mx, my);
+    // Handle text field focus on click (click on input box activates it)
+    if (click) {
+        int w = screen_w ? screen_w : 1024;
+        int h = screen_h ? screen_h : 768;
+        int cx = w / 2;
+        int cy = h / 2;
+        
+        if (g_setup.state == SETUP_STATE_USER) {
+            int card_w = 480;
+            int card_x = cx - card_w / 2;
+            int card_y = cy - 170;
+            int field_x = cx - 150, field_y = card_y + 210;
+            if (mx >= field_x && mx <= field_x + 300 && my >= field_y && my <= field_y + 44) {
+                g_setup.input_active = 1;
+            }
+        }
+        
+        if (g_setup.state == SETUP_STATE_PASSWORD) {
+            int card_w = 480;
+            int card_x = cx - card_w / 2;
+            int card_y = cy - 200;
+            if (g_setup.password_step == 0) {
+                int field_x = cx - 150, field_y = card_y + 130;
+                if (mx >= field_x && mx <= field_x + 300 && my >= field_y && my <= field_y + 44) {
+                    g_setup.password_active = 1;
+                }
+            } else {
+                int field_x = cx - 150, field_y = card_y + 150;
+                if (mx >= field_x && mx <= field_x + 300 && my >= field_y && my <= field_y + 44) {
+                    g_setup.password_active = 2;
+                }
+            }
+        }
+    }
+    
+    // Only process button clicks when there's an actual click event
+    if (click) {
+        return welcome_setup_handle_click(mx, my, click);
+    }
+    return 1;
 }
 
 void welcome_setup_update(float dt) {

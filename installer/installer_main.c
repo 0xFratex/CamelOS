@@ -165,11 +165,13 @@ int install_step = 0;
 int install_sub_step = 0;
 int install_file_idx = 0;
 int install_pct = 0;
+int install_target_pct = 0;  // Target percentage for smooth animation
 char install_status[64] = "";
 uint32_t kernel_write_offset = 0;
 int install_error = 0;
 char install_error_msg[128] = "";
 uint32_t last_animation_tick = 0;
+int install_step_tick = 0;  // Frame counter within each step for smooth delays
 
 // Mouse state
 extern int mouse_x, mouse_y, mouse_btn_left;
@@ -1133,7 +1135,8 @@ void render_select_disk(void) {
             if (ui_button(CX + 190, nav_y, 150, 50, "Install >", C_ACCENT)) {
                 install_step = 0; install_sub_step = 0; install_file_idx = 0;
                 install_error = 0; install_error_msg[0] = 0;
-                kernel_write_offset = 0; install_pct = 0;
+                kernel_write_offset = 0; install_pct = 0; install_target_pct = 0;
+                install_step_tick = 0;
                 current_state = STATE_INSTALLING;
                 add_log("Starting installation process");
             }
@@ -1619,23 +1622,37 @@ void install_tick(void) {
     disk_set_drive(selected_drive_idx);
     if (install_error) { current_state = STATE_FAILURE; return; }
 
+    // Smooth progress animation: gradually move install_pct toward install_target_pct
+    if (install_pct < install_target_pct) {
+        install_pct += 2;
+        if (install_pct > install_target_pct) install_pct = install_target_pct;
+    }
+
     if (install_step == 0) {
-        strcpy(install_status, "Writing Bootloader & Partition Table...");
-        add_log("Writing bootloader");
-        uint8_t z[512]; memset(z, 0, 512);
-        if (ata_write_sector(selected_drive_idx, 0, z) < 0) {
-            strcpy(install_error_msg, "Failed to wipe MBR"); install_error=1; return;
+        if (install_step_tick == 0) {
+            strcpy(install_status, "Writing Bootloader & Partition Table...");
+            add_log("Writing bootloader");
+            uint8_t z[512]; memset(z, 0, 512);
+            if (ata_write_sector(selected_drive_idx, 0, z) < 0) {
+                strcpy(install_error_msg, "Failed to wipe MBR"); install_error=1; return;
+            }
+            mbr_sector_t mbr; memcpy(&mbr, mbr_bin_start, 512);
+            uint32_t total = ide_devices[selected_drive_idx].sectors;
+            uint32_t part_start = 16384;
+            mbr.partitions[0].status=0x80; mbr.partitions[0].type=0x7F;
+            mbr.partitions[0].lba_start=part_start; mbr.partitions[0].lba_length=total-part_start;
+            mbr.signature=0xAA55;
+            if (ata_write_sector(selected_drive_idx, 0, (uint8_t*)&mbr) < 0) {
+                strcpy(install_error_msg, "Failed to write MBR"); install_error=1; return;
+            }
+            install_step_tick = 1;
         }
-        mbr_sector_t mbr; memcpy(&mbr, mbr_bin_start, 512);
-        uint32_t total = ide_devices[selected_drive_idx].sectors;
-        uint32_t part_start = 16384;
-        mbr.partitions[0].status=0x80; mbr.partitions[0].type=0x7F;
-        mbr.partitions[0].lba_start=part_start; mbr.partitions[0].lba_length=total-part_start;
-        mbr.signature=0xAA55;
-        if (ata_write_sector(selected_drive_idx, 0, (uint8_t*)&mbr) < 0) {
-            strcpy(install_error_msg, "Failed to write MBR"); install_error=1; return;
+        // Wait for progress bar to catch up before advancing
+        install_target_pct = 5;
+        if (install_pct >= install_target_pct) {
+            install_step++; install_step_tick = 0;
         }
-        install_pct=5; install_step++; return;
+        return;
     }
 
     if (install_step == 1) {
@@ -1652,31 +1669,50 @@ void install_tick(void) {
             }
             kernel_write_offset++; sectors_this++;
         }
-        install_pct = 5 + (kernel_write_offset * 25 / k_sectors);
-        if (kernel_write_offset >= k_sectors) { install_step++; install_pct=30; add_log("Kernel copied"); }
+        install_target_pct = 5 + (kernel_write_offset * 25 / k_sectors);
+        if (kernel_write_offset >= k_sectors) {
+            install_target_pct = 30;
+            if (install_pct >= install_target_pct) {
+                install_step++; add_log("Kernel copied");
+            }
+        }
         return;
     }
 
     if (install_step == 2) {
-        strcpy(install_status, "Formatting PFS32 Partition...");
-        add_log("Formatting partition");
-        uint32_t part_start=16384, part_size=ide_devices[selected_drive_idx].sectors-part_start;
-        pfs32_init(part_start, part_size);
-        if (pfs32_format("Camel Sys", part_size) < 0) {
-            strcpy(install_error_msg, "PFS32 format failed"); install_error=1; return;
+        if (install_step_tick == 0) {
+            strcpy(install_status, "Formatting PFS32 Partition...");
+            add_log("Formatting partition");
+            uint32_t part_start=16384, part_size=ide_devices[selected_drive_idx].sectors-part_start;
+            pfs32_init(part_start, part_size);
+            if (pfs32_format("Camel Sys", part_size) < 0) {
+                strcpy(install_error_msg, "PFS32 format failed"); install_error=1; return;
+            }
+            pfs32_sync(); disk_flush_cache();
+            install_step_tick = 1;
         }
-        pfs32_sync(); disk_flush_cache();
-        install_pct=45; install_step++; add_log("PFS32 formatted"); return;
+        install_target_pct = 45;
+        if (install_pct >= install_target_pct) {
+            install_step++; install_step_tick = 0; add_log("PFS32 formatted");
+        }
+        return;
     }
 
     if (install_step == 3) {
         if (install_sub_step == 0) {
-            strcpy(install_status, "Creating Directory Structure...");
-            add_log("Creating directories");
-            pfs32_create_directory("/home"); pfs32_create_directory("/home/desktop");
-            pfs32_create_directory("/usr");  pfs32_create_directory("/usr/lib");
-            pfs32_create_directory("/usr/apps");
-            install_sub_step=1; init_install_files(); install_file_idx=0; return;
+            if (install_step_tick == 0) {
+                strcpy(install_status, "Creating Directory Structure...");
+                add_log("Creating directories");
+                pfs32_create_directory("/home"); pfs32_create_directory("/home/desktop");
+                pfs32_create_directory("/usr");  pfs32_create_directory("/usr/lib");
+                pfs32_create_directory("/usr/apps");
+                install_step_tick = 1;
+            }
+            install_target_pct = 47;
+            if (install_pct >= install_target_pct) {
+                install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0;
+            }
+            return;
         }
         if (install_file_idx < 6) {
             install_file_entry_t* f = &install_files[install_file_idx];
@@ -1688,17 +1724,21 @@ void install_tick(void) {
                 }
             }
             install_file_idx++;
-            install_pct = 45 + (install_file_idx * 45) / 6;
+            install_target_pct = 47 + (install_file_idx * 43) / 6;
             return;
         }
         pfs32_sync(); disk_flush_cache();
-        install_pct=90; install_step++; install_sub_step=0;
-        add_log("System files installed"); return;
+        install_target_pct = 90;
+        if (install_pct >= install_target_pct) {
+            install_step++; install_sub_step=0; install_step_tick = 0;
+            add_log("System files installed");
+        }
+        return;
     }
 
     if (install_step == 4) {
         strcpy(install_status, "Finalizing Installation...");
-        pfs32_sync(); install_pct=100;
+        pfs32_sync(); install_target_pct=100;
         if (!install_error) {
             current_state = STATE_SUCCESS; add_log("Installation complete!");
         } else {
@@ -1733,7 +1773,7 @@ int main(uint32_t magic, void* mb_ptr) {
 
     install_step=0; install_sub_step=0; install_file_idx=0;
     install_error=0; install_error_msg[0]=0;
-    kernel_write_offset=0; install_pct=0;
+    kernel_write_offset=0; install_pct=0; install_target_pct=0; install_step_tick=0;
     sys_check_done=0;
 
     scan_hardware();
