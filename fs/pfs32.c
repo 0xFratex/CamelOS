@@ -4,6 +4,13 @@
 //           Full Disk Utilization (zero sector waste except bad blocks)
 #include "pfs32.h"
 #include "disk.h"
+
+// Forward declarations for bitmap functions (defined later in this file)
+void pfs32_bitmap_set(uint32_t block);
+void pfs32_bitmap_clear(uint32_t block);
+void pfs32_bitmap_set_bad(uint32_t block);
+void pfs32_flush_bitmap(void);
+int pfs32_bitmap_test(uint32_t block);
 #include "memory.h"
 #include "string.h"
 #include "../hal/drivers/serial.h"

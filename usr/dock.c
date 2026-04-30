@@ -22,6 +22,9 @@ extern window_t* active_win;
 DockIcon dock_icons[MAX_DOCK_APPS];
 int dock_count = 0;
 
+// Forward declarations
+void dock_add_app(const char* label, const char* path, const char* icon_res);
+
 void dock_init() {
     dock_count = 0;
     // Register Default Apps - Using /Applications/ path (macOS-like)

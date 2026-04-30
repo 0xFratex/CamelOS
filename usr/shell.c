@@ -150,30 +150,72 @@ int is_app_bundle(const char* filename) {
 
 void execute_program(const char* path) {
     char binary_path[128];
+    char resolved_path[128];
     memset(binary_path, 0, 128);
+    memset(resolved_path, 0, 128);
     
     if (is_app_bundle(path)) {
         sys_print("Launching App: "); sys_print(path); sys_print("\n");
 
-        // Flat binary format: /usr/apps/Name.app -> /usr/apps/Name.cdl
-        strncpy(binary_path, path, 128);
+        // Extract app name from path (e.g., /Applications/Files.app -> "Files")
+        int len = strlen(path);
+        const char* name_start = path;
+        const char* p = path;
+        while (*p) { if (*p == '/') name_start = p + 1; p++; }
+        int name_len = len - (name_start - path) - 4; // Remove .app
         
-        // Remove .app extension
-        int len = strlen(binary_path);
-        if (len > 4 && strcmp(binary_path + len - 4, ".app") == 0) {
+        if (name_len > 0 && name_len < 60) {
+            // Try 1: Same directory with .cdl extension (e.g., /Applications/Files.app -> /Applications/Files.cdl)
+            strncpy(binary_path, path, 127);
             binary_path[len - 4] = '\0';
+            strcat(binary_path, ".cdl");
+            if (sys_fs_exists(binary_path)) {
+                strcpy(resolved_path, binary_path);
+                goto load_it;
+            }
+            
+            // Try 2: /usr/apps/<name>.cdl (legacy installed apps)
+            strcpy(binary_path, "/usr/apps/");
+            strncat(binary_path, name_start, name_len);
+            strcat(binary_path, ".cdl");
+            if (sys_fs_exists(binary_path)) {
+                strcpy(resolved_path, binary_path);
+                goto load_it;
+            }
+            
+            // Try 3: /Applications/<name>.cdl
+            strcpy(binary_path, "/Applications/");
+            strncat(binary_path, name_start, name_len);
+            strcat(binary_path, ".cdl");
+            if (sys_fs_exists(binary_path)) {
+                strcpy(resolved_path, binary_path);
+                goto load_it;
+            }
+            
+            // Try 4: .app/Contents/MacOS/<name> (macOS-style bundle)
+            strcpy(binary_path, path);
+            strcat(binary_path, "/Contents/MacOS/");
+            strncat(binary_path, name_start, name_len);
+            if (sys_fs_exists(binary_path)) {
+                strcpy(resolved_path, binary_path);
+                goto load_it;
+            }
         }
         
-        // Append .cdl extension
+        // Last resort: try the .cdl conversion anyway
+        strncpy(binary_path, path, 127);
+        binary_path[len - 4] = '\0';
         strcat(binary_path, ".cdl");
+        strcpy(resolved_path, binary_path);
     } else {
-        strcpy(binary_path, path);
+        strcpy(resolved_path, path);
     }
 
+load_it:
     // Try to load it as a CDL (Dynamic App)
-    sys_print("Loading executable: "); sys_print(binary_path); sys_print("\n");
+    sys_print("Loading executable: "); sys_print(resolved_path); sys_print("\n");
     
-    int handle = sys_load_library(binary_path);
+    int handle = sys_load_library(resolved_path);
     if (handle >= 0) {
         sys_print("App loaded successfully (Handle "); 
         char n[4]; int_to_str(handle, n); sys_print(n); 

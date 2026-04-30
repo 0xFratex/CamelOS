@@ -10,6 +10,7 @@
 #include "../common/time.h"
 #include "../sys/api.h"
 #include "../fs/pfs32.h"
+#include "../fs/disk.h"
 
 // External API
 extern kernel_api_t* sys;
@@ -264,6 +265,10 @@ void welcome_setup_save_config(void) {
     sys_fs_create("/sbin", 1);
     sys_fs_create("/dev", 1);
     sys_fs_create("/Volumes", 1);
+    
+    // CRITICAL: Flush all changes to disk so config persists across reboots
+    pfs32_sync();
+    disk_flush_cache();
 }
 
 // --- State Management ---
@@ -378,7 +383,7 @@ static int draw_button(int x, int y, int w, int h, const char* label, int primar
     return hover && click;
 }
 
-static void draw_text_field(int x, int y, int w, int h, const char* value, int active, int is_password, int mx, int my, int click) {
+static void draw_text_field(int x, int y, int w, int h, const char* value, int active, int is_password, int mx, int my, int click, int cursor_pos) {
     int hover = (mx >= x && mx <= x + w && my >= y && my <= y + h);
     
     uint32_t bg = active ? C_TEXT_LIGHT : (hover ? C_INPUT_BG : C_CARD_BG);
@@ -387,27 +392,36 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
     gfx_fill_rounded_rect(x, y, w, h, bg, 8);
     gfx_draw_rect(x, y, w, h, border);
     
-    // Draw text (password dots or regular text)
-    int text_x = x + 12;
+    // Calculate content dimensions for centering
     int text_y = y + (h - 16) / 2;
+    int content_w = 0;
     
     if (is_password) {
-        // Draw password dots
-        int len = 0;
-        if (value) { const char* p = value; while (*p++) len++; }
+        // Use cursor_pos for accurate dot count (not strlen of hash)
+        int len = cursor_pos;
+        content_w = len * 14;
+        int text_x = x + (w - content_w) / 2;  // Center dots in field
         
         if (len > 0) {
             for (int i = 0; i < len; i++) {
                 gfx_fill_rounded_rect(text_x + i * 14 + 4, text_y + 4, 8, 8, C_TEXT_DARK, 4);
             }
         } else {
-            gfx_draw_string(text_x, text_y, "Enter password...", C_TEXT_MUTED);
+            // Placeholder in grey, centered
+            const char* ph = "Enter password...";
+            int ph_w = strlen(ph) * 8;
+            gfx_draw_string(x + (w - ph_w) / 2, text_y, ph, C_TEXT_MUTED);
         }
     } else {
         if (value && value[0]) {
+            content_w = strlen(value) * 8;
+            int text_x = x + (w - content_w) / 2;  // Center text in field
             gfx_draw_string(text_x, text_y, value, C_TEXT_DARK);
         } else {
-            gfx_draw_string(text_x, text_y, "Enter name...", C_TEXT_MUTED);
+            // Placeholder in grey, centered
+            const char* ph = "Enter name...";
+            int ph_w = strlen(ph) * 8;
+            gfx_draw_string(x + (w - ph_w) / 2, text_y, ph, C_TEXT_MUTED);
         }
     }
     
@@ -418,11 +432,15 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
         if ((blink / 30) % 2 == 0) {
             int cursor_x;
             if (is_password) {
-                int len = 0;
-                if (value) { const char* p = value; while (*p++) len++; }
-                cursor_x = text_x + len * 14 + 6;
+                int len = cursor_pos;
+                content_w = len * 14;
+                int text_x = x + (w - content_w) / 2;
+                cursor_x = text_x + len * 14 + 4;
             } else {
-                cursor_x = text_x + strlen(value) * 8;
+                int vlen = value ? strlen(value) : 0;
+                content_w = vlen * 8;
+                int text_x = x + (w - content_w) / 2;
+                cursor_x = text_x + vlen * 8;
             }
             gfx_fill_rect(cursor_x, text_y, 1, 16, C_ACCENT);
         }
@@ -464,6 +482,7 @@ static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int cli
         g_setup.input_cursor = 0;
         g_setup.input_active = 1;
         strcpy(g_setup.input_buffer, g_setup.config.username);
+        g_setup.input_cursor = strlen(g_setup.config.username);  // Cursor at end of pre-filled text
     }
     
     // Progress dots
@@ -501,7 +520,8 @@ static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int 
     
     // Username field
     draw_text_field(cx - 150, card_y + 210, 300, 44, 
-                   g_setup.input_buffer, g_setup.input_active, 0, mx, my, click);
+                   g_setup.input_buffer, g_setup.input_active, 0, mx, my, click,
+                   g_setup.input_cursor);
     
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
@@ -563,14 +583,16 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
     // Password field
     if (g_setup.password_step == 0) {
         draw_text_field(cx - 150, card_y + 130, 300, 44,
-                       g_setup.password_buffer, g_setup.password_active == 1, 1, mx, my, click);
+                       g_setup.password_buffer, g_setup.password_active == 1, 1, mx, my, click,
+                       g_setup.password_cursor);
     } else {
         // Show first password as confirmed dots
         gfx_draw_string(cx - 140, card_y + 120, "Password set", C_SUCCESS);
         
         // Confirm field
         draw_text_field(cx - 150, card_y + 150, 300, 44,
-                       g_setup.password_confirm, g_setup.password_active == 2, 1, mx, my, click);
+                       g_setup.password_confirm, g_setup.password_active == 2, 1, mx, my, click,
+                       g_setup.confirm_cursor);
     }
     
     // Optional hint

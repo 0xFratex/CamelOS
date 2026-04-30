@@ -330,9 +330,13 @@ static void draw_avatar(int cx, int cy, int size, int color_idx) {
     }
 }
 
-static void draw_password_dots(int x, int y, int count, int max_dots, int show_error) {
+static void draw_password_dots(int x, int y, int count, int show_error) {
     int dot_size = 8;
     int spacing = 12;
+    // Dynamic: show dots based on actual count + a few empty slots for visual reference
+    int max_dots = count + 2;
+    if (max_dots < 6) max_dots = 6;
+    if (max_dots > 20) max_dots = count;  // Just show filled dots for very long passwords
     int total_w = max_dots * spacing;
     int start_x = x - total_w / 2;
     
@@ -425,14 +429,20 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         gfx_fill_rounded_rect(cx - field_w/2, input_y - field_h/2, 
                               field_w, field_h, C_LOCK_INPUT_BG, 8);
         
-        // Password dots
-        draw_password_dots(cx, input_y, g_lock.cursor_pos, 12, g_lock.show_error);
+        // Password dots (dynamic sizing based on actual typed count)
+        draw_password_dots(cx, input_y, g_lock.cursor_pos, g_lock.show_error);
         
         // Blinking cursor
         static int blink_timer = 0;
         blink_timer++;
         if ((blink_timer / 30) % 2 == 0) {
-            int cursor_x = cx + (g_lock.cursor_pos - 6) * 12 + 4;
+            // Calculate cursor position matching the dynamic dot layout
+            int max_dots = g_lock.cursor_pos + 2;
+            if (max_dots < 6) max_dots = 6;
+            if (max_dots > 20) max_dots = g_lock.cursor_pos;
+            int total_w = max_dots * 12;
+            int start_x = cx - total_w / 2;
+            int cursor_x = start_x + g_lock.cursor_pos * 12 + 6;
             gfx_fill_rect(cursor_x, input_y - 8, 2, 16, C_LOCK_TEXT);
         }
         

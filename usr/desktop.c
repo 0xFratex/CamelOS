@@ -6,6 +6,7 @@
 #include "lib/camel_ui.h"
 #include "../fs/pfs32.h"
 #include "desktop.h"
+#include "../hal/drivers/serial.h"
 
 // DMG mounter for .dmg install support
 #include "../core/dmg_mount.h"

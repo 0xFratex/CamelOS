@@ -204,6 +204,9 @@ DiskInfo g_disk_info;
 // Sys check state
 int sys_check_done = 0;
 
+// Forward declarations
+void install_tick(void);
+
 // Health cache (populated on demand)
 int health_scanned[4] = {0, 0, 0, 0};
 
@@ -1706,6 +1709,9 @@ void install_tick(void) {
                 pfs32_create_directory("/home"); pfs32_create_directory("/home/desktop");
                 pfs32_create_directory("/usr");  pfs32_create_directory("/usr/lib");
                 pfs32_create_directory("/usr/apps");
+                pfs32_create_directory("/Applications");  // macOS-like app directory
+                pfs32_create_directory("/Library"); pfs32_create_directory("/Library/Preferences");
+                pfs32_create_directory("/etc");
                 install_step_tick = 1;
             }
             install_target_pct = 47;
@@ -1726,6 +1732,19 @@ void install_tick(void) {
             install_file_idx++;
             install_target_pct = 47 + (install_file_idx * 43) / 6;
             return;
+        }
+        // Create .app bundle directory stubs in /Applications/ for dock compatibility
+        // Each .app directory acts as a pointer to the actual .cdl in /usr/apps/
+        {
+            const char* app_bundles[] = {
+                "/Applications/Files.app", "/Applications/Terminal.app",
+                "/Applications/Waterhole.app", "/Applications/NetTools.app",
+                "/Applications/TextEdit.app", "/Applications/Browser.app",
+                "/Applications/Settings.app"
+            };
+            for (int i = 0; i < 7; i++) {
+                pfs32_create_directory(app_bundles[i]);
+            }
         }
         pfs32_sync(); disk_flush_cache();
         install_target_pct = 90;

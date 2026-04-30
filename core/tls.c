@@ -3,6 +3,7 @@
 #include "tls.h"
 #include "sha256.h"
 #include "socket.h"
+#include "dns.h"
 #include "string.h"
 #include "memory.h"
 #include "net.h"

@@ -120,7 +120,7 @@ void objc_set_bridge(ObjCBridge* bridge);
 ObjCBridge* objc_get_bridge(void);
 
 // --- Protocol Operations ---
-Protocol* objc_getProtocol(const char* name);
+struct objc_protocol* objc_getProtocol(const char* name);
 BOOL class_conformsToProtocol(Class cls, Protocol* protocol);
 
 #endif // OBJC_RUNTIME_H

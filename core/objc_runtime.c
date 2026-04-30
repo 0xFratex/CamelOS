@@ -371,7 +371,7 @@ id objc_msgSendSuper(id self, Class super_class, SEL op, ...) {
 
 // --- Protocol Operations ---
 
-Protocol* objc_getProtocol(const char* name) {
+struct objc_protocol* objc_getProtocol(const char* name) {
     if (!name) return 0;
     
     for (int i = 0; i < g_protocol_count; i++) {
