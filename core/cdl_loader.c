@@ -13,6 +13,11 @@ typedef unsigned int uintptr_t;
 #include "socket.h"
 #include "dns.h"
 #include "http.h"
+#include "macho_loader.h"
+#include "../hal/video/gfx_hal.h"
+
+// Forward declarations
+int internal_load_library(const char* path);
 
 // Built-in VarArgs
 #define va_start(v,l) __builtin_va_start(v,l)
@@ -179,11 +184,8 @@ static int resolve_and_load(const char* path) {
                 char magic_buf[8];
                 int msize = sys_fs_read(bundle_exec, magic_buf, 4);
                 if (msize >= 4) {
-                    uint32_t magic = *(uint32_t*)magic_buf;
-                    extern int macho_check_magic(const uint8_t*, uint32_t);
                     if (macho_check_magic((uint8_t*)magic_buf, 4)) {
                         // Load as Mach-O
-                        extern loaded_macho_t* macho_load(const char*);
                         loaded_macho_t* img = macho_load(bundle_exec);
                         if (img) return 0;  // Success
                     }
@@ -244,7 +246,7 @@ static char g_launch_args[256] = {0};
 void sys_set_launch_args(const char* args) { if(args) strncpy(g_launch_args, args, 255); else g_launch_args[0]=0; }
 int wrap_exec_with_args(const char* p, const char* a) { sys_set_launch_args(a); return wrap_exec(p); }
 void wrap_get_args(char* b, int m) { if(b) strncpy(b, g_launch_args, m); }
-void* wrap_create_win(const char* t, int w, int h, void* p, void* i, void* m) { return ws_create_window(t, w, h, p, i, m); }
+void* wrap_create_win(const char* t, int w, int h, paint_cb_t p, input_cb_t i, mouse_cb_t m) { return ws_create_window(t, w, h, (void*)p, (void*)i, (void*)m); }
 void wrap_draw_text_clip(int x, int y, const char* s, int c, int m) { sys_gfx_string(x, y, s, c); }
 void wrap_draw_img(int x, int y, const char* n) {
     uint32_t c=0; const embedded_image_t* a=get_embedded_images(&c);
@@ -311,7 +313,7 @@ kernel_api_t g_kernel_api = {
     .socket = wrap_socket, .bind = wrap_bind, .connect = wrap_connect, .sendto = wrap_sendto,
     .send = wrap_send, .recvfrom = wrap_recvfrom, .recv = wrap_recv, .close = wrap_close,
     .net_get_interface_info = wrap_net_get_if_info, .dns_resolve = wrap_dns_resolve,
-    .http_get = http_get_simple,
+    .http_get = http_get,
     .process_events = wrap_process_events,
     .draw_pixels = sys_gfx_draw_image,
     .cdl_load = wrap_cdl_load,
@@ -359,8 +361,6 @@ void process_relocations(Elf32_Rel* rel, int count, uint32_t load_base, uint32_t
     
     for(int i=0; i<count; i++) {
         uint32_t rel_type = ELF32_R_TYPE(rel[i].r_info);
-        uint32_t sym_index = ELF32_R_SYM(rel[i].r_info);
-        
         // r_offset is a VIRTUAL address - convert to actual loaded address
         uint32_t* target = (uint32_t*)(load_base + (rel[i].r_offset - min_vaddr));
         
