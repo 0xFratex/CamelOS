@@ -16,7 +16,6 @@ extern int internal_load_library(const char* path);
 typedef struct { char name[32]; void* base_addr; uint32_t size; void* exports; int active; } loaded_cdl_t_mirror;
 extern loaded_cdl_t_mirror loaded_libraries[];
 
-extern void s_printf(const char* fmt, ...);
 extern void int_to_str(int, char*);
 
 #define MAX_LOADED_BUNDLES 32
