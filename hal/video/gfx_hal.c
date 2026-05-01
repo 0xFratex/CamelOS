@@ -456,3 +456,53 @@ void gfx_draw_glass_rect(int x, int y, int w, int h, int r) {
     // Draw 1px white rim for "Glass Edge" feel
     // (Simplified: reuse rect draw with low alpha stroke)
 }
+
+// ============================================================================
+// Stroke Rounded Rect (draw outline only, no fill)
+// ============================================================================
+void gfx_stroke_rounded_rect(int x, int y, int w, int h, uint32_t color, int r, int line_width) {
+    if (w < 2*r) r = w/2;
+    if (h < 2*r) r = h/2;
+    if (r < 1) { gfx_draw_rect(x, y, w, h, color); return; }
+    
+    // Draw the outline by drawing 4 edge strips + 4 corner arcs
+    // Top edge (between corner arcs)
+    gfx_fill_rect(x + r, y, w - 2*r, line_width, color);
+    // Bottom edge
+    gfx_fill_rect(x + r, y + h - line_width, w - 2*r, line_width, color);
+    // Left edge
+    gfx_fill_rect(x, y + r, line_width, h - 2*r, color);
+    // Right edge
+    gfx_fill_rect(x + w - line_width, y + r, line_width, h - 2*r, color);
+    
+    // Corner arcs (iterate edge pixels of each corner)
+    int r2 = r * r;
+    int inner_r2 = (r - line_width) * (r - line_width);
+    if (inner_r2 < 0) inner_r2 = 0;
+    
+    for (int dy = 0; dy < r; dy++) {
+        for (int dx = 0; dx < r; dx++) {
+            int cx = r - 1 - dx;
+            int cy = r - 1 - dy;
+            int dist_sq = cx * cx + cy * cy;
+            
+            // Pixel is on the stroke ring if it's inside outer radius but outside inner
+            if (dist_sq <= r2 && dist_sq >= inner_r2) {
+                // TL
+                gfx_put_pixel(x + dx, y + dy, color);
+                // TR
+                gfx_put_pixel(x + w - 1 - dx, y + dy, color);
+                // BL
+                gfx_put_pixel(x + dx, y + h - 1 - dy, color);
+                // BR
+                gfx_put_pixel(x + w - 1 - dx, y + h - 1 - dy, color);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Box Blur (3-pass) - Generates blur buffer from current backbuffer
+// Call this after drawing the wallpaper, before drawing windows
+// This is implemented in compositor.c to avoid circular includes
+// ============================================================================
