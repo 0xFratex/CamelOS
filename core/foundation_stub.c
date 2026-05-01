@@ -33,10 +33,9 @@ static void register_NSBundle_methods(Class cls);
 // ============================================================================
 
 // Simple reference counting (stored in a parallel array for simplicity)
-#define MAX_TRACKED_OBJECTS 4096
 static uint32_t g_object_refcounts[MAX_TRACKED_OBJECTS];
-static void* g_object_ptrs[MAX_TRACKED_OBJECTS];
-static int g_object_tracking_count = 0;
+void* g_object_ptrs[MAX_TRACKED_OBJECTS];
+int g_object_tracking_count = 0;
 
 int find_object_slot(id obj) {
     for (int i = 0; i < g_object_tracking_count; i++) {

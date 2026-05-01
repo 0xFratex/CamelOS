@@ -4,6 +4,7 @@
 // NSButton, NSImageView, NSScrollView, NSColor, NSFont
 
 #include "appkit_compat.h"
+#include "foundation_stub.h"
 #include "objc_runtime.h"
 #include "string.h"
 #include "memory.h"
@@ -144,8 +145,6 @@ void appkit_window_paint(int x, int y, int w, int h) {
         window_t* ws_win = ws_get_window_at_index(i);
         if (ws_win && ws_win->paint_callback == (void*)appkit_window_paint) {
             // Search tracked objects for the CamelOSWindow with this ws_window
-            extern void* g_object_ptrs[];
-            extern int g_object_tracking_count;
             for (int j = 0; j < g_object_tracking_count; j++) {
                 CamelOSWindow* cw = (CamelOSWindow*)g_object_ptrs[j];
                 if (cw && cw->ws_window == ws_win) {
@@ -221,8 +220,6 @@ void appkit_window_mouse(int lx, int ly, int btn) {
     window_t* active = ws_get_active_window();
     if (!active || active->mouse_callback != (void*)appkit_window_mouse) return;
     
-    extern void* g_object_ptrs[];
-    extern int g_object_tracking_count;
     for (int j = 0; j < g_object_tracking_count; j++) {
         CamelOSWindow* cw = (CamelOSWindow*)g_object_ptrs[j];
         if (cw && cw->ws_window == active) {
@@ -243,8 +240,6 @@ void appkit_window_scroll(int delta) {
     window_t* active = ws_get_active_window();
     if (!active || active->scroll_callback != (void*)appkit_window_scroll) return;
     
-    extern void* g_object_ptrs[];
-    extern int g_object_tracking_count;
     for (int j = 0; j < g_object_tracking_count; j++) {
         CamelOSWindow* cw = (CamelOSWindow*)g_object_ptrs[j];
         if (cw && cw->ws_window == active) {

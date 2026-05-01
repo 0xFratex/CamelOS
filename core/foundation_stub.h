@@ -138,6 +138,10 @@ void foundation_init(void);
 void foundation_set_kernel_api(void* api);
 
 // --- Object tracking (used by extended Foundation and AppKit) ---
+#define MAX_TRACKED_OBJECTS 4096
+extern void* g_object_ptrs[];
+extern int g_object_tracking_count;
+extern uint32_t g_object_refcounts[];
 int track_object(id obj);
 int find_object_slot(id obj);
 
