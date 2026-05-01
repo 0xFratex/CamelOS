@@ -183,7 +183,8 @@ Class objc_allocateClassPair(Class superclass, const char* name, size_t extraByt
     // Setup metaclass
     meta->isa = &g_root_metaclass;
     meta->superclass = superclass ? superclass->isa : &g_root_metaclass;
-    strncpy(meta->name, name, 63);
+    strncpy(meta->name, name, 57);  // Leave room for " meta" suffix (6 chars)
+    meta->name[57] = 0;              // Ensure null termination
     strcat(meta->name, " meta");
     meta->info = 0x02; // Metaclass flag
     
@@ -195,6 +196,7 @@ Class objc_allocateClassPair(Class superclass, const char* name, size_t extraByt
 }
 
 void objc_registerClassPair(Class cls) {
+    if (!cls) return;  // Guard against NULL pointer
     // Already registered in allocateClassPair
     // This is a no-op in our implementation, but could do validation
     s_printf("[ObjC] Registered class: ");

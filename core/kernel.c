@@ -158,6 +158,7 @@ extern void init_terminal_app(void);
 extern void init_textedit_app(void);
 extern void init_browser_app(void);
 extern void init_settings_app(void);
+extern void init_mactest_app(void);
 
 int kernel_launch_builtin_app(const char* name) {
     // Built-in app dispatch table - all apps now have real implementations
@@ -168,6 +169,7 @@ int kernel_launch_builtin_app(const char* name) {
         {"TextEdit",  init_textedit_app},
         {"Browser",   init_browser_app},
         {"Settings",  init_settings_app},
+        {"MacTest",   init_mactest_app},
         {"Monitor",   0},                 // Uses CDL sysmon
         {"NetDiag",   0},                 // Has CDL, handled by CDL loader
         {"Waterhole", 0},                 // No built-in app yet

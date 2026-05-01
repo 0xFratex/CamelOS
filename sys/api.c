@@ -82,7 +82,8 @@ int sys_get_tz_offset(void) {
 void sys_get_time(int* h, int* m, int* s) {
     rtc_read_time(h, m, s);
     // Apply timezone offset
-    if (tz_offset_minutes != 0 && h && m && s) {
+    // Check pointer validity, not the values (midnight is 0:0:0 and should still be adjusted)
+    if (tz_offset_minutes != 0 && h != 0 && m != 0 && s != 0) {
         int total_min = (*h) * 60 + (*m) + tz_offset_minutes;
         // Normalize to 0-23 hours
         while (total_min < 0) total_min += 24 * 60;

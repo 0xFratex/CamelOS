@@ -278,6 +278,12 @@ loaded_macho_t* macho_load(const char* path) {
         lc = (load_command_t*)((uint8_t*)lc + lc->cmdsize);
     }
     
+    // Guard against malformed Mach-O with no segments
+    if (max_vmaddr == 0 || min_vmaddr == 0xFFFFFFFF) {
+        s_printf("[MachO] No valid segments found in binary\n");
+        return 0;
+    }
+    
     total_vm_size = max_vmaddr - min_vmaddr;
     total_vm_size = (total_vm_size + 4095) & ~4095;  // Page align
     
@@ -345,11 +351,8 @@ loaded_macho_t* macho_load(const char* path) {
     }
     
     // Process ObjC sections if found
-    if (objc_seg) {
-        macho_process_objc_sections(NULL, objc_seg, raw, fsize);
-    }
-    
-    // Setup loaded image
+    // NOTE: Must set up image struct BEFORE processing ObjC sections,
+    // because macho_process_objc_sections() dereferences image->base_addr
     loaded_macho_t* image = &g_macho_images[slot];
     memcpy(&image->header, header, sizeof(mach_header_t));
     image->base_addr = image_base;
@@ -363,6 +366,12 @@ loaded_macho_t* macho_load(const char* path) {
     const char* p = path;
     while (*p) { if (*p == '/') name_start = p + 1; p++; }
     strncpy(image->name, name_start, 63);
+    image->name[63] = 0;
+    
+    // Process ObjC sections now that image struct is properly set up
+    if (objc_seg) {
+        macho_process_objc_sections(image, objc_seg, raw, fsize);
+    }
     
     kfree(raw);
     

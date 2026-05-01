@@ -470,12 +470,30 @@ static void settings_on_paint(int x, int y, int w, int h) {
 static void settings_on_mouse(int x, int y, int btn) {
     if (btn != 1) return;
     
-    // Tab clicks
+    // Tab clicks - use dynamic width based on actual window content area
     if (y >= 0 && y < 28) {
+        // The paint callback receives (x, y, w, h) where x,y are window content origin
+        // The tab bar is drawn with width w from draw_tab_bar. We use 500 as the
+        // window width (same as fw_create_window uses), so tab_w = 500 / TAB_COUNT
         int tab_w = 500 / TAB_COUNT;
         int tab = x / tab_w;
         if (tab >= 0 && tab < TAB_COUNT) {
             current_tab = tab;
+        }
+    }
+}
+
+// Menu action handler for Settings app
+static void settings_on_menu_action(int menu_id, int item_idx) {
+    if (menu_id == 0) { // File menu
+        if (item_idx == 0) { // Refresh
+            settings_load_config();
+            detect_cpu_info();
+        }
+        // item_idx == 1 is Close - handled by window close button
+    } else if (menu_id == 1) { // View menu
+        if (item_idx >= 0 && item_idx < TAB_COUNT) {
+            current_tab = item_idx;
         }
     }
 }
@@ -488,6 +506,7 @@ static void settings_on_input(int key) {
 void init_settings_app() {
     settings_load_config();
     Window* w = fw_create_window("Settings", 500, 420, settings_on_paint, settings_on_input, settings_on_mouse);
+    if (!w) return;  // Guard against window creation failure
     w->min_w = 400;
     
     // Detect hardware info
@@ -506,6 +525,9 @@ void init_settings_app() {
     strcpy(w->menus[1].items[3].label, "Network");
     strcpy(w->menus[1].items[4].label, "Hardware");
     w->menus[1].item_count = 5;
+    
+    // Set menu action handler to prevent crash when clicking menu items
+    w->on_menu_action = (void*)settings_on_menu_action;
     
     fw_register_dock("Settings", 4, w);
 }

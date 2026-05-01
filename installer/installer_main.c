@@ -1650,7 +1650,14 @@ void install_tick(void) {
 
     // Smooth progress animation: gradually move install_pct toward install_target_pct
     if (install_pct < install_target_pct) {
-        install_pct += 2;  // Slower, smoother animation
+        // Adaptive speed: catch up faster when far behind to prevent
+        // the progress bar appearing "stuck" at ~29% during step transitions
+        int diff = install_target_pct - install_pct;
+        if (diff > 10) {
+            install_pct += 3;  // Fast catch-up when far behind
+        } else {
+            install_pct += 2;  // Normal smooth animation
+        }
         if (install_pct > install_target_pct) install_pct = install_target_pct;
     }
 
@@ -1694,21 +1701,37 @@ void install_tick(void) {
         }
         
         uint32_t k_sectors = (k_size + 511) / 512;
+        
+        // Guard against division by zero
+        if (k_sectors == 0) {
+            strcpy(install_error_msg, "Kernel has zero sectors"); install_error = 1;
+            current_state = STATE_FAILURE;
+            return;
+        }
+        
         int sectors_this = 0;
         while (kernel_write_offset < k_sectors && sectors_this < 16) {
             uint8_t buf[512]; memset(buf, 0, 512);
             uint32_t rem = k_size - (kernel_write_offset * 512);
             memcpy(buf, system_bin_start + (kernel_write_offset * 512), (rem>512)?512:rem);
             if (ata_write_sector(selected_drive_idx, 1+kernel_write_offset, buf) < 0) {
-                strcpy(install_error_msg, "Failed to write kernel"); install_error=1; return;
+                install_idle_ticks++;
+                // Watchdog: if ATA write fails repeatedly, don't deadlock
+                if (install_idle_ticks > 100) {
+                    strcpy(install_error_msg, "ATA write timeout during kernel copy"); install_error=1;
+                    current_state = STATE_FAILURE;
+                    return;
+                }
+                return;  // Retry next tick
             }
+            install_idle_ticks = 0;  // Reset watchdog on success
             kernel_write_offset++; sectors_this++;
         }
         // Progress: 10% to 30% for kernel copy
         install_target_pct = 10 + (kernel_write_offset * 20 / k_sectors);
         if (kernel_write_offset >= k_sectors) {
             install_target_pct = 30;
-            install_step++; add_log("Kernel copied");
+            install_step++; install_step_tick = 0; add_log("Kernel copied");
         }
         return;
     }
@@ -1786,8 +1809,9 @@ void install_tick(void) {
                 {"/Applications/TextEdit.app",  "TextEdit",  "",                      "builtin"},
                 {"/Applications/Browser.app",   "Browser",   "",                      "builtin"},
                 {"/Applications/Settings.app",  "Settings",  "",                      "builtin"},
+                {"/Applications/MacTest.app",   "MacTest",   "",                      "builtin"},
             };
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < 8; i++) {
                 // Create the .app bundle directory structure
                 pfs32_create_directory(app_bundles[i].path);
                 

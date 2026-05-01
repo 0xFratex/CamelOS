@@ -30,12 +30,15 @@ static void z_add(window_t* w) {
 }
 
 static void z_remove(window_t* w) {
-    int found = 0;
-    for(int i=0; i<MAX_WINDOWS-1; i++) {
-        if(z_order[i] == w) found = 1;
-        if(found) {
-            z_order[i] = z_order[i+1];
-        }
+    // Find the index first, then shift from that index
+    int idx = -1;
+    for(int i = 0; i < MAX_WINDOWS; i++) {
+        if(z_order[i] == w) { idx = i; break; }
+    }
+    if(idx == -1) return;  // Not found
+    // Shift remaining elements down
+    for(int i = idx; i < MAX_WINDOWS - 1; i++) {
+        z_order[i] = z_order[i+1];
     }
     z_order[MAX_WINDOWS-1] = 0;
 }

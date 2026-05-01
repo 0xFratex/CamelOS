@@ -37,6 +37,7 @@ void dock_init() {
     dock_add_app("TextEdit",  "/Applications/TextEdit.app",   "file");
     dock_add_app("Browser",   "/Applications/Browser.app",    "browser");
     dock_add_app("Settings",  "/Applications/Settings.app",   "hdd_icon");
+    dock_add_app("MacTest",   "/Applications/MacTest.app",    "hdd_icon");
 }
 
 void dock_add_app(const char* label, const char* path, const char* icon_res) {

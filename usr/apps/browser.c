@@ -270,7 +270,7 @@ static void browser_on_paint(int x, int y, int w, int h) {
     if (is_loading) {
         static int dots = 0; dots++;
         int nd = (dots / 20) % 4;
-        char loading[8] = "Loading";
+        char loading[16] = "Loading";
         for (int d = 0; d < nd; d++) strcat(loading, ".");
         gfx_draw_string(x + w - 100, status_y + 4, loading, 0xFF007AFF);
     }

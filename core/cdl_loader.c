@@ -667,7 +667,7 @@ void* internal_get_proc_address(int lib_handle, const char* symbol_name) {
     for(int i=0; i<ex->symbol_count; i++) if(strcmp(ex->symbols[i].name, symbol_name) == 0) return ex->symbols[i].func_ptr;
     return 0;
 }
-void internal_unload_library(int lib_handle) { if(lib_handle >= 0 && loaded_libraries[lib_handle].active) loaded_libraries[lib_handle].active = 0; }
+void internal_unload_library(int lib_handle) { if(lib_handle >= 0 && lib_handle < MAX_LOADED_LIBS && loaded_libraries[lib_handle].active) { if(loaded_libraries[lib_handle].base_addr) { kfree(loaded_libraries[lib_handle].base_addr); loaded_libraries[lib_handle].base_addr = 0; } loaded_libraries[lib_handle].active = 0; } }
 void internal_cdl_list_libraries() {}
 
 void* wrap_cdl_load(const char* path);

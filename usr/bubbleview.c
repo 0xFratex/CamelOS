@@ -34,17 +34,23 @@ void desktop_refresh();
 // Resolve app path - try macOS path first, fall back to legacy
 static const char* resolve_app_path(const char* app_name) {
     static char resolved[128];
+    // Safely construct path with bounds checking
+    int name_len = strlen(app_name);
+    if (name_len > 110) name_len = 110;  // Leave room for prefix
     // Try /Applications/ first
     strcpy(resolved, APP_NEW_PREFIX);
-    strcat(resolved, app_name);
+    strncat(resolved, app_name, name_len);
+    resolved[127] = 0;
     if (sys_fs_exists(resolved)) return resolved;
     // Try legacy /usr/apps/
     strcpy(resolved, APP_LEGACY_PREFIX);
-    strcat(resolved, app_name);
+    strncat(resolved, app_name, name_len);
+    resolved[127] = 0;
     if (sys_fs_exists(resolved)) return resolved;
     // Return new path as default even if doesn't exist yet
     strcpy(resolved, APP_NEW_PREFIX);
-    strcat(resolved, app_name);
+    strncat(resolved, app_name, name_len);
+    resolved[127] = 0;
     return resolved;
 }
 
@@ -559,8 +565,13 @@ void handle_dropdown_click(int mx, int my) {
     int idx = rel_y / 20;
 
     if (open_menu_id == -1) {
-        if (idx == 2) sys_reboot();
-        if (idx == 3) sys_shutdown();
+        if (idx == 0) {
+            // "About Camel OS" - open Settings app to About tab
+            extern void init_settings_app(void);
+            init_settings_app();
+        }
+        else if (idx == 2) sys_reboot();
+        else if (idx == 3) sys_shutdown();
     } else if (active_win && active_win->on_menu_action) {
         typedef void (*mcb)(int,int);
         ((mcb)active_win->on_menu_action)(open_menu_id, idx);
@@ -980,16 +991,12 @@ void start_bubble_view() {
         char k = sys_get_key();
         int click = (lb && !prev_lb);
 
-        // Scroll wheel handling
-        int scroll_delta = sys_mouse_scroll();
-        if (scroll_delta != 0 && active_win && active_win->scroll_callback) {
-            typedef void (*scb)(int);
-            ((scb)active_win->scroll_callback)(scroll_delta);
-        }
-
         // ============================================
         // WELCOME SETUP MODE - First boot configuration
         // ============================================
+        // NOTE: Scroll wheel handling is deferred to after mode checks.
+        // In welcome setup mode, the setup code reads mouse_scroll_delta directly,
+        // so we must NOT consume it via sys_mouse_scroll() before that.
         if (g_setup_mode && welcome_setup_is_active()) {
             // Update
             welcome_setup_update(0.02f);
@@ -997,6 +1004,9 @@ void start_bubble_view() {
             // Handle input
             if (k) welcome_setup_handle_key(k);
             welcome_setup_handle_mouse(mx, my, click, 0);
+            // Consume scroll delta after welcome setup has had a chance to read it
+            // (welcome_setup reads mouse_scroll_delta directly in its render functions)
+            sys_mouse_scroll();
             
             // Render
             buffer = gfx_get_active_buffer();
@@ -1067,6 +1077,16 @@ void start_bubble_view() {
         // ============================================
         // NORMAL GUI MODE - Desktop interaction
         // ============================================
+
+        // Scroll wheel handling - only in normal GUI mode
+        // (welcome setup and screenlock modes consume scroll themselves above)
+        {
+            int scroll_delta = sys_mouse_scroll();
+            if (scroll_delta != 0 && active_win && active_win->scroll_callback) {
+                typedef void (*scb)(int);
+                ((scb)active_win->scroll_callback)(scroll_delta);
+            }
+        }
 
         // --- FLICKER FIX: Save old drag position BEFORE input updates it ---
         if (drag_win) {
