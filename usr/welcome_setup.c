@@ -328,7 +328,7 @@ int welcome_setup_is_active(void) {
     return g_setup.state != SETUP_STATE_COMPLETE || !g_setup.config.is_configured;
 }
 
-void welcome_setup_finish(void) {
+int welcome_setup_finish(void) {
     // Hash the password if one was set
     if (g_setup.password_buffer[0] != 0) {
         sha256_hash_password(g_setup.password_buffer, g_setup.config.password_hash);
@@ -343,7 +343,7 @@ void welcome_setup_finish(void) {
     if (save_result < 0) {
         s_printf("[SETUP] ERROR: Config save failed! Not marking as configured.\n");
         g_setup.config.is_configured = 0;
-        return;  // Don't proceed - user must retry
+        return -1;  // Don't proceed - user must retry
     }
     
     // Configure screenlock with user and hashed password
@@ -354,6 +354,7 @@ void welcome_setup_finish(void) {
     screenlock_set_inactivity_enabled(g_setup.config.auto_lock);
     
     g_setup.state = SETUP_STATE_COMPLETE;
+    return 0;
 }
 
 SystemConfig* welcome_setup_get_config(void) {
@@ -857,8 +858,15 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
     
     if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Get Started", 1, mx, my, click)) {
         g_setup.config.theme = g_setup.selected_theme_idx;
-        welcome_setup_finish();
-        g_setup.state = SETUP_STATE_COMPLETE;
+        int save_ok = welcome_setup_finish();
+        // Only set COMPLETE if save actually succeeded.
+        // If save fails, finish() returns -1 and keeps is_configured=0,
+        // so the setup wizard stays active for the user to retry.
+        if (save_ok == 0) {
+            g_setup.state = SETUP_STATE_COMPLETE;
+        } else {
+            s_printf("[SETUP] Save failed - staying on theme page for retry.\n");
+        }
     }
     
     // Progress dots

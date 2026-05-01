@@ -35,6 +35,13 @@ static inline void pfs_spin_unlock(void) {
 #define PFS_LOCK()   pfs_spin_lock()
 #define PFS_UNLOCK() pfs_spin_unlock() 
 
+// --- CRITICAL: Entries Per Block Calculation ---
+// pfs32_direntry_t is 128 bytes (with APFS+ extended fields), so only 4 fit per 512-byte block.
+// Old code assumed 8 entries (when entries were 64 bytes), causing buffer overflows
+// and directory corruption. This was the root cause of config save failures,
+// file duplication, and installer crashes.
+#define PFS32_ENTRIES_PER_BLOCK (PFS32_BLOCK_SIZE / sizeof(pfs32_direntry_t))  // = 4 
+
 static pfs32_superblock_t sb;
 static uint32_t disk_start = 0;
 static uint32_t mounted = 0;
@@ -328,9 +335,9 @@ uint32_t alloc_block() {
 
 int find_entry_in_buf(uint8_t* buf, const char* name, pfs32_direntry_t* out) {
     pfs32_direntry_t* entries = (pfs32_direntry_t*)buf;
-    for(int i=0; i<8; i++) {
+    for(int i=0; i<PFS32_ENTRIES_PER_BLOCK; i++) {
         if(entries[i].filename[0] == 0) continue;
-        char clean[41]; sanitize_name(clean, entries[i].filename, 40);
+        char clean[64]; sanitize_name(clean, entries[i].filename, 63);
         if(strcmp(clean, name) == 0) {
             if(out) *out = entries[i];
             return i;
@@ -754,7 +761,7 @@ int pfs32_create_node(const char* path, int is_dir) {
         disk_rw(0, curr, buf);
         pfs32_direntry_t* entries = (pfs32_direntry_t*)buf;
         
-        for(int i=0; i<8; i++) {
+        for(int i=0; i<PFS32_ENTRIES_PER_BLOCK; i++) {
             if(entries[i].filename[0] == 0) {
                 target_blk = curr;
                 target_idx = i;
@@ -1146,8 +1153,10 @@ int pfs32_listdir(uint32_t block, pfs32_direntry_t* buf, uint32_t max) {
         uint8_t dbuf[512];
         if(disk_rw(0, curr, dbuf) != PFS_OK) break;
         pfs32_direntry_t* d = (pfs32_direntry_t*)dbuf;
-        for(int i=0; i<8; i++) {
+        for(int i=0; i<PFS32_ENTRIES_PER_BLOCK; i++) {
             if(d[i].filename[0] != 0 && count < max) {
+                // Skip . and .. directory entries but allow other dotfiles
+                if(strcmp(d[i].filename, ".") == 0 || strcmp(d[i].filename, "..") == 0) continue;
                 buf[count] = d[i];
                 count++;
             }

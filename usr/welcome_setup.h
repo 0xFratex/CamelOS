@@ -80,7 +80,7 @@ void welcome_setup_init(void);
 int welcome_setup_needs_setup(void);
 void welcome_setup_start(void);
 int welcome_setup_is_active(void);
-void welcome_setup_finish(void);
+int welcome_setup_finish(void);
 
 // Rendering
 void welcome_setup_render(uint32_t* buffer, int w, int h, int mx, int my);

@@ -42,7 +42,7 @@ extern ContextMenuState g_ctx_menu;
 #define ICON_SPACING_Y 100
 
 // Dynamic desktop path - resolved from user config at init time
-char g_desktop_path[128] = DESKTOP_PATH_LEGACY;  // default fallback (non-static for external access)
+char g_desktop_path[128] = "";  // Empty until properly resolved from config
 
 int desktop_is_ctx_open() {
     return g_ctx_menu.active;
@@ -91,11 +91,12 @@ void desktop_refresh() {
         pfs32_direntry_t temp[32];
         int raw = sys_fs_list_dir(g_desktop_path, temp, 32);
         // Deduplicate: track seen filenames to prevent duplicate entries
-        char seen_names[32][40];
+        char seen_names[32][64];
         int seen_count = 0;
         for(int i=0; i<raw; i++) {
-            if(temp[i].filename[0] != 0 && temp[i].filename[0] != '.' &&
-               strcmp(temp[i].filename, ".") != 0 && strcmp(temp[i].filename, "..") != 0) {
+            if(temp[i].filename[0] != 0 && 
+               strcmp(temp[i].filename, ".") != 0 && 
+               strcmp(temp[i].filename, "..") != 0) {
                 // Check for duplicates
                 int is_dup = 0;
                 for(int j=0; j<seen_count; j++) {
@@ -105,8 +106,8 @@ void desktop_refresh() {
                     }
                 }
                 if(!is_dup && desk_count < 32) {
-                    strncpy(seen_names[seen_count], temp[i].filename, 39);
-                    seen_names[seen_count][39] = 0;
+                    strncpy(seen_names[seen_count], temp[i].filename, 63);
+                    seen_names[seen_count][63] = 0;
                     seen_count++;
                     desk_entries[desk_count++] = temp[i];
                 }
@@ -139,17 +140,29 @@ void desktop_init() {
                 strcpy(g_desktop_path, "/Users/");
                 strcat(g_desktop_path, username);
                 strcat(g_desktop_path, "/Desktop");
-                // Verify the path exists; if not, create it
-                if (!sys_fs_exists(g_desktop_path)) {
-                    char user_home[128];
-                    strcpy(user_home, "/Users/");
-                    strcat(user_home, username);
-                    sys_fs_create(user_home, 1);
-                    sys_fs_create(g_desktop_path, 1);
-                }
             }
         }
     }
+    
+    // If we couldn't resolve a username from config, use a sensible default.
+    // Do NOT use /Users/Desktop (which causes duplicate desktop folder).
+    if (g_desktop_path[0] == 0) {
+        strcpy(g_desktop_path, "/Users/Shared/Desktop");
+    }
+    
+    // Ensure the path exists
+    if (!sys_fs_exists(g_desktop_path)) {
+        // Create parent directories
+        char parent[128];
+        strcpy(parent, g_desktop_path);
+        char* last_slash = strrchr(parent, '/');
+        if (last_slash) {
+            *last_slash = 0;
+            sys_fs_create(parent, 1);
+        }
+        sys_fs_create(g_desktop_path, 1);
+    }
+    
     desktop_refresh();
 }
 
@@ -241,11 +254,6 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
             static char path_buf[128];
             strcpy(path_buf, g_desktop_path);
             strcat(path_buf, "/");
-            // Fallback only if dynamic path doesn't exist
-            if (!sys_fs_exists(g_desktop_path)) {
-                strcpy(path_buf, DESKTOP_PATH_LEGACY);
-                strcat(path_buf, "/");
-            }
             strcat(path_buf, desk_entries[hit_idx].filename);
             
             // Also select it

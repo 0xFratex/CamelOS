@@ -152,66 +152,23 @@ void rtl8139_test_loopback() {
 // Dispatches launch requests for apps compiled into the kernel (not CDL)
 // Returns 0 on success, -1 if app not found
 
-// Stub app init functions - use void* for window handle since kernel.c
-// doesn't include the full Window type definition
-static void init_textedit_app(void) {
-    extern void* fw_create_window(const char* title, int w, int h, 
-                                   void (*on_paint)(int,int,int,int), 
-                                   void (*on_input)(int), 
-                                   void (*on_mouse)(int,int,int));
-    extern void dock_register(const char* name, int icon_id, void* win);
-    
-    void* w = fw_create_window("TextEdit", 500, 350, 0, 0, 0);
-    dock_register("TextEdit", 0, w);
-}
-
-static void init_nettools_app(void) {
-    extern void* fw_create_window(const char* title, int w, int h, 
-                                   void (*on_paint)(int,int,int,int), 
-                                   void (*on_input)(int), 
-                                   void (*on_mouse)(int,int,int));
-    extern void dock_register(const char* name, int icon_id, void* win);
-    
-    void* w = fw_create_window("NetTools", 480, 320, 0, 0, 0);
-    dock_register("NetTools", 0, w);
-}
-
-static void init_browser_app(void) {
-    extern void* fw_create_window(const char* title, int w, int h, 
-                                   void (*on_paint)(int,int,int,int), 
-                                   void (*on_input)(int), 
-                                   void (*on_mouse)(int,int,int));
-    extern void dock_register(const char* name, int icon_id, void* win);
-    
-    void* w = fw_create_window("Browser", 600, 400, 0, 0, 0);
-    dock_register("Browser", 0, w);
-}
-
-static void init_settings_app(void) {
-    extern void* fw_create_window(const char* title, int w, int h, 
-                                   void (*on_paint)(int,int,int,int), 
-                                   void (*on_input)(int), 
-                                   void (*on_mouse)(int,int,int));
-    extern void dock_register(const char* name, int icon_id, void* win);
-    
-    void* w = fw_create_window("Settings", 500, 380, 0, 0, 0);
-    dock_register("Settings", 0, w);
-}
+// All app init functions are now proper implementations in usr/apps/*.c
+extern void init_files_app(void);
+extern void init_terminal_app(void);
+extern void init_textedit_app(void);
+extern void init_browser_app(void);
+extern void init_settings_app(void);
 
 int kernel_launch_builtin_app(const char* name) {
-    extern void init_files_app(void);
-    extern void init_terminal_app(void);
-    
-    // Built-in app dispatch table
+    // Built-in app dispatch table - all apps now have real implementations
     struct { const char* name; void (*init)(void); } builtin_apps[] = {
         {"Files",     init_files_app},
         {"Finder",    init_files_app},    // Finder = Files alias
         {"Terminal",  init_terminal_app},
         {"TextEdit",  init_textedit_app},
-        {"NetTools",  init_nettools_app},
         {"Browser",   init_browser_app},
         {"Settings",  init_settings_app},
-        {"Monitor",   0},                 // No built-in, uses CDL sysmon
+        {"Monitor",   0},                 // Uses CDL sysmon
         {"NetDiag",   0},                 // Has CDL, handled by CDL loader
         {"Waterhole", 0},                 // No built-in app yet
         {0, 0}
