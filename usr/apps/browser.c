@@ -30,6 +30,10 @@ static char status_text[64] = "Ready";
 // Loading state
 static int is_loading = 0;
 
+// Current window dimensions (updated on resize)
+static int browser_win_w = 600;
+static int browser_win_h = 420;
+
 static void browser_load_page(const char* url) {
     page_line_count = 0;
     scroll_offset = 0;
@@ -227,6 +231,7 @@ static void browser_on_paint(int x, int y, int w, int h) {
     
     // URL input field
     int url_w = w - (bx - x) - 60;
+    if (url_w < 40) url_w = 40;
     gfx_fill_rounded_rect(bx, y + 4, url_w, 24, 0xFFFFFFFF, 4);
     gfx_draw_rect(bx, y + 4, url_w, 24, url_active ? 0xFF007AFF : 0xFFC6C6C8);
     
@@ -249,7 +254,14 @@ static void browser_on_paint(int x, int y, int w, int h) {
     // Page content
     int content_y = y + URL_BAR_H + 4;
     int content_h = h - URL_BAR_H - STATUS_BAR_H - 4;
+    if (content_h < 0) content_h = 0;
     int visible_lines = content_h / 16;
+    
+    // Clamp scroll offset
+    if (scroll_offset < 0) scroll_offset = 0;
+    int max_scroll = page_line_count - visible_lines;
+    if (max_scroll < 0) max_scroll = 0;
+    if (scroll_offset > max_scroll) scroll_offset = max_scroll;
     
     for (int i = 0; i < visible_lines && (i + scroll_offset) < page_line_count; i++) {
         gfx_draw_string(x + PAD, content_y + i * 16, page_lines[i + scroll_offset], 0xFF333333);
@@ -274,6 +286,16 @@ static void browser_on_paint(int x, int y, int w, int h) {
         for (int d = 0; d < nd; d++) strcat(loading, ".");
         gfx_draw_string(x + w - 100, status_y + 4, loading, 0xFF007AFF);
     }
+}
+
+static void browser_on_scroll(int delta) {
+    scroll_offset -= delta * 3;
+    if (scroll_offset < 0) scroll_offset = 0;
+}
+
+static void browser_on_resize(int new_w, int new_h) {
+    browser_win_w = new_w;
+    browser_win_h = new_h;
 }
 
 static void browser_on_input(int key) {
@@ -312,9 +334,10 @@ static void browser_on_mouse(int x, int y, int btn) {
     if (y >= 0 && y < URL_BAR_H) {
         url_active = 1;
         
-        // Go button
+        // Calculate Go button position dynamically (same as paint)
         int bx = 6 + 32 + 32 + 36;
-        int url_w = 600 - bx - 60;
+        int url_w = browser_win_w - bx - 60;
+        if (url_w < 40) url_w = 40;
         int go_x = bx + url_w + 4;
         if (x >= go_x && x <= go_x + 40) {
             browser_load_page(url_buf);
@@ -336,6 +359,10 @@ void init_browser_app() {
     
     Window* w = fw_create_window("Browser", 600, 420, browser_on_paint, browser_on_input, browser_on_mouse);
     w->min_w = 400;
+    
+    // Wire up scroll and resize callbacks
+    w->scroll_callback = (void*)browser_on_scroll;
+    w->resize_callback = (void*)browser_on_resize;
     
     w->menu_count = 3;
     strcpy(w->menus[0].name, "File");

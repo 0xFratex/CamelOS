@@ -42,6 +42,10 @@ static char bundle_result[256] = "Not tested yet";
 // Scroll offset for results
 static int scroll_offset = 0;
 
+// Current window dimensions (updated on resize)
+static int mactest_win_w = 560;
+static int mactest_win_h = 400;
+
 static void run_macho_tests(void) {
     macho_test_pass = 0;
     macho_test_fail = 0;
@@ -527,9 +531,9 @@ static void mactest_on_paint(int x, int y, int w, int h) {
 static void mactest_on_mouse(int x, int y, int btn) {
     if (btn != 1) return;
     
-    // Tab clicks
+    // Tab clicks - use dynamic width
     if (y >= 0 && y < 28) {
-        int tab_w = 560 / TAB_COUNT;
+        int tab_w = mactest_win_w / TAB_COUNT;
         int tab = x / tab_w;
         if (tab >= 0 && tab < TAB_COUNT) {
             current_tab = tab;
@@ -538,8 +542,9 @@ static void mactest_on_mouse(int x, int y, int btn) {
         return;
     }
     
-    // Run All Tests button
-    if (y >= 354 && y <= 382 && x >= 20 && x <= 160) {
+    // Run All Tests button - position relative to window height
+    int btn_y = mactest_win_h - 30 - 36;
+    if (y >= btn_y && y <= btn_y + 28 && x >= 20 && x <= 160) {
         run_macho_tests();
         run_apfs_tests();
         run_objc_tests();
@@ -551,10 +556,25 @@ static void mactest_on_input(int key) {
     (void)key;
 }
 
+static void mactest_on_scroll(int delta) {
+    scroll_offset -= delta * 3;
+    if (scroll_offset < 0) scroll_offset = 0;
+}
+
+static void mactest_on_resize(int new_w, int new_h) {
+    mactest_win_w = new_w;
+    mactest_win_h = new_h;
+}
+
 void init_mactest_app() {
     Window* w = fw_create_window("MacTest", 560, 400, mactest_on_paint, mactest_on_input, mactest_on_mouse);
     if (!w) return;
     w->min_w = 480;
     w->menu_count = 0;
+    
+    // Wire up scroll and resize callbacks
+    w->scroll_callback = (void*)mactest_on_scroll;
+    w->resize_callback = (void*)mactest_on_resize;
+    
     fw_register_dock("MacTest", 5, w);
 }

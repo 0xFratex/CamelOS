@@ -32,6 +32,245 @@ Class NSColor_class = 0;
 Class NSFont_class = 0;
 
 // ============================================================================
+// Generic AppKit Window Paint / Mouse / Scroll Callbacks
+// These bridge the window_server callback system to the AppKit view hierarchy.
+// When an AppKit window is shown, these callbacks are registered so that
+// the window_server can paint its content view tree and forward input events.
+// ============================================================================
+
+// Forward declarations
+void appkit_window_paint(int x, int y, int w, int h);
+void appkit_window_mouse(int lx, int ly, int btn);
+void appkit_window_scroll(int delta);
+
+// Helper: recursively compute absolute screen coordinates for a view
+static void compute_view_abs_coords(CamelOSView* view, int parent_abs_x, int parent_abs_y) {
+    if (!view) return;
+    view->abs_x = parent_abs_x + view->x;
+    view->abs_y = parent_abs_y + view->y;
+    // Recurse into subviews
+    if (view->subviews) {
+        for (uint32_t i = 0; i < view->subviews->count; i++) {
+            CamelOSView* sub = (CamelOSView*)view->subviews->objects[i];
+            compute_view_abs_coords(sub, view->abs_x, view->abs_y);
+        }
+    }
+}
+
+// Helper: draw a single view (background + custom paint)
+static void draw_view(CamelOSView* view, int win_x, int win_y) {
+    if (!view || view->is_hidden) return;
+    
+    int vx = win_x + view->x;
+    int vy = win_y + view->y;
+    
+    // Draw background (if opaque and not fully transparent)
+    if (view->is_opaque && view->bg_color != 0x00000000) {
+        gfx_fill_rect(vx, vy, view->w, view->h, view->bg_color);
+    }
+    
+    // Custom paint callback
+    if (view->paint_func) {
+        typedef void (*vpcb)(int, int, int, int);
+        ((vpcb)view->paint_func)(vx, vy, view->w, view->h);
+    }
+}
+
+// Helper: draw an NSButton
+static void draw_button(CamelOSButton* btn, int win_x, int win_y) {
+    if (!btn) return;
+    
+    int bx = win_x + btn->x;
+    int by = win_y + btn->y;
+    
+    uint32_t bg = btn->is_highlighted ? 0xFF0051D5 : btn->bg_color;
+    if (btn->is_bordered) {
+        gfx_fill_rounded_rect(bx, by, btn->w, btn->h, bg, 6);
+        gfx_draw_string(bx + (btn->w - strlen(btn->title) * 8) / 2,
+                        by + (btn->h - 14) / 2,
+                        btn->title, btn->text_color);
+    } else {
+        gfx_draw_string(bx, by + (btn->h - 14) / 2, btn->title, btn->bg_color);
+    }
+}
+
+// Helper: draw an NSTextField
+static void draw_textfield(CamelOSTextField* field, int win_x, int win_y) {
+    if (!field) return;
+    
+    int fx = win_x + field->x;
+    int fy = win_y + field->y;
+    
+    if (field->bg_color != 0x00000000) {
+        gfx_fill_rect(fx, fy, field->w > 0 ? field->w : strlen(field->text) * 8 + 8, 
+                       field->h > 0 ? field->h : 20, field->bg_color);
+    }
+    gfx_draw_string(fx + 4, fy + 3, field->text, field->text_color);
+}
+
+// Helper: draw view tree recursively
+static void draw_view_tree(id view_id, int win_x, int win_y) {
+    if (!view_id) return;
+    
+    CamelOSView* view = (CamelOSView*)view_id;
+    if (view->is_hidden) return;
+    
+    // Check if this view is actually an NSButton (check isa class)
+    Class view_class = object_getClass(view_id);
+    if (view_class == NSButton_class) {
+        draw_button((CamelOSButton*)view, win_x, win_y);
+    } else if (view_class == NSTextField_class) {
+        draw_textfield((CamelOSTextField*)view, win_x, win_y);
+    } else {
+        // Generic NSView
+        draw_view(view, win_x, win_y);
+    }
+    
+    // Draw subviews (front to back)
+    if (view->subviews) {
+        for (uint32_t i = 0; i < view->subviews->count; i++) {
+            draw_view_tree(view->subviews->objects[i], win_x + view->x, win_y + view->y);
+        }
+    }
+}
+
+// Generic AppKit window paint callback
+// Called by window_server with the content area (x, y, w, h)
+void appkit_window_paint(int x, int y, int w, int h) {
+    // Find the CamelOSWindow that corresponds to this paint call
+    // We search by matching the active window's paint_callback
+    CamelOSWindow* app_win = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        window_t* ws_win = ws_get_window_at_index(i);
+        if (ws_win && ws_win->paint_callback == (void*)appkit_window_paint) {
+            // Search tracked objects for the CamelOSWindow with this ws_window
+            extern void* g_object_ptrs[];
+            extern int g_object_tracking_count;
+            for (int j = 0; j < g_object_tracking_count; j++) {
+                CamelOSWindow* cw = (CamelOSWindow*)g_object_ptrs[j];
+                if (cw && cw->ws_window == ws_win) {
+                    app_win = cw;
+                    break;
+                }
+            }
+            if (app_win) {
+                // Fill content area with the window's background
+                gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
+                
+                // Draw the view hierarchy starting from content_view
+                if (app_win->content_view) {
+                    draw_view_tree(app_win->content_view, x, y);
+                }
+                return;
+            }
+        }
+    }
+}
+
+// Helper: handle mouse hit-test on a view (returns 1 if consumed)
+static int hit_test_view_tree(id view_id, int lx, int ly, int btn) {
+    if (!view_id) return 0;
+    
+    CamelOSView* view = (CamelOSView*)view_id;
+    if (view->is_hidden) return 0;
+    
+    // Check subviews first (front to back = reverse order for hit test)
+    if (view->subviews && view->subviews->count > 0) {
+        for (int i = (int)view->subviews->count - 1; i >= 0; i--) {
+            CamelOSView* sub = (CamelOSView*)view->subviews->objects[i];
+            // Check if click is within this subview's frame
+            if (lx >= sub->x && lx < sub->x + sub->w &&
+                ly >= sub->y && ly < sub->y + sub->h) {
+                int sub_lx = lx - sub->x;
+                int sub_ly = ly - sub->y;
+                if (hit_test_view_tree((id)sub, sub_lx, sub_ly, btn)) {
+                    return 1;
+                }
+            }
+        }
+    }
+    
+    // Check if this view itself handles clicks
+    Class view_class = object_getClass(view_id);
+    
+    // NSButton: check for click and fire action
+    if (view_class == NSButton_class) {
+        CamelOSButton* btn = (CamelOSButton*)view;
+        if (btn->target && btn->action && btn->is_bordered) {
+            // Fire the action via objc_msgSend
+            typedef id (*msgSend_fn)(id, SEL);
+            ((msgSend_fn)objc_msgSend)(btn->target, btn->action);
+            return 1;
+        }
+    }
+    
+    // Custom mouse handler on the view
+    if (view->mouse_func) {
+        typedef void (*vmcb)(int, int, int);
+        ((vmcb)view->mouse_func)(lx, ly, btn);
+        return 1;
+    }
+    
+    return 0;
+}
+
+// Generic AppKit window mouse callback
+void appkit_window_mouse(int lx, int ly, int btn) {
+    // Find the AppKit window for the active window
+    CamelOSWindow* app_win = 0;
+    window_t* active = ws_get_active_window();
+    if (!active || active->mouse_callback != (void*)appkit_window_mouse) return;
+    
+    extern void* g_object_ptrs[];
+    extern int g_object_tracking_count;
+    for (int j = 0; j < g_object_tracking_count; j++) {
+        CamelOSWindow* cw = (CamelOSWindow*)g_object_ptrs[j];
+        if (cw && cw->ws_window == active) {
+            app_win = cw;
+            break;
+        }
+    }
+    
+    if (app_win && app_win->content_view && btn == 1) {
+        hit_test_view_tree(app_win->content_view, lx, ly, btn);
+    }
+}
+
+// Generic AppKit window scroll callback
+void appkit_window_scroll(int delta) {
+    // Forward scroll to the document view of any NSScrollView in the window
+    CamelOSWindow* app_win = 0;
+    window_t* active = ws_get_active_window();
+    if (!active || active->scroll_callback != (void*)appkit_window_scroll) return;
+    
+    extern void* g_object_ptrs[];
+    extern int g_object_tracking_count;
+    for (int j = 0; j < g_object_tracking_count; j++) {
+        CamelOSWindow* cw = (CamelOSWindow*)g_object_ptrs[j];
+        if (cw && cw->ws_window == active) {
+            app_win = cw;
+            break;
+        }
+    }
+    
+    if (app_win && app_win->content_view) {
+        // Walk view tree looking for NSScrollView
+        CamelOSView* view = (CamelOSView*)app_win->content_view;
+        if (view->subviews) {
+            for (uint32_t i = 0; i < view->subviews->count; i++) {
+                CamelOSView* sub = (CamelOSView*)view->subviews->objects[i];
+                Class sub_class = object_getClass((id)sub);
+                if (sub_class == NSScrollView_class) {
+                    CamelOSScrollView* scroll = (CamelOSScrollView*)sub;
+                    scroll->scroll_y -= delta * 20;
+                    if (scroll->scroll_y < 0) scroll->scroll_y = 0;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
 // NSApplication Implementation
 // ============================================================================
 
@@ -197,6 +436,13 @@ void NSWindow_makeKeyAndOrderFront(id self, SEL cmd, id sender) {
     window_t* ws_win = (window_t*)win->ws_window;
     ws_win->is_visible = 1;
     ws_win->is_focused = 1;
+    
+    // Set up generic AppKit paint and mouse callbacks so the window
+    // can draw its view hierarchy and forward mouse events to views.
+    ws_win->paint_callback = (void*)appkit_window_paint;
+    ws_win->mouse_callback = (void*)appkit_window_mouse;
+    ws_win->scroll_callback = (void*)appkit_window_scroll;
+    
     ws_bring_to_front(ws_win);
 }
 
@@ -419,6 +665,9 @@ id NSButton_buttonWithTitle(const char* title, id target, SEL action) {
         btn->action = action;
         btn->button_type = 0;  // Push button
         btn->state = 0;
+        btn->x = 0; btn->y = 0;
+        btn->w = strlen(title) * 8 + 24;  // Auto-size based on title
+        btn->h = 28;
         btn->bg_color = 0xFF007AFF;  // Blue
         btn->text_color = 0xFFFFFFFF;  // White
         btn->is_bordered = 1;
@@ -473,6 +722,8 @@ static void register_NSButton_methods(Class cls) {
     class_addMethod(cls, sel, (void*)NSButton_state, "i@:");
     sel = sel_registerName("setState:");
     class_addMethod(cls, sel, (void*)NSButton_setState, "v@:i");
+    sel = sel_registerName("setFrame:");
+    class_addMethod(cls, sel, (void*)NSView_setFrame, "v@:iiii");
 }
 
 // ============================================================================
@@ -491,6 +742,9 @@ id NSTextField_labelWithString(const char* text) {
         field->bg_color = 0x00000000;  // Transparent
         field->delegate = 0;
         field->font_size = 13;
+        field->x = 0; field->y = 0;
+        field->w = strlen(text) * 8 + 8;
+        field->h = 20;
         track_object((id)field);
     }
     return (id)field;
@@ -533,6 +787,8 @@ static void register_NSTextField_methods(Class cls) {
     class_addMethod(cls, sel, (void*)NSTextField_setEditable, "v@:i");
     sel = sel_registerName("setAlignment:");
     class_addMethod(cls, sel, (void*)NSTextField_setAlignment, "v@:i");
+    sel = sel_registerName("setFrame:");
+    class_addMethod(cls, sel, (void*)NSView_setFrame, "v@:iiii");
 }
 
 // ============================================================================

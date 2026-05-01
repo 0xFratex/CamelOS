@@ -759,6 +759,11 @@ void handle_input(int mx, int my, int lb, int rb) {
             resize_win->height = new_h;
             return;
         } else {
+            // Resize released - notify the window via resize_callback
+            if (resize_win && resize_win->resize_callback) {
+                typedef void (*rcb)(int, int);
+                ((rcb)resize_win->resize_callback)(resize_win->width, resize_win->height);
+            }
             resize_win = 0; // Release
         }
     }
@@ -1090,11 +1095,34 @@ void start_bubble_view() {
 
         // Scroll wheel handling - only in normal GUI mode
         // (welcome setup and screenlock modes consume scroll themselves above)
+        // Dispatch scroll to the topmost window under the cursor, not just active_win.
+        // This ensures scrollable areas work even when the cursor is over a
+        // non-active window (e.g. Finder behind a Terminal).
         {
             int scroll_delta = sys_mouse_scroll();
-            if (scroll_delta != 0 && active_win && active_win->scroll_callback) {
-                typedef void (*scb)(int);
-                ((scb)active_win->scroll_callback)(scroll_delta);
+            if (scroll_delta != 0) {
+                // Find the topmost visible window under the cursor
+                int scroll_handled = 0;
+                for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
+                    window_t* w = ws_get_window_at_index(i);
+                    if (w && w->is_visible && w->is_active &&
+                        w->state != WIN_STATE_MINIMIZED) {
+                        if (mx >= w->x && mx < w->x + w->width &&
+                            my >= w->y && my < w->y + w->height) {
+                            if (w->scroll_callback) {
+                                typedef void (*scb)(int);
+                                ((scb)w->scroll_callback)(scroll_delta);
+                            }
+                            scroll_handled = 1;
+                            break;  // Only one window gets the scroll
+                        }
+                    }
+                }
+                // Fallback: if no window under cursor, try active_win
+                if (!scroll_handled && active_win && active_win->scroll_callback) {
+                    typedef void (*scb)(int);
+                    ((scb)active_win->scroll_callback)(scroll_delta);
+                }
             }
         }
 

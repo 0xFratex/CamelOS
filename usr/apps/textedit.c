@@ -342,10 +342,26 @@ static void textedit_on_mouse(int x, int y, int btn) {
     }
 }
 
+static void textedit_on_scroll(int delta) {
+    scroll_offset -= delta * 3;
+    if (scroll_offset < 0) scroll_offset = 0;
+    if (scroll_offset > line_count - 5) scroll_offset = line_count - 5;
+    if (scroll_offset < 0) scroll_offset = 0;
+}
+
+static void textedit_on_resize(int new_w, int new_h) {
+    // TextEdit adapts to whatever size is passed via paint callback
+    // No extra state to update since paint uses relative coordinates
+}
+
 void init_textedit_app() {
     te_new();
     Window* w = fw_create_window("TextEdit", 500, 380, textedit_on_paint, textedit_on_input, textedit_on_mouse);
     w->min_w = 300;
+    
+    // Wire up scroll and resize callbacks
+    w->scroll_callback = (void*)textedit_on_scroll;
+    w->resize_callback = (void*)textedit_on_resize;
     
     w->menu_count = 3;
     strcpy(w->menus[0].name, "File");

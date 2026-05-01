@@ -469,15 +469,15 @@ static void settings_on_paint(int x, int y, int w, int h) {
     }
 }
 
+// Current window dimensions (updated on resize)
+static int settings_win_w = 500;
+
 static void settings_on_mouse(int x, int y, int btn) {
     if (btn != 1) return;
     
-    // Tab clicks - use dynamic width based on actual window content area
+    // Tab clicks - use dynamic width from actual window size
     if (y >= 0 && y < 28) {
-        // The paint callback receives (x, y, w, h) where x,y are window content origin
-        // The tab bar is drawn with width w from draw_tab_bar. We use 500 as the
-        // window width (same as fw_create_window uses), so tab_w = 500 / TAB_COUNT
-        int tab_w = 500 / TAB_COUNT;
+        int tab_w = settings_win_w / TAB_COUNT;
         int tab = x / tab_w;
         if (tab >= 0 && tab < TAB_COUNT) {
             current_tab = tab;
@@ -505,11 +505,23 @@ static void settings_on_input(int key) {
     (void)key;
 }
 
+static void settings_on_scroll(int delta) {
+    // Settings doesn't need scroll, but wire it up for future use
+}
+
+static void settings_on_resize(int new_w, int new_h) {
+    settings_win_w = new_w;
+}
+
 void init_settings_app() {
     settings_load_config();
     Window* w = fw_create_window("Settings", 500, 420, settings_on_paint, settings_on_input, settings_on_mouse);
     if (!w) return;  // Guard against window creation failure
     w->min_w = 400;
+    
+    // Wire up scroll and resize callbacks
+    w->scroll_callback = (void*)settings_on_scroll;
+    w->resize_callback = (void*)settings_on_resize;
     
     // Detect hardware info
     detect_cpu_info();
