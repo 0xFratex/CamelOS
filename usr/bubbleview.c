@@ -930,6 +930,7 @@ void start_bubble_view() {
             g_first_boot_lock = 1;
             sys_print("[GUI] Screen locked at boot - waiting for authentication.\n");
         }
+        // No password = no lock screen at boot. User goes straight to desktop.
     }
 
     int mx = 0, my = 0;
@@ -1066,9 +1067,9 @@ void start_bubble_view() {
 
         frame_counter++;
 
-        // Auto Refresh
+        // Auto Refresh - check filesystem generation OR periodic fallback (every 2s)
         uint32_t gen = sys_get_fs_generation();
-        if (gen != last_fs_gen) {
+        if (gen != last_fs_gen || (frame_counter % 120 == 0)) {
             desktop_refresh();
             last_fs_gen = gen;
         }

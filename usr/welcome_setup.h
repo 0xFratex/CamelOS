@@ -37,6 +37,7 @@ typedef struct {
     int is_configured;
     int auto_lock;               // Auto-lock on startup
     int lock_timeout;            // Inactivity timeout in minutes
+    int kbd_layout;              // Keyboard layout (0=US QWERTY)
     uint32_t config_version;
 } SystemConfig;
 
@@ -60,6 +61,7 @@ typedef struct {
     int selected_tz_idx;
     int selected_theme_idx;
     int show_keyboard;
+    int tz_scroll;              // Timezone list scroll offset
     char input_buffer[SETUP_USERNAME_MAX];
     int input_cursor;
     int input_active;

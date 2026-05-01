@@ -194,15 +194,16 @@ int screenlock_handle_key(int key) {
         return 0;
     }
     
+    // No password set - any key unlocks immediately
+    if (!g_lock.user.has_password) {
+        screenlock_unlock();
+        last_activity_time = get_tick_count();
+        return 1;
+    }
+    
     // Handle password input
     if (key == 0x0D || key == '\n') {
-        // Enter - check password
-        if (!g_lock.user.has_password) {
-            // No password set - unlock immediately
-            screenlock_unlock();
-            last_activity_time = get_tick_count();
-            return 1;
-        }
+        // Enter - check password (has_password guaranteed true here)
         
         // Hash the entered password and compare with stored hash
         if (sha256_verify_password(g_lock.entered_password, g_lock.user.password_hash)) {
@@ -398,11 +399,11 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     
     // Draw large time
     int time_y = cy - 120;
-    gfx_draw_string_scaled(cx - strlen(time_str) * 24, time_y, time_str, C_LOCK_TEXT, 4);
+    gfx_draw_string_scaled(cx - strlen(time_str) * 16, time_y, time_str, C_LOCK_TEXT, 4);
     
     // Date display (below time)
     char date_str[32] = "Welcome to CamelOS";
-    gfx_draw_string_scaled(cx - strlen(date_str) * 8, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
+    gfx_draw_string_scaled(cx - strlen(date_str) * 4, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
     
     // Avatar
     int avatar_y = cy + 20;
@@ -410,7 +411,7 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     draw_avatar(cx, avatar_y, avatar_size, g_lock.user.avatar_color);
     
     // Username
-    gfx_draw_string_scaled(cx - strlen(g_lock.user.username) * 5, 
+    gfx_draw_string_scaled(cx - strlen(g_lock.user.username) * 4, 
                           avatar_y + avatar_size/2 + 30, 
                           g_lock.user.username, C_LOCK_TEXT, 1);
     
@@ -442,17 +443,17 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         // Error message
         if (g_lock.show_error) {
             char* error_msg = "Incorrect password. Try again.";
-            gfx_draw_string(cx - strlen(error_msg) * 3, input_y + 30, error_msg, C_LOCK_ERROR);
+            gfx_draw_string(cx - strlen(error_msg) * 4, input_y + 30, error_msg, C_LOCK_ERROR);
         }
         
         // Bottom hint
         char* bottom_hint = "Enter password to unlock";
-        gfx_draw_string(cx - strlen(bottom_hint) * 3, h - 50, bottom_hint, C_LOCK_TEXT_DIM);
+        gfx_draw_string(cx - strlen(bottom_hint) * 4, h - 50, bottom_hint, C_LOCK_TEXT_DIM);
     } else {
         // No password - show "Click to unlock"
         int input_y = avatar_y + avatar_size/2 + 80;
         char* hint = "Click or press Enter to unlock";
-        gfx_draw_string(cx - strlen(hint) * 3, input_y, hint, C_LOCK_TEXT_DIM);
+        gfx_draw_string(cx - strlen(hint) * 4, input_y, hint, C_LOCK_TEXT_DIM);
     }
     
     // Lock icon in corner
@@ -510,6 +511,13 @@ int screenlock_filter_event(int* key, int* mx, int* my, int* click) {
         return 0;
     }
     
+    // If no password set and locked, unlock on any click immediately
+    if (!g_lock.user.has_password && click && *click) {
+        screenlock_unlock();
+        *click = 0;
+        return 1;
+    }
+    
     // Consume mouse events when locked (but track position)
     if (mx && my && click) {
         screenlock_handle_mouse(*mx, *my, *click);
@@ -523,13 +531,6 @@ int screenlock_filter_event(int* key, int* mx, int* my, int* click) {
             *key = 0; // Block the key from reaching other handlers
         }
         return consumed;
-    }
-    
-    // If no password set and locked, unlock on any click
-    if (!g_lock.user.has_password && click && *click) {
-        screenlock_unlock();
-        *click = 0;
-        return 1;
     }
     
     return 1;

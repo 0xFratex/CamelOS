@@ -36,24 +36,58 @@ static WelcomeSetup g_setup;
 #define C_ERROR           0xFFFF3B30
 #define C_LOCK_ICON       0xFF8E8E93
 
-// Timezone data (major timezones)
+// Timezone data (comprehensive worldwide coverage)
 static TimeZone timezones[] = {
+    // UTC / GMT
     {"UTC",      "UTC (Coordinated Universal Time)", 0},
     {"GMT",      "GMT (Greenwich Mean Time)", 0},
+    // Americas
+    {"NST",      "Newfoundland (NST)", -210},
+    {"AST",      "Halifax (AST)", -240},
     {"EST",      "New York (EST)", -300},
-    {"PST",      "Los Angeles (PST)", -480},
     {"CST",      "Chicago (CST)", -360},
     {"MST",      "Denver (MST)", -420},
-    {"CET",      "Paris/Berlin (CET)", 60},
-    {"EET",      "Athens/Helsinki (EET)", 120},
-    {"JST",      "Tokyo (JST)", 540},
-    {"CST_ASIA", "Beijing/Shanghai (CST)", 480},
-    {"IST",      "Mumbai (IST)", 330},
-    {"AEST",     "Sydney (AEST)", 600},
-    {"NZST",     "Auckland (NZST)", 720},
+    {"PST",      "Los Angeles (PST)", -480},
+    {"AKST",     "Anchorage (AKST)", -540},
+    {"HST",      "Honolulu (HST)", -600},
     {"BRT",      "Sao Paulo (BRT)", -180},
+    {"ART",      "Buenos Aires (ART)", -180},
+    {"COT",      "Bogota (COT)", -300},
+    {"PET",      "Lima (PET)", -300},
+    {"CST_MX",   "Mexico City (CST)", -360},
+    // Europe
+    {"WET",      "Lisbon (WET)", 0},
     {"IST_EURO", "Dublin (IST)", 60},
-    {"MSK",      "Moscow (MSK)", 180}
+    {"CET",      "Paris/Berlin (CET)", 60},
+    {"CET_ROM",  "Rome (CET)", 60},
+    {"CET_MAD",  "Madrid (CET)", 60},
+    {"CET_AMS",  "Amsterdam (CET)", 60},
+    {"CET_ZUR",  "Zurich (CET)", 60},
+    {"CET_WAR",  "Warsaw (CET)", 60},
+    {"CET_STO",  "Stockholm (CET)", 60},
+    {"CET_VIE",  "Vienna (CET)", 60},
+    {"EET",      "Athens/Helsinki (EET)", 120},
+    {"EET_BUC",  "Bucharest (EET)", 120},
+    {"MSK",      "Moscow (MSK)", 180},
+    // Asia
+    {"TRT",      "Istanbul (TRT)", 180},
+    {"GST",      "Dubai (GST)", 240},
+    {"IST",      "Mumbai (IST)", 330},
+    {"NPT",      "Kathmandu (NPT)", 345},
+    {"BST",      "Dhaka (BST)", 360},
+    {"ICT",      "Bangkok (ICT)", 420},
+    {"WIB",      "Jakarta (WIB)", 420},
+    {"SGT",      "Singapore (SGT)", 480},
+    {"CST_ASIA", "Beijing/Shanghai (CST)", 480},
+    {"HKT",      "Hong Kong (HKT)", 480},
+    {"PHT",      "Manila (PHT)", 480},
+    {"KST",      "Seoul (KST)", 540},
+    {"JST",      "Tokyo (JST)", 540},
+    // Oceania
+    {"AWST",     "Perth (AWST)", 480},
+    {"ACST",     "Darwin (ACST)", 570},
+    {"AEST",     "Sydney (AEST)", 600},
+    {"NZST",     "Auckland (NZST)", 720}
 };
 #define TIMEZONE_COUNT (sizeof(timezones) / sizeof(TimeZone))
 
@@ -79,7 +113,8 @@ void welcome_setup_init(void) {
     memset(&g_setup, 0, sizeof(g_setup));
     g_setup.state = SETUP_STATE_WELCOME;
     g_setup.current_step = 0;
-    g_setup.total_steps = 5;  // Now 5 steps: Welcome, User, Password, Timezone, Theme
+    g_setup.total_steps = 5;  // 5 steps: Welcome, User, Password, Timezone, Theme
+    g_setup.tz_scroll = 0;    // Timezone scroll offset
     g_setup.selected_tz_idx = 0;
     g_setup.selected_theme_idx = 0;
     g_setup.input_buffer[0] = 0;
@@ -106,6 +141,7 @@ void welcome_setup_set_defaults(void) {
     g_setup.config.is_configured = 0;
     g_setup.config.auto_lock = 1;
     g_setup.config.lock_timeout = 10;
+    g_setup.config.kbd_layout = 0;  // Default US QWERTY
     g_setup.config.config_version = 2;  // Bumped for encrypted password support
 }
 
@@ -171,6 +207,13 @@ void welcome_setup_load_config(void) {
                     g_setup.config.lock_timeout = g_setup.config.lock_timeout * 10 + (*p - '0');
                     p++;
                 }
+            } else if (strncmp(line, "kbd_layout=", 11) == 0) {
+                g_setup.config.kbd_layout = 0;
+                const char* p = line + 11;
+                while (*p >= '0' && *p <= '9') {
+                    g_setup.config.kbd_layout = g_setup.config.kbd_layout * 10 + (*p - '0');
+                    p++;
+                }
             }
             
             line = next;
@@ -191,6 +234,7 @@ int welcome_setup_save_config(void) {
     pos += sprintf(buffer + pos, "theme=%d\n", g_setup.config.theme);
     pos += sprintf(buffer + pos, "auto_lock=%d\n", g_setup.config.auto_lock);
     pos += sprintf(buffer + pos, "lock_timeout=%d\n", g_setup.config.lock_timeout);
+    pos += sprintf(buffer + pos, "kbd_layout=%d\n", g_setup.config.kbd_layout);
     pos += sprintf(buffer + pos, "configured=1\n");
     
     // Create macOS-like directory structure
@@ -352,6 +396,10 @@ int welcome_setup_finish(void) {
     // Configure screenlock timeout
     screenlock_set_inactivity_timeout(g_setup.config.lock_timeout);
     screenlock_set_inactivity_enabled(g_setup.config.auto_lock);
+    
+    // Apply keyboard layout
+    extern void kbd_set_layout(int);
+    kbd_set_layout(g_setup.config.kbd_layout);
     
     g_setup.state = SETUP_STATE_COMPLETE;
     return 0;
@@ -716,11 +764,27 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
     int item_h = 32;
     int visible_items = 7;
     
+    // Clamp scroll so selected item is always visible
+    if (g_setup.selected_tz_idx < g_setup.tz_scroll) {
+        g_setup.tz_scroll = g_setup.selected_tz_idx;
+    }
+    if (g_setup.selected_tz_idx >= g_setup.tz_scroll + visible_items) {
+        g_setup.tz_scroll = g_setup.selected_tz_idx - visible_items + 1;
+    }
+    // Clamp scroll bounds
+    int max_scroll = (int)TIMEZONE_COUNT - visible_items;
+    if (max_scroll < 0) max_scroll = 0;
+    if (g_setup.tz_scroll > max_scroll) g_setup.tz_scroll = max_scroll;
+    if (g_setup.tz_scroll < 0) g_setup.tz_scroll = 0;
+    
     // List background
     gfx_fill_rounded_rect(list_x, list_y, list_w, visible_items * item_h, C_INPUT_BG, 8);
     
-    for (int i = 0; i < (int)TIMEZONE_COUNT && i < visible_items; i++) {
-        int item_y = list_y + i * item_h;
+    for (int vi = 0; vi < visible_items; vi++) {
+        int i = g_setup.tz_scroll + vi;
+        if (i >= (int)TIMEZONE_COUNT) break;
+        
+        int item_y = list_y + vi * item_h;
         int is_selected = (i == g_setup.selected_tz_idx);
         int hover = (mx >= list_x && mx <= list_x + list_w && 
                     my >= item_y && my < item_y + item_h);
@@ -736,10 +800,14 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
         gfx_draw_string(list_x + 16, item_y + 8, tz->display, text_color);
     }
     
-    // Scroll indicator
-    if (TIMEZONE_COUNT > visible_items) {
-        int scroll_h = (visible_items * visible_items * item_h) / TIMEZONE_COUNT;
-        int scroll_y = list_y + (g_setup.selected_tz_idx * item_h * visible_items) / TIMEZONE_COUNT;
+    // Scroll indicator (only when there are more items than visible)
+    if ((int)TIMEZONE_COUNT > visible_items) {
+        int total_h = visible_items * item_h;
+        int scroll_h = (visible_items * total_h) / (int)TIMEZONE_COUNT;
+        if (scroll_h < 20) scroll_h = 20;
+        int scroll_y = list_y + (g_setup.tz_scroll * (total_h - scroll_h)) / max_scroll;
+        if (scroll_y < list_y) scroll_y = list_y;
+        if (scroll_y + scroll_h > list_y + total_h) scroll_y = list_y + total_h - scroll_h;
         gfx_fill_rounded_rect(list_x + list_w - 12, scroll_y, 8, scroll_h, C_TEXT_MUTED, 4);
     }
     
@@ -923,6 +991,17 @@ int welcome_setup_handle_key(int key) {
         return 0;
     }
     
+    // Timezone list navigation with arrow keys
+    if (g_setup.state == SETUP_STATE_TIMEZONE) {
+        if (key == 128 + 2) { // KEY_UP
+            if (g_setup.selected_tz_idx > 0) g_setup.selected_tz_idx--;
+            return 1;
+        } else if (key == 128 + 3) { // KEY_DOWN
+            if (g_setup.selected_tz_idx < (int)TIMEZONE_COUNT - 1) g_setup.selected_tz_idx++;
+            return 1;
+        }
+    }
+    
     if (g_setup.state == SETUP_STATE_USER && g_setup.input_active) {
         if (key == 0x08 || key == 0x7F) {
             // Backspace
@@ -1039,7 +1118,7 @@ int welcome_setup_handle_click(int mx, int my, int click) {
 int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     (void)pressed;
     
-    // Handle timezone list scrolling
+    // Handle timezone list scrolling and selection
     if (g_setup.state == SETUP_STATE_TIMEZONE && click) {
         int w = screen_w ? screen_w : 1024;
         int h = screen_h ? screen_h : 768;
@@ -1048,17 +1127,21 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
         
         int card_w = 520;
         int card_x = cx - card_w / 2;
-        int card_y = cy - 210;
+        int card_y = cy - card_h / 2 - 20;
+        // Recalculate card_y the same as render_timezone_setup
+        card_y = cy - 200 - 20;
         
         int list_x = card_x + 30;
         int list_y = card_y + 100;
         int list_w = card_w - 60;
         int item_h = 32;
+        int visible_items = 7;
         
         if (mx >= list_x && mx <= list_x + list_w) {
             int rel_y = my - list_y;
-            if (rel_y >= 0 && rel_y < 7 * item_h) {
-                int idx = rel_y / item_h;
+            if (rel_y >= 0 && rel_y < visible_items * item_h) {
+                int vi = rel_y / item_h;
+                int idx = g_setup.tz_scroll + vi;
                 if (idx >= 0 && idx < (int)TIMEZONE_COUNT) {
                     g_setup.selected_tz_idx = idx;
                 }
