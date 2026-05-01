@@ -81,6 +81,7 @@ extern kernel_api_t g_kernel_api;
 
 // Extern desk_entries from desktop.c
 extern pfs32_direntry_t desk_entries[32];
+extern int desk_count;
 
 #define HEADER_HEIGHT 28
 #define RESIZE_MARGIN 16
