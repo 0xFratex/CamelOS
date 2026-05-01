@@ -1,2 +1,9 @@
 .vscode
-disk.img*.o
+*.o
+*.bin
+*.elf
+*.iso
+*.cdl
+disk.img
+nasm
+iso/

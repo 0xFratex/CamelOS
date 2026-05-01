@@ -11,11 +11,10 @@
 #include "string.h"
 #include "memory.h"
 #include "../sys/api.h"
+#include "../sys/cdl_defs.h"
 #include "../hal/video/gfx_hal.h"
 #include "../hal/drivers/serial.h"
 #include "../core/window_server.h"
-
-extern kernel_api_t g_kernel_api;
 
 // ============================================================================
 // Class References
@@ -189,9 +188,17 @@ id NSWorkspace_sharedWorkspace(void) {
 
 int NSWorkspace_launchApp(id self, SEL cmd, const char* app_path) {
     (void)self; (void)cmd;
-    // Launch an application using the CDL loader or app installer
-    extern int cdl_load_and_run(const char* path);
-    return cdl_load_and_run(app_path);
+    // Launch an application using the kernel exec API
+    // TODO: Use app_installer for .dmg/.app bundles
+    if (!app_path) return -1;
+    // Try to exec the path directly
+    extern int sys_exec(const char* path);  // from sys/api.h (via cdl_defs.h kernel_api_t)
+    // Use the kernel API exec if available
+    extern kernel_api_t g_kernel_api;
+    if (g_kernel_api.exec) {
+        return g_kernel_api.exec(app_path);
+    }
+    return -1;
 }
 
 int NSWorkspace_openFile(id self, SEL cmd, const char* path) {
@@ -445,8 +452,7 @@ void NSPopUpButton_selectItem(id self, SEL cmd, int index) {
     
     // Fire action
     if (pb->target && pb->action) {
-        typedef id (*msgSend_fn)(id, SEL);
-        ((msgSend_fn)objc_msgSend)(pb->target, pb->action);
+        objc_msgSend(pb->target, pb->action);
     }
 }
 
