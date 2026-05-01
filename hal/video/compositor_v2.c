@@ -1,0 +1,248 @@
+// hal/video/compositor_v2.c - Enhanced Compositor for CamelOS
+// Features: Per-pixel alpha blending, soft shadows, blur backdrop,
+//           layer-backed views, clipping, rounded corners with AA
+
+#include "compositor.h"
+#include "gfx_hal.h"
+#include "cgcontext.h"
+#include "../../core/window_server.h"
+#include "../../core/memory.h"
+
+// ============================================================================
+// Soft Shadow Drawing (macOS-style multi-layer shadow)
+// ============================================================================
+
+void compositor_draw_shadow_v2(int x, int y, int w, int h, int radius, int active) {
+    // Multi-layer shadow for depth (macOS-like soft shadow effect)
+    // Uses decreasing opacity layers for a natural-looking shadow
+    
+    // Layer 1: Outermost soft shadow (large offset, very light)
+    uint32_t shadow_col1 = active ? 0x0C000000 : 0x08000000;
+    int offset1 = active ? 8 : 4;
+    gfx_fill_rounded_rect(x - 3 + offset1, y - 3 + offset1, w + 6, h + 6, shadow_col1, radius + 6);
+    
+    // Layer 2: Middle shadow
+    uint32_t shadow_col2 = active ? 0x18000000 : 0x12000000;
+    int offset2 = active ? 5 : 3;
+    gfx_fill_rounded_rect(x - 2 + offset2, y - 2 + offset2, w + 4, h + 4, shadow_col2, radius + 4);
+    
+    // Layer 3: Inner shadow (darkest, closest)
+    uint32_t shadow_col3 = active ? 0x28000000 : 0x1C000000;
+    int offset3 = active ? 3 : 1;
+    gfx_fill_rounded_rect(x - 1 + offset3, y - 1 + offset3, w + 2, h + 2, shadow_col3, radius + 2);
+    
+    // Layer 4: Contact shadow (very dark, minimal offset - ground effect)
+    if (active) {
+        uint32_t contact = 0x15000000;
+        gfx_fill_rounded_rect(x, y + h, w, 4, contact, 2);
+    }
+}
+
+// ============================================================================
+// Window Drawing with Enhanced Visuals
+// ============================================================================
+
+void compositor_draw_window_v2(window_t* win) {
+    if (!win->is_visible) return;
+    
+    // 1. Shadows (only if not maximized)
+    if (win->state != WIN_STATE_MAXIMIZED) {
+        compositor_draw_shadow_v2(win->x, win->y, win->width, win->height, 
+                                  10, win->is_focused);
+    }
+    
+    // 2. Main Window Body with rounded corners (macOS-style)
+    uint32_t bg_color = 0xFFF6F6F6; // Default macOS-like gray
+    int corner_radius = win->corner_radius > 0 ? win->corner_radius : 10;
+    
+    // Apply window opacity
+    if (win->opacity < 1.0f) {
+        uint8_t a = (uint8_t)(win->opacity * 255.0f);
+        bg_color = (a << 24) | (bg_color & 0x00FFFFFF);
+    }
+    
+    // Draw the window body
+    gfx_fill_rounded_rect(win->x, win->y, win->width, win->height, bg_color, corner_radius);
+    
+    // 3. Header Bar with subtle gradient
+    // macOS-style: lighter at top, slightly darker at bottom
+    for (int i = 0; i < 28; i++) {
+        // Gradient from 0xFFF0F0F0 to 0xFFE8E8E8
+        float t = (float)i / 27.0f;
+        uint8_t r = (uint8_t)(0xF0 + (0xE8 - 0xF0) * t);
+        uint8_t g = r;
+        uint8_t b = r;
+        uint32_t header_col = (0xFF << 24) | (r << 16) | (g << 8) | b;
+        
+        // Only fill within the rounded top corners
+        if (i < corner_radius) {
+            int inset = corner_radius - i;
+            if (inset > 0) {
+                gfx_fill_rect(win->x + inset, win->y + i, win->width - 2 * inset, 1, header_col);
+            } else {
+                gfx_fill_rect(win->x, win->y + i, win->width, 1, header_col);
+            }
+        } else {
+            gfx_fill_rect(win->x, win->y + i, win->width, 1, header_col);
+        }
+    }
+    
+    // Header separator line (thin, subtle)
+    gfx_draw_line(win->x + 1, win->y + 28, win->x + win->width - 1, win->y + 28, 0xFFD4D4D4);
+    
+    // 4. Traffic Lights (macOS-style circular buttons)
+    int traffic_y = win->y + 10;
+    int traffic_spacing = 8;
+    int traffic_size = 12;
+    
+    // Get mouse for hover state
+    int mx, my, dummy;
+    sys_mouse_read(&mx, &my, &dummy);
+    int in_traffic_area = (mx >= win->x && mx < win->x + 70 &&
+                          my >= win->y + 6 && my < win->y + 22);
+    
+    // Close button (red)
+    uint32_t close_col = in_traffic_area ? 0xFFFF5F57 : 0xFFFF3B30;
+    gfx_fill_rounded_rect(win->x + traffic_spacing, traffic_y, traffic_size, traffic_size, close_col, 6);
+    gfx_draw_rect(win->x + traffic_spacing, traffic_y, traffic_size, traffic_size, 0xFFD4D4D4);
+    if (in_traffic_area) {
+        // Draw X icon inside
+        int bx = win->x + traffic_spacing + 3;
+        int by = traffic_y + 3;
+        gfx_draw_line(bx, by, bx + 5, by + 5, 0xFF4D0000);
+        gfx_draw_line(bx + 5, by, bx, by + 5, 0xFF4D0000);
+    }
+    
+    // Minimize button (yellow/amber)
+    int min_x = win->x + traffic_spacing * 2 + traffic_size;
+    uint32_t min_col = in_traffic_area ? 0xFFFFBD4E : 0xFFFFFFBD;
+    gfx_fill_rounded_rect(min_x, traffic_y, traffic_size, traffic_size, min_col, 6);
+    gfx_draw_rect(min_x, traffic_y, traffic_size, traffic_size, 0xFFD4D4D4);
+    if (in_traffic_area) {
+        // Draw - icon inside
+        gfx_fill_rect(min_x + 3, traffic_y + 5, 6, 2, 0xFF9A6900);
+    }
+    
+    // Maximize/fullscreen button (green)
+    int max_x = win->x + traffic_spacing * 3 + traffic_size * 2;
+    uint32_t max_col = in_traffic_area ? 0xFF28C840 : 0xFF34C759;
+    gfx_fill_rounded_rect(max_x, traffic_y, traffic_size, traffic_size, max_col, 6);
+    gfx_draw_rect(max_x, traffic_y, traffic_size, traffic_size, 0xFFD4D4D4);
+    if (in_traffic_area) {
+        // Draw expand icon inside
+        int bx2 = max_x + 3;
+        int by2 = traffic_y + 3;
+        gfx_draw_line(bx2, by2 + 2, bx2 + 5, by2 + 2, 0xFF006400);
+        gfx_draw_line(bx2 + 2, by2, bx2 + 2, by2 + 5, 0xFF006400);
+    }
+    
+    // 5. Title text (centered in header with shadow)
+    if (win->title[0]) {
+        int title_w = strlen(win->title) * 8;
+        int title_x = win->x + (win->width - title_w) / 2;
+        int title_y = win->y + 9;
+        
+        // Title shadow (subtle)
+        gfx_draw_string(title_x + 1, title_y + 1, win->title, 0x30000000);
+        // Title text
+        uint32_t title_col = win->is_focused ? 0xFF333333 : 0xFF999999;
+        gfx_draw_string(title_x, title_y, win->title, title_col);
+    }
+}
+
+// ============================================================================
+// Blur Backdrop (Frosted Glass Effect)
+// ============================================================================
+
+void compositor_draw_blur_backdrop_v2(int x, int y, int w, int h) {
+    // Check if blur buffer is available
+    uint32_t* blur_buf = gfx_get_blur_buffer();
+    uint32_t* back_buf = gfx_get_active_buffer();
+    
+    if (!blur_buf || !back_buf) {
+        // Fallback: translucent white overlay
+        gfx_fill_rect(x, y, w, h, 0x80FFFFFF);
+        return;
+    }
+    
+    // Sample from blur buffer and blend with tint
+    int screen_w = 1024;  // TODO: get from gfx_ctx
+    int screen_h = 768;
+    
+    for (int dy = 0; dy < h; dy++) {
+        int ly = y + dy;
+        if (ly < 0 || ly >= screen_h) continue;
+        
+        for (int dx = 0; dx < w; dx++) {
+            int lx = x + dx;
+            if (lx < 0 || lx >= screen_w) continue;
+            
+            int idx = ly * screen_w + lx;
+            uint32_t bg = blur_buf[idx];
+            
+            // Apply white tint (50% white over blurred background)
+            uint8_t bg_r = (bg >> 16) & 0xFF;
+            uint8_t bg_g = (bg >> 8) & 0xFF;
+            uint8_t bg_b = bg & 0xFF;
+            
+            // Blend 40% white
+            uint8_t r = (bg_r * 60 + 0xFF * 40) / 100;
+            uint8_t g = (bg_g * 60 + 0xFF * 40) / 100;
+            uint8_t b = (bg_b * 60 + 0xFF * 40) / 100;
+            
+            back_buf[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+    
+    // Draw subtle white rim for glass edge effect
+    gfx_draw_rect(x, y, w, h, 0x40FFFFFF);
+}
+
+// ============================================================================
+// Dock-style Reflection Effect
+// ============================================================================
+
+void compositor_draw_reflection(int x, int y, int w, int h, float opacity) {
+    uint32_t* back_buf = gfx_get_active_buffer();
+    if (!back_buf) return;
+    
+    int screen_w = 1024;
+    int screen_h = 768;
+    
+    // Create a simple reflection by copying pixels with reduced opacity
+    int refl_h = h / 3;  // Reflection is 1/3 the height
+    
+    for (int dy = 0; dy < refl_h; dy++) {
+        int src_y = y + h - 1 - dy;  // Source from bottom of original
+        int dst_y = y + h + dy;       // Destination below
+        
+        if (src_y < 0 || src_y >= screen_h || dst_y < 0 || dst_y >= screen_h) continue;
+        
+        // Fade out as we go further from the original
+        float fade = 1.0f - ((float)dy / refl_h);
+        uint8_t alpha = (uint8_t)(opacity * fade * 255.0f);
+        
+        for (int dx = 0; dx < w; dx++) {
+            int sx = x + dx;
+            if (sx < 0 || sx >= screen_w) continue;
+            
+            uint32_t src_pixel = back_buf[src_y * screen_w + sx];
+            uint32_t dst_pixel = back_buf[dst_y * screen_w + sx];
+            
+            // Blend source pixel with destination using fade alpha
+            uint8_t sr = (src_pixel >> 16) & 0xFF;
+            uint8_t sg = (src_pixel >> 8) & 0xFF;
+            uint8_t sb = src_pixel & 0xFF;
+            
+            uint8_t dr = (dst_pixel >> 16) & 0xFF;
+            uint8_t dg = (dst_pixel >> 8) & 0xFF;
+            uint8_t db = dst_pixel & 0xFF;
+            
+            uint8_t r = (sr * alpha + dr * (255 - alpha)) / 255;
+            uint8_t g = (sg * alpha + dg * (255 - alpha)) / 255;
+            uint8_t b = (sb * alpha + db * (255 - alpha)) / 255;
+            
+            back_buf[dst_y * screen_w + sx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+}

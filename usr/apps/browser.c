@@ -1,5 +1,6 @@
 // usr/apps/browser.c - CamelOS Browser App
 // Full web browser with URL bar, HTML rendering, HTTPS, bookmarks, and download/install
+// Updated: Uses BSD socket API + TLS client for proper HTTPS support
 #include "../lib/camel_framework.h"
 #include "../framework.h"
 #include "../../sys/api.h"
@@ -7,6 +8,8 @@
 #include "../../hal/video/gfx_hal.h"
 #include "../../hal/cpu/timer.h"
 #include "../../core/tcp.h"
+#include "../../core/socket.h"
+#include "../../core/tls.h"
 #include "../dock.h"
 
 // Layout
@@ -144,12 +147,31 @@ static void browser_load_page(const char* url) {
         return;
     }
     
-    // Try TCP connection
+    // --- NEW: Use BSD socket API instead of raw TCP ---
+    // This allows proper TLS integration via the socket layer
     extern uint32_t ip_parse(const char* str);
     uint32_t ip = ip_parse(ip_str);
     
-    void* conn = tcp_connect_with_ptr(ip, port);
-    if (!conn) {
+    int sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        strcpy(page_lines[0], "Error: Could not create socket");
+        page_line_count = 1;
+        strcpy(status_text, "Socket Error");
+        is_loading = 0;
+        return;
+    }
+    
+    // Connect via BSD socket
+    sockaddr_in_t server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr = ip;
+    
+    strcpy(status_text, "Connecting...");
+    
+    if (k_connect(sockfd, &server_addr) < 0) {
+        k_close(sockfd);
         strcpy(page_lines[0], "Error: Connection failed");
         strcpy(page_lines[1], "");
         strcpy(page_lines[2], "Could not connect to server.");
@@ -159,57 +181,41 @@ static void browser_load_page(const char* url) {
         return;
     }
     
-    // Wait for connection
-    uint32_t start = get_tick_count();
-    int established = 0;
-    while (get_tick_count() - start < 5000) {
-        extern void rtl8139_poll();
-        rtl8139_poll();
-        if (tcp_conn_is_established(conn)) {
-            established = 1;
-            break;
-        }
-    }
-    
-    if (!established) {
-        strcpy(page_lines[0], "Error: Connection timeout");
-        page_line_count = 1;
-        strcpy(status_text, "Timeout");
-        is_loading = 0;
-        return;
-    }
-    
-    // TLS handshake if HTTPS
+    // TLS handshake if HTTPS - using the new BSD socket-based TLS
+    tls_session_t* tls_session = 0;
     if (use_tls) {
-        extern int tls_client_handshake(void* conn);
-        int tls_result = tls_client_handshake(conn);
-        if (tls_result != 0) {
-            // TLS not yet supported - fall back to HTTP on port 80
-            // Close the HTTPS connection and try again with plain HTTP
-            strcpy(status_text, "HTTPS not available, trying HTTP...");
+        strcpy(status_text, "Establishing secure connection...");
+        
+        // Use the improved TLS client that works over BSD sockets
+        extern tls_session_t* tls_client_handshake_fd(int sockfd, const char* hostname, uint16_t port);
+        tls_session = tls_client_handshake_fd(sockfd, host, port);
+        
+        if (!tls_session) {
+            // TLS handshake failed - fall back to HTTP on port 80
+            k_close(sockfd);
+            strcpy(status_text, "HTTPS failed, trying HTTP...");
             is_loading = 0;
-            // Build HTTP URL
+            
+            // Build HTTP URL and retry
             char http_url[256];
             strcpy(http_url, "http://");
             strcat(http_url, host);
             if (port != 80 && port != 443) {
                 char port_str[8];
-                int p = port;
+                int p = (port == 443) ? 80 : port;
                 port_str[0] = 0;
-                // Simple int to str for port
                 char tmp[8]; int ti = 0;
                 if (p == 0) p = 80;
                 int pp = p;
                 while (pp > 0) { tmp[ti++] = '0' + (pp % 10); pp /= 10; }
                 tmp[ti] = 0;
-                // Reverse
                 for (int j = 0; j < ti; j++) port_str[j] = tmp[ti - 1 - j];
                 port_str[ti] = 0;
                 strcat(http_url, ":");
                 strcat(http_url, port_str);
             }
             strcat(http_url, path);
-            // Retry with HTTP (non-recursive: set flag to prevent re-entry)
+            
             static int tls_fallback_depth = 0;
             if (tls_fallback_depth < 1) {
                 tls_fallback_depth++;
@@ -217,14 +223,15 @@ static void browser_load_page(const char* url) {
                 tls_fallback_depth--;
                 return;
             }
-            // If already in fallback, just show error
-            strcpy(page_lines[0], "Error: Could not connect to server.");
-            strcpy(page_lines[1], "HTTPS is not yet supported.");
+            strcpy(page_lines[0], "Error: Could not connect securely.");
+            strcpy(page_lines[1], "HTTPS handshake failed.");
             strcpy(page_lines[2], "HTTP fallback also failed.");
             page_line_count = 3;
             strcpy(status_text, "Connection Error");
             return;
         }
+        
+        strcpy(status_text, "Secure connection established");
     }
     
     // Send HTTP request
@@ -232,17 +239,30 @@ static void browser_load_page(const char* url) {
     int rlen = 0;
     rlen += sprintf(request + rlen, "GET %s HTTP/1.1\r\n", path);
     rlen += sprintf(request + rlen, "Host: %s\r\n", host);
-    rlen += sprintf(request + rlen, "User-Agent: CamelOS/3.0 (compatible)\r\n");
+    rlen += sprintf(request + rlen, "User-Agent: Mozilla/5.0 (CamelOS/3.0; compatible)\r\n");
     rlen += sprintf(request + rlen, "Accept: text/html,application/xhtml+xml,*/*\r\n");
     rlen += sprintf(request + rlen, "Accept-Language: en-US,en;q=0.9\r\n");
     rlen += sprintf(request + rlen, "Connection: close\r\n");
     rlen += sprintf(request + rlen, "\r\n");
     
-    if (use_tls) {
-        extern int tls_client_send(void* conn, const char* data, int len);
-        tls_client_send(conn, request, rlen);
+    int send_result;
+    if (use_tls && tls_session) {
+        send_result = tls_write(tls_session, request, rlen);
     } else {
-        tcp_conn_send(conn, request, rlen);
+        send_result = k_sendto(sockfd, request, rlen, 0, NULL);
+    }
+    
+    if (send_result < 0) {
+        if (tls_session) {
+            extern void tls_client_session_close(tls_session_t*);
+            tls_client_session_close(tls_session);
+        }
+        k_close(sockfd);
+        strcpy(page_lines[0], "Error: Failed to send request");
+        page_line_count = 1;
+        strcpy(status_text, "Send Error");
+        is_loading = 0;
+        return;
     }
     
     // Read response - allocate on heap to avoid 16KB stack overflow
@@ -253,26 +273,40 @@ static void browser_load_page(const char* url) {
         page_line_count = 1;
         strcpy(status_text, "Memory Error");
         is_loading = 0;
+        if (tls_session) {
+            extern void tls_client_session_close(tls_session_t*);
+            tls_client_session_close(tls_session);
+        }
+        k_close(sockfd);
         return;
     }
     int total_read = 0;
-    for (int retry = 0; retry < 200 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
+    
+    // Receive loop - use BSD socket recv or TLS read
+    for (int retry = 0; retry < 300 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         extern void rtl8139_poll();
         rtl8139_poll();
         int n;
-        if (use_tls) {
-            extern int tls_client_recv(void* conn, char* buf, int len);
-            n = tls_client_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
+        if (use_tls && tls_session) {
+            n = tls_read(tls_session, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
         } else {
-            n = tcp_conn_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
+            n = k_recvfrom(sockfd, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1, 0, NULL);
         }
         if (n > 0) total_read += n;
         else if (n == 0) break;
         else {
+            // Short delay before retry
             for (volatile int d = 0; d < 50000; d++);
         }
     }
     response[total_read] = 0;
+    
+    // Clean up TLS session and socket
+    if (tls_session) {
+        extern void tls_client_session_close(tls_session_t*);
+        tls_client_session_close(tls_session);
+    }
+    k_close(sockfd);
     
     // Parse HTTP status
     int http_status = 0;

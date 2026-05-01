@@ -225,6 +225,171 @@ typedef struct {
 extern Class NSFont_class;
 
 // ============================================================================
+// NSTableView - Table view with rows and columns
+// ============================================================================
+#define NSTableViewSelectionHighlightStyleRegular  0
+#define NSTableViewSelectionHighlightStyleSourceList 1
+
+typedef struct {
+    struct objc_object isa;
+    int x, y, w, h;
+    id data_source;         // DataSource object
+    id delegate;            // Delegate object
+    int row_height;
+    int number_of_rows;
+    int selected_row;
+    int header_height;
+    int uses_alternating_row_bg;
+    int selection_style;
+    int scroll_y;
+    // Column definitions (simplified: max 8 columns)
+    int column_count;
+    char column_titles[8][32];
+    int column_widths[8];
+} CamelOSTableView;
+extern Class NSTableView_class;
+
+// ============================================================================
+// NSOutlineView - Outline/tree view (extends NSTableView)
+// ============================================================================
+typedef struct {
+    CamelOSTableView table;  // Inherits from NSTableView
+    int auto_expand_items;
+    int indent_per_level;
+    int is_expanded[256];    // Expansion state per item
+} CamelOSOutlineView;
+extern Class NSOutlineView_class;
+
+// ============================================================================
+// NSRunLoop - Event loop processing
+// ============================================================================
+typedef struct {
+    struct objc_object isa;
+    int running;
+    int accepting_input;
+    void* timer_port;       // Timer source
+    void* event_port;       // Event source
+} CamelOSRunLoop;
+extern Class NSRunLoop_class;
+
+// ============================================================================
+// NSWorkspace - Application and file management
+// ============================================================================
+typedef struct {
+    struct objc_object isa;
+    int notify_delegate;
+} CamelOSWorkspace;
+extern Class NSWorkspace_class;
+
+// ============================================================================
+// NSSearchField - Search text field with magnifying glass icon
+// ============================================================================
+typedef struct {
+    struct objc_object isa;
+    int x, y, w, h;
+    char text[256];
+    char placeholder[64];
+    int is_editable;
+    uint32_t text_color;
+    uint32_t bg_color;
+    id delegate;
+    id search_button;
+    id cancel_button;
+    int recents_autosave_name[64];
+} CamelOSSearchField;
+extern Class NSSearchField_class;
+
+// ============================================================================
+// NSProgressIndicator - Spinning/loading indicator
+// ============================================================================
+#define NSProgressIndicatorBarStyle    0
+#define NSProgressIndicatorSpinningStyle 1
+
+typedef struct {
+    struct objc_object isa;
+    int x, y, w, h;
+    int style;              // Bar or spinning
+    double min_value;
+    double max_value;
+    double double_value;    // Current value
+    int is_indeterminate;
+    int is_animating;
+    uint32_t progress_color;
+    uint32_t track_color;
+} CamelOSProgressIndicator;
+extern Class NSProgressIndicator_class;
+
+// ============================================================================
+// NSToolbar - Window toolbar (below title bar)
+// ============================================================================
+#define NSToolbarItemTypeGeneral  0
+#define NSToolbarItemTypeFlexibleSpace 1
+
+typedef struct {
+    struct objc_object isa;
+    char identifier[64];
+    id delegate;
+    int allows_user_customization;
+    int display_mode;       // Default, icon, label, iconAndLabel
+    int visible;
+    // Items
+    int item_count;
+    char item_labels[16][32];
+    int item_types[16];
+} CamelOSToolbar;
+extern Class NSToolbar_class;
+
+// ============================================================================
+// NSSlider - Horizontal/vertical slider control
+// ============================================================================
+typedef struct {
+    struct objc_object isa;
+    int x, y, w, h;
+    double min_value;
+    double max_value;
+    double current_value;
+    int is_vertical;
+    id target;
+    SEL action;
+    int tick_mark_count;
+    uint32_t track_color;
+    uint32_t knob_color;
+} CamelOSSlider;
+extern Class NSSlider_class;
+
+// ============================================================================
+// NSPopUpButton - Dropdown/popup menu button
+// ============================================================================
+typedef struct {
+    struct objc_object isa;
+    int x, y, w, h;
+    char title[64];
+    char items[16][64];    // Menu items
+    int item_count;
+    int selected_index;
+    id target;
+    SEL action;
+    int pulls_down;        // 0=popup, 1=pulldown
+    uint32_t bg_color;
+    uint32_t text_color;
+} CamelOSPopUpButton;
+extern Class NSPopUpButton_class;
+
+// ============================================================================
+// NSCheckBox - Checkbox control
+// ============================================================================
+typedef struct {
+    struct objc_object isa;
+    int x, y, w, h;
+    char title[64];
+    int state;              // 0=off, 1=on, 2=mixed
+    id target;
+    SEL action;
+    uint32_t text_color;
+} CamelOSCheckBox;
+extern Class NSCheckBox_class;
+
+// ============================================================================
 // AppKit Initialization
 // ============================================================================
 
