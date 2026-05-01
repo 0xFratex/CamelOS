@@ -94,7 +94,7 @@ int welcome_setup_handle_click(int mx, int my, int click);
 // Configuration access
 SystemConfig* welcome_setup_get_config(void);
 void welcome_setup_load_config(void);
-void welcome_setup_save_config(void);
+int welcome_setup_save_config(void);
 
 // Defaults
 void welcome_setup_set_defaults(void);

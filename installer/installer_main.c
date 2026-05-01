@@ -175,6 +175,7 @@ int install_error = 0;
 char install_error_msg[128] = "";
 uint32_t last_animation_tick = 0;
 int install_step_tick = 0;  // Frame counter within each step for smooth delays
+int install_idle_ticks = 0;  // Watchdog counter to prevent deadlock at ~29%
 
 // Mouse state
 extern int mouse_x, mouse_y, mouse_btn_left;
@@ -1143,6 +1144,7 @@ void render_select_disk(void) {
                 install_error = 0; install_error_msg[0] = 0;
                 kernel_write_offset = 0; install_pct = 0; install_target_pct = 0;
                 install_step_tick = 0;
+                install_idle_ticks = 0;
                 current_state = STATE_INSTALLING;
                 add_log("Starting installation process");
             }
@@ -1647,6 +1649,9 @@ void install_tick(void) {
     // step transitions. This prevents the installer from getting stuck at ~29%.
     #define PROGRESS_CLOSE(a, b) ((a) >= (b) - 5)
 
+    // Watchdog: if any step spends too long waiting for animation, force-advance
+    // (install_idle_ticks is a file-scope variable)
+
     if (install_step == 0) {
         if (install_step_tick == 0) {
             strcpy(install_status, "Writing Bootloader & Partition Table...");
@@ -1665,11 +1670,16 @@ void install_tick(void) {
                 strcpy(install_error_msg, "Failed to write MBR"); install_error=1; return;
             }
             install_step_tick = 1;
+            install_idle_ticks = 0;
         }
         // Wait for progress bar to catch up before advancing
         install_target_pct = 5;
         if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
             install_step++; install_step_tick = 0;
+            install_idle_ticks = 0;
+        } else {
+            install_idle_ticks++;
+            if (install_idle_ticks > 60) { install_step++; install_step_tick = 0; install_idle_ticks = 0; }
         }
         return;
     }
@@ -1677,6 +1687,14 @@ void install_tick(void) {
     if (install_step == 1) {
         strcpy(install_status, "Copying Kernel Image...");
         uint32_t k_size = system_bin_end - system_bin_start;
+        
+        // Guard against zero-size kernel image
+        if (k_size == 0) {
+            strcpy(install_error_msg, "Kernel image is empty"); install_error = 1;
+            current_state = STATE_FAILURE;
+            return;
+        }
+        
         uint32_t k_sectors = (k_size + 511) / 512;
         int sectors_this = 0;
         while (kernel_write_offset < k_sectors && sectors_this < 16) {
@@ -1693,6 +1711,10 @@ void install_tick(void) {
             install_target_pct = 30;
             if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
                 install_step++; add_log("Kernel copied");
+                install_idle_ticks = 0;
+            } else {
+                install_idle_ticks++;
+                if (install_idle_ticks > 60) { install_step++; add_log("Kernel copied"); install_step_tick = 0; install_idle_ticks = 0; }
             }
         }
         return;
@@ -1704,18 +1726,25 @@ void install_tick(void) {
             add_log("Formatting partition");
             uint32_t part_start=16384, part_size=ide_devices[selected_drive_idx].sectors-part_start;
             pfs32_init(part_start, part_size);
-            // Use format_fast to skip bad block scan (huge speed improvement)
-            // Bad block scan writes/reads every sector twice, taking forever on large disks
+            // Use format_fast to skip bad block scan
             extern uint32_t pfs32_format_fast(const char* label, uint32_t total);
-            if ((int)pfs32_format_fast("Camel Sys", part_size) < 0) {
-                strcpy(install_error_msg, "PFS32 format failed"); install_error=1; return;
+            uint32_t fmt_result = pfs32_format_fast("Camel Sys", part_size);
+            if ((int)fmt_result < 0) {
+                strcpy(install_error_msg, "PFS32 format failed"); install_error=1;
+                current_state = STATE_FAILURE;
+                return;
             }
             pfs32_sync(); disk_flush_cache();
             install_step_tick = 1;
+            install_idle_ticks = 0;
         }
         install_target_pct = 45;
         if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
             install_step++; install_step_tick = 0; add_log("PFS32 formatted");
+            install_idle_ticks = 0;
+        } else {
+            install_idle_ticks++;
+            if (install_idle_ticks > 60) { install_step++; install_step_tick = 0; add_log("PFS32 formatted"); install_idle_ticks = 0; }
         }
         return;
     }
@@ -1725,17 +1754,22 @@ void install_tick(void) {
             if (install_step_tick == 0) {
                 strcpy(install_status, "Creating Directory Structure...");
                 add_log("Creating directories");
-                pfs32_create_directory("/home"); pfs32_create_directory("/home/desktop");
+                pfs32_create_directory("/Users");  // macOS-like user base
                 pfs32_create_directory("/usr");  pfs32_create_directory("/usr/lib");
                 pfs32_create_directory("/usr/apps");
                 pfs32_create_directory("/Applications");  // macOS-like app directory
                 pfs32_create_directory("/Library"); pfs32_create_directory("/Library/Preferences");
                 pfs32_create_directory("/etc");
                 install_step_tick = 1;
+                install_idle_ticks = 0;
             }
             install_target_pct = 47;
             if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
                 install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0;
+                install_idle_ticks = 0;
+            } else {
+                install_idle_ticks++;
+                if (install_idle_ticks > 60) { install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0; install_idle_ticks = 0; }
             }
             return;
         }
@@ -1753,7 +1787,6 @@ void install_tick(void) {
             return;
         }
         // Create .app bundle directory stubs in /Applications/ for dock compatibility
-        // Each .app directory acts as a pointer to the actual .cdl binary
         {
             const char* app_bundles[] = {
                 "/Applications/Files.app", "/Applications/Terminal.app",
@@ -1771,6 +1804,10 @@ void install_tick(void) {
         if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
             install_step++; install_sub_step=0; install_step_tick = 0;
             add_log("System files installed");
+            install_idle_ticks = 0;
+        } else {
+            install_idle_ticks++;
+            if (install_idle_ticks > 60) { install_step++; install_sub_step=0; install_step_tick = 0; install_idle_ticks = 0; }
         }
         return;
     }
@@ -1817,6 +1854,7 @@ int main(uint32_t magic, void* mb_ptr) {
     install_step=0; install_sub_step=0; install_file_idx=0;
     install_error=0; install_error_msg[0]=0;
     kernel_write_offset=0; install_pct=0; install_target_pct=0; install_step_tick=0;
+    install_idle_ticks=0;
     sys_check_done=0;
 
     scan_hardware();

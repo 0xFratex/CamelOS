@@ -147,8 +147,7 @@ int sys_fs_mount() {
             sys_print("[KERNEL] PFS32 formatted successfully.\n");
 
             // Create essential directory structure (same as installer)
-            pfs32_create_directory("/home");
-            pfs32_create_directory("/home/desktop");
+            pfs32_create_directory("/Users");
             pfs32_create_directory("/usr");
             pfs32_create_directory("/usr/lib");
             pfs32_create_directory("/usr/apps");

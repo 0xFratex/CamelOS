@@ -651,12 +651,12 @@ void ctx_menu_handle_click(int mx, int my) {
     extern int wrap_exec_with_args(const char*, const char*);
 
     switch(action) {
-        case 1: { /* New Folder */ char new_path[256]; strcpy(new_path, "/Users/Desktop/New Folder"); if (!sys_fs_exists("/Users/Desktop")) strcpy(new_path, "/home/desktop/New Folder"); int counter = 1; char test_path[256]; while(1) { strcpy(test_path, new_path); if(counter > 1) { char num[10]; int_to_str(counter, num); strcat(test_path, " "); strcat(test_path, num); } strcat(test_path, "/"); if(!sys_fs_exists(test_path)) { strcpy(new_path, test_path); new_path[strlen(new_path)-1] = 0; break; } counter++; } sys_fs_create(new_path, 1); desktop_refresh(); } break;
-        case 2: /* New File */ { const char* dp = sys_fs_exists("/Users/Desktop") ? "/Users/Desktop/New_Text.txt" : "/home/desktop/New_Text.txt"; sys_fs_create(dp, 0); desktop_refresh(); } break;
+        case 1: { /* New Folder */ char new_path[256]; strcpy(new_path, g_desktop_path); strcat(new_path, "/New Folder"); int counter = 1; char test_path[256]; while(1) { strcpy(test_path, new_path); if(counter > 1) { char num[10]; int_to_str(counter, num); strcat(test_path, " "); strcat(test_path, num); } strcat(test_path, "/"); if(!sys_fs_exists(test_path)) { strcpy(new_path, test_path); new_path[strlen(new_path)-1] = 0; break; } counter++; } sys_fs_create(new_path, 1); desktop_refresh(); } break;
+        case 2: /* New File */ { char dp[256]; strcpy(dp, g_desktop_path); strcat(dp, "/New_Text.txt"); sys_fs_create(dp, 0); desktop_refresh(); } break;
         case 3: /* Rename */ renaming_mode = 1; rename_cursor = 0; rename_buffer[0] = 0; menu_rect_x = mx; menu_rect_y = my + 20; g_ctx_menu.active = 0; break;
         case 4: /* Delete */ sys_fs_delete_recursive(target_name); desktop_refresh(); break;
         case 5: /* Copy */ strcpy(clip_file_path, target_name); clip_is_cut = 0; clip_active = 1; break;
-        case 6: /* Paste */ if (clip_active) { char dest[128]; strcpy(dest, sys_fs_exists("/Users/Desktop") ? "/Users/Desktop/" : "/home/desktop/"); strcat(dest, "Copy_of_File"); sys_fs_copy(clip_file_path, dest); desktop_refresh(); } break;
+        case 6: /* Paste */ if (clip_active) { char dest[128]; strcpy(dest, g_desktop_path); strcat(dest, "/Copy_of_File"); sys_fs_copy(clip_file_path, dest); desktop_refresh(); } break;
         case 7: /* Cut */ break; // TODO
         case 10: /* Open (Default) */ desktop_execute_item(target_name, 0); break;
     }
@@ -830,7 +830,8 @@ void handle_input(int mx, int my, int lb, int rb) {
                 // If clicking the ALREADY selected item -> Trigger open
                 if (hit_idx == last_select_idx) {
                     char path[128]; 
-                    strcpy(path, sys_fs_exists("/Users/Desktop") ? "/Users/Desktop/" : "/home/desktop/");
+                    strcpy(path, g_desktop_path);
+                    strcat(path, "/");
                     strcat(path, desk_entries[hit_idx].filename);
                     desktop_execute_item(path, (desk_entries[hit_idx].attributes & 0x10));
                     last_select_idx = -1; // Reset
@@ -1052,14 +1053,11 @@ void start_bubble_view() {
                 if (rk == 13) {
                     if (strlen(rename_buffer) > 0 && rename_target_idx >= 0 && rename_target_idx < 32) {
                         char old_path[128], new_path[128];
-                        strcpy(old_path, "/Users/");
-                        SystemConfig* cfg = welcome_setup_get_config();
-                        strcat(old_path, cfg->username);
-                        strcat(old_path, "/Desktop/");
+                        strcpy(old_path, g_desktop_path);
+                        strcat(old_path, "/");
                         strcat(old_path, desk_entries[rename_target_idx].filename);
-                        strcpy(new_path, "/Users/");
-                        strcat(new_path, cfg->username);
-                        strcat(new_path, "/Desktop/");
+                        strcpy(new_path, g_desktop_path);
+                        strcat(new_path, "/");
                         strcat(new_path, rename_buffer);
                         sys_fs_rename(old_path, new_path);
                         desktop_refresh();

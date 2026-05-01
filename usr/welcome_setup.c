@@ -11,6 +11,7 @@
 #include "../sys/api.h"
 #include "../fs/pfs32.h"
 #include "../fs/disk.h"
+#include "../hal/drivers/serial.h"
 
 // External API
 extern kernel_api_t* sys;
@@ -177,7 +178,7 @@ void welcome_setup_load_config(void) {
     }
 }
 
-void welcome_setup_save_config(void) {
+int welcome_setup_save_config(void) {
     char buffer[1024];
     int pos = 0;
     
@@ -206,9 +207,12 @@ void welcome_setup_save_config(void) {
         char verify[64];
         int vres = sys_fs_read("/Library/Preferences/system.conf", verify, sizeof(verify) - 1);
         if (vres <= 0 || strncmp(verify, "# CamelOS", 9) != 0) {
-            // Primary write failed verification - try legacy path only
+            // Primary write failed verification
+            s_printf("[SETUP] ERROR: Config write verification failed!\n");
             wres = -1;
         }
+    } else {
+        s_printf("[SETUP] ERROR: Failed to write config file!\n");
     }
     
     // Also write to legacy path for backward compatibility during transition
@@ -265,8 +269,8 @@ void welcome_setup_save_config(void) {
     strcat(home_path, "/Public");
     sys_fs_create(home_path, 1);
     
-    // Also create legacy /home/desktop symlink for compatibility
-    sys_fs_create("/home/desktop", 1);
+    // NOTE: Do NOT create /home/desktop - it causes duplicate folder issues.
+    // The desktop.c module now reads username from config and uses /Users/<name>/Desktop.
     
     // Create macOS system directories
     sys_fs_create("/Applications", 1);
@@ -293,6 +297,8 @@ void welcome_setup_save_config(void) {
     disk_flush_cache();
     pfs32_sync();
     disk_flush_cache();
+    
+    return (wres > 0) ? 0 : -1;
 }
 
 // --- State Management ---
@@ -314,8 +320,6 @@ int welcome_setup_is_active(void) {
 }
 
 void welcome_setup_finish(void) {
-    g_setup.config.is_configured = 1;
-    
     // Hash the password if one was set
     if (g_setup.password_buffer[0] != 0) {
         sha256_hash_password(g_setup.password_buffer, g_setup.config.password_hash);
@@ -324,7 +328,14 @@ void welcome_setup_finish(void) {
         g_setup.config.password_hash[0] = 0;
     }
     
-    welcome_setup_save_config();
+    // Only mark as configured if the save succeeds
+    g_setup.config.is_configured = 1;
+    int save_result = welcome_setup_save_config();
+    if (save_result < 0) {
+        s_printf("[SETUP] ERROR: Config save failed! Not marking as configured.\n");
+        g_setup.config.is_configured = 0;
+        return;  // Don't proceed - user must retry
+    }
     
     // Configure screenlock with user and hashed password
     screenlock_create_user(g_setup.config.username, g_setup.config.password_hash, g_setup.config.theme);

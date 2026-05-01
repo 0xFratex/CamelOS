@@ -35,13 +35,14 @@ typedef struct {
 
 extern ContextMenuState g_ctx_menu;
 
-#define DESKTOP_PATH "/Users/Desktop"
-// Fallback to legacy path if /Users/Desktop doesn't exist
-#define DESKTOP_PATH_LEGACY "/home/desktop"
+#define DESKTOP_PATH_LEGACY "/Users/Desktop"
 #define GRID_START_X 30
 #define GRID_START_Y 60 
 #define ICON_SPACING_X 100
 #define ICON_SPACING_Y 100
+
+// Dynamic desktop path - resolved from user config at init time
+char g_desktop_path[128] = DESKTOP_PATH_LEGACY;  // default fallback (non-static for external access)
 
 int desktop_is_ctx_open() {
     return g_ctx_menu.active;
@@ -55,17 +56,16 @@ void desktop_refresh() {
     uint32_t blk = 0xFFFFFFFF;
     extern int get_dir_block(const char*, uint32_t*);
     
-    // Try macOS-like path first, fall back to legacy
-    const char* desktop_path = DESKTOP_PATH;
+    // Use the dynamic path (resolved from config in desktop_init)
+    const char* desktop_path = g_desktop_path;
     if(get_dir_block(desktop_path, &blk) != 0) {
-        // Try legacy path
-        desktop_path = DESKTOP_PATH_LEGACY;
-        if(get_dir_block(desktop_path, &blk) != 0) {
-            // Create the macOS-like path
+        // Try the legacy fallback path
+        if(get_dir_block(DESKTOP_PATH_LEGACY, &blk) != 0) {
+            // Neither exists - create the dynamic path
+            // Ensure /Users exists first
             sys_fs_create("/Users", 1);
-            sys_fs_create(DESKTOP_PATH, 1);
-            desktop_path = DESKTOP_PATH;
-            get_dir_block(desktop_path, &blk);
+            sys_fs_create(g_desktop_path, 1);
+            get_dir_block(g_desktop_path, &blk);
         }
     }
     
@@ -76,15 +76,13 @@ void desktop_refresh() {
     
     // Force reset rename state on refresh to avoid ghost inputs
     if (desktop_rename_active) {
-        // If we were renaming, we keep it active ONLY if the file still exists?
-        // Better to cancel to prevent confusion.
         desktop_rename_active = 0;
         desktop_rename_idx = -1;
     }
 
     if (blk != 0xFFFFFFFF) {
         pfs32_direntry_t temp[32];
-        int raw = sys_fs_list_dir(DESKTOP_PATH, temp, 32);
+        int raw = sys_fs_list_dir(g_desktop_path, temp, 32);
         for(int i=0; i<raw; i++) {
             if(temp[i].filename[0] != 0 && temp[i].filename[0] != '.') {
                 desk_entries[desk_count++] = temp[i];
@@ -94,6 +92,40 @@ void desktop_refresh() {
 }
 
 void desktop_init() {
+    // Read username from config to build the correct desktop path
+    char buf[1024];
+    int len = sys_fs_read("/Library/Preferences/system.conf", buf, sizeof(buf)-1);
+    if (len <= 0) {
+        // Try legacy path
+        len = sys_fs_read("/etc/system.conf", buf, sizeof(buf)-1);
+    }
+    if (len > 0) {
+        buf[len] = 0;
+        char* line = strstr(buf, "username=");
+        if (line) {
+            char username[64];
+            strncpy(username, line + 9, sizeof(username)-1);
+            username[sizeof(username)-1] = 0;
+            // Strip newline/carriage return
+            char* nl = username;
+            while (*nl && *nl != '\n' && *nl != '\r') nl++;
+            *nl = 0;
+            if (username[0]) {
+                // Build /Users/<username>/Desktop
+                strcpy(g_desktop_path, "/Users/");
+                strcat(g_desktop_path, username);
+                strcat(g_desktop_path, "/Desktop");
+                // Verify the path exists; if not, create it
+                if (!sys_fs_exists(g_desktop_path)) {
+                    char user_home[128];
+                    strcpy(user_home, "/Users/");
+                    strcat(user_home, username);
+                    sys_fs_create(user_home, 1);
+                    sys_fs_create(g_desktop_path, 1);
+                }
+            }
+        }
+    }
     desktop_refresh();
 }
 
@@ -183,10 +215,12 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
             // We'll calculate index again in bubbleview or use a static global.
             // For now, let's pass the path string as expected by bubbleview.
             static char path_buf[128];
-            strcpy(path_buf, "/Users/Desktop/");
-            // Check if new path exists, otherwise use legacy
-            if (!sys_fs_exists("/Users/Desktop")) {
-                strcpy(path_buf, "/home/desktop/");
+            strcpy(path_buf, g_desktop_path);
+            strcat(path_buf, "/");
+            // Fallback only if dynamic path doesn't exist
+            if (!sys_fs_exists(g_desktop_path)) {
+                strcpy(path_buf, DESKTOP_PATH_LEGACY);
+                strcat(path_buf, "/");
             }
             strcat(path_buf, desk_entries[hit_idx].filename);
             

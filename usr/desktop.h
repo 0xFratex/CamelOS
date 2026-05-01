@@ -14,6 +14,9 @@ extern void desktop_draw(uint32_t* buffer);
 extern void desktop_on_mouse(int x, int y, int lb, int rb);
 // desktop_on_input removed (handled directly in bubbleview logic now)
 
+// Dynamic desktop path - resolved from user config at init time
+extern char g_desktop_path[128];
+
 // Check if context menu is currently open (for modal behavior)
 extern int desktop_is_ctx_open();
 

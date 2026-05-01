@@ -330,8 +330,11 @@ void kernel_main(void* mboot_ptr) {
     int_to_str(m, buf);
     s_printf(buf);
     s_printf("\n");
-    if (m != 0) s_printf("[KERNEL] FS Mount Failed.\n");
-    else sys_print("[OK] Filesystem Mounted.\n");
+    if (m != 0) {
+        s_printf("[KERNEL] FATAL: Filesystem mount failed. Halting.\n");
+        while(1) asm("hlt");
+    }
+    sys_print("[OK] Filesystem Mounted.\n");
 
     sys_print("Booting...\n");
     sys_print("\n--- Hardware Enumeration ---\n");
