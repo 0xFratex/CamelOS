@@ -11,6 +11,8 @@ extern int desktop_rename_cursor;
 
 extern void desktop_init();
 extern void desktop_draw(uint32_t* buffer);
+extern void desktop_draw_icons(uint32_t* buffer);
+extern void desktop_fill_wallpaper_region(uint32_t* buffer, int rx, int ry, int rw, int rh);
 extern void desktop_on_mouse(int x, int y, int lb, int rb);
 // desktop_on_input removed (handled directly in bubbleview logic now)
 

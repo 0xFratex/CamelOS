@@ -7,6 +7,7 @@
 #include "../fs/pfs32.h"
 #include "desktop.h"
 #include "../hal/drivers/serial.h"
+#include "../hal/video/gfx_hal.h"
 
 // DMG mounter for .dmg install support
 #include "../core/dmg_mount.h"
@@ -43,6 +44,13 @@ extern ContextMenuState g_ctx_menu;
 
 // Dynamic desktop path - resolved from user config at init time
 char g_desktop_path[128] = "";  // Empty until properly resolved from config
+
+// --- Wallpaper Cache ---
+// Pre-computed gradient eliminates per-pixel arithmetic every frame.
+// This is the #1 fix for window flickering on move.
+static uint32_t* wallpaper_cache = 0;
+static int wallpaper_cache_w = 0;
+static int wallpaper_cache_h = 0;
 
 int desktop_is_ctx_open() {
     return g_ctx_menu.active;
@@ -166,17 +174,58 @@ void desktop_init() {
     desktop_refresh();
 }
 
-void desktop_draw(uint32_t* buffer) {
-    // 1. Wallpaper
-    for(int y=0; y<768; y++) {
-        uint32_t col = 0xFF3b80c6 - (y/4); // Blue gradient
-        for(int x=0; x<1024; x++) buffer[y*1024+x] = col;
+// Ensure the wallpaper gradient cache is allocated and filled.
+// Called lazily on first desktop_draw or desktop_fill_wallpaper_region.
+static void wallpaper_cache_ensure(int w, int h) {
+    if (wallpaper_cache && wallpaper_cache_w == w && wallpaper_cache_h == h) return;
+    if (!wallpaper_cache) {
+        wallpaper_cache = (uint32_t*)kmalloc(w * h * 4);
+        if (!wallpaper_cache) return;  // fallback to per-pixel
+        wallpaper_cache_w = w;
+        wallpaper_cache_h = h;
     }
+    // Fill cached gradient
+    for(int y=0; y<h; y++) {
+        uint32_t col = 0xFF3b80c6 - (y/4); // Blue gradient
+        for(int x=0; x<w; x++) wallpaper_cache[y*w+x] = col;
+    }
+}
 
+// Fill a rectangular region of the back buffer from the wallpaper cache.
+// Used by the dirty-region drag optimisation in bubbleview.c.
+void desktop_fill_wallpaper_region(uint32_t* buffer, int rx, int ry, int rw, int rh) {
+    int w = gfx_ctx.width;
+    int h = gfx_ctx.height;
+    wallpaper_cache_ensure(w, h);
+    if (!wallpaper_cache) {
+        // Fallback: compute per-pixel for just the region
+        for(int y=ry; y<ry+rh && y<h; y++) {
+            uint32_t col = 0xFF3b80c6 - (y/4);
+            for(int x=rx; x<rx+rw && x<w; x++) buffer[y*w+x] = col;
+        }
+        return;
+    }
+    // Clip region to screen bounds
+    if (rx < 0) { rw += rx; rx = 0; }
+    if (ry < 0) { rh += ry; ry = 0; }
+    if (rx + rw > w) rw = w - rx;
+    if (ry + rh > h) rh = h - ry;
+    if (rw <= 0 || rh <= 0) return;
+
+    int row_bytes = rw * 4;
+    for(int y = 0; y < rh; y++) {
+        memcpy(&buffer[(ry + y) * w + rx],
+               &wallpaper_cache[(ry + y) * w + rx],
+               row_bytes);
+    }
+}
+
+// Draw desktop icons on top of whatever is currently in the buffer.
+// Called after desktop_draw (full) or desktop_fill_wallpaper_region (dirty region).
+void desktop_draw_icons(uint32_t* buffer) {
     int x = GRID_START_X;
     int y = GRID_START_Y;
 
-    // 2. Draw Icons
     for(int i=0; i<desk_count; i++) {
         // Selection Highlight
         if(desk_selected[i] && !(desktop_rename_active && desktop_rename_idx == i)) {
@@ -228,6 +277,26 @@ void desktop_draw(uint32_t* buffer) {
         y += ICON_SPACING_Y;
         if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
     }
+}
+
+void desktop_draw(uint32_t* buffer) {
+    int w = gfx_ctx.width;
+    int h = gfx_ctx.height;
+
+    // 1. Wallpaper — use cached gradient (fast memcpy instead of per-pixel arithmetic)
+    wallpaper_cache_ensure(w, h);
+    if (wallpaper_cache) {
+        memcpy(buffer, wallpaper_cache, w * h * 4);
+    } else {
+        // Fallback if kmalloc failed
+        for(int y=0; y<h; y++) {
+            uint32_t col = 0xFF3b80c6 - (y/4);
+            for(int x=0; x<w; x++) buffer[y*w+x] = col;
+        }
+    }
+
+    // 2. Draw Icons
+    desktop_draw_icons(buffer);
 }
 
 void desktop_on_mouse(int mx, int my, int lb, int rb) {

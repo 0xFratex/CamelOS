@@ -13,7 +13,8 @@
 #define TAB_USER     1
 #define TAB_DISPLAY  2
 #define TAB_NETWORK  3
-#define TAB_COUNT    4
+#define TAB_HARDWARE 4
+#define TAB_COUNT    5
 
 static int current_tab = TAB_ABOUT;
 
@@ -26,6 +27,15 @@ static char cfg_timezone[32] = "UTC";
 // System info
 static char sys_mem_str[32] = "";
 static char sys_disk_str[32] = "";
+
+// Hardware info (detected via CPUID)
+static char hw_cpu_vendor[13] = "(unknown)";
+static char hw_cpu_model[49] = "(unknown)";
+static char hw_cpu_arch[16] = "i386 (32-bit)";
+static char hw_mem_total_str[32] = "";
+static char hw_disk_size_str[32] = "";
+static char hw_disk_free_str[32] = "";
+static int hw_cpu_supported = 0;
 
 static void settings_load_config() {
     char buf[1024];
@@ -78,11 +88,70 @@ static void settings_load_config() {
     strcat(sys_disk_str, num);
 }
 
+static void detect_cpu_info(void) {
+    uint32_t eax, ebx, ecx, edx;
+    
+    // CPUID leaf 0 - vendor string
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0));
+    memcpy(hw_cpu_vendor, &ebx, 4);
+    memcpy(hw_cpu_vendor+4, &edx, 4);
+    memcpy(hw_cpu_vendor+8, &ecx, 4);
+    hw_cpu_vendor[12] = 0;
+    
+    // Check for supported CPU vendor
+    if (strcmp(hw_cpu_vendor, "GenuineIntel") == 0 ||
+        strcmp(hw_cpu_vendor, "AuthenticAMD") == 0 ||
+        strcmp(hw_cpu_vendor, "CentaurHauls") == 0) {
+        hw_cpu_supported = 1;
+    }
+    
+    // CPUID leaf 0x80000000 - check extended support
+    asm volatile("cpuid" : "=a"(eax) : "a"(0x80000000));
+    if (eax >= 0x80000004) {
+        // Get model name from leaves 0x80000002-0x80000004
+        uint32_t* p = (uint32_t*)hw_cpu_model;
+        for (uint32_t leaf = 0x80000002; leaf <= 0x80000004; leaf++) {
+            asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(leaf));
+            *p++ = eax; *p++ = ebx; *p++ = ecx; *p++ = edx;
+        }
+        hw_cpu_model[48] = 0;
+        // Trim leading spaces
+        char* s = hw_cpu_model;
+        while (*s == ' ') s++;
+        if (s != hw_cpu_model) memmove(hw_cpu_model, s, strlen(s)+1);
+    } else {
+        strcpy(hw_cpu_model, "(unknown)");
+    }
+    
+    // Get total memory info
+    extern uint32_t total_memory_kb;
+    uint32_t mem_mb = total_memory_kb / 1024;
+    char num[16];
+    strcpy(hw_mem_total_str, "");
+    int_to_str(mem_mb, num);
+    strcat(hw_mem_total_str, num);
+    strcat(hw_mem_total_str, " MB");
+    
+    // Get disk size info
+    pfs32_stats_t stats;
+    pfs32_get_stats(&stats);
+    uint32_t disk_total_mb = stats.total_sectors_used / 2048;
+    uint32_t disk_free_mb = stats.blocks_free / 2;  // approximate
+    strcpy(hw_disk_size_str, "");
+    int_to_str(disk_total_mb, num);
+    strcat(hw_disk_size_str, num);
+    strcat(hw_disk_size_str, " MB used");
+    strcpy(hw_disk_free_str, "");
+    int_to_str(disk_free_mb, num);
+    strcat(hw_disk_free_str, num);
+    strcat(hw_disk_free_str, " blocks free");
+}
+
 static void draw_tab_bar(int x, int y, int w) {
     gfx_fill_rect(x, y, w, 28, 0xFFF2F2F7);
     gfx_draw_rect(x, y + 27, w, 1, 0xFFC6C6C8);
     
-    const char* tab_names[] = {"About", "User", "Display", "Network"};
+    const char* tab_names[] = {"About", "User", "Display", "Network", "Hardware"};
     int tab_w = w / TAB_COUNT;
     
     for (int i = 0; i < TAB_COUNT; i++) {
@@ -142,6 +211,14 @@ static void draw_about_tab(int x, int y, int w, int h) {
     
     gfx_draw_string(x + 30, cy, "Runtime: ", 0xFF888888);
     gfx_draw_string(x + 110, cy, "Objective-C + Foundation", 0xFF333333);
+    cy += 20;
+    
+    gfx_draw_string(x + 30, cy, "CPU:     ", 0xFF888888);
+    gfx_draw_string(x + 110, cy, hw_cpu_model, 0xFF333333);
+    cy += 20;
+    
+    gfx_draw_string(x + 30, cy, "Arch:    ", 0xFF888888);
+    gfx_draw_string(x + 110, cy, hw_cpu_arch, 0xFF333333);
     cy += 30;
     
     gfx_draw_rect(x + 20, cy, w - 40, 1, 0xFFE0E0E0);
@@ -238,6 +315,93 @@ static void draw_display_tab(int x, int y, int w, int h) {
     gfx_draw_string(x + 200, cy, "32-bit (ARGB)", 0xFF333333);
 }
 
+static void draw_hardware_tab(int x, int y, int w, int h) {
+    int cy = y + 20;
+    
+    // CPU Section
+    gfx_draw_string(x + 20, cy, "Processor", 0xFF007AFF);
+    cy += 25;
+    
+    gfx_fill_rounded_rect(x + 20, cy, w - 40, 90, 0xFFF2F2F7, 8);
+    gfx_draw_rect(x + 20, cy, w - 40, 90, 0xFFE0E0E0);
+    
+    gfx_draw_string(x + 32, cy + 10, "Vendor:", 0xFF8E8E93);
+    gfx_draw_string(x + 120, cy + 10, hw_cpu_vendor, 0xFF333333);
+    gfx_draw_string(x + 32, cy + 30, "Model:", 0xFF8E8E93);
+    gfx_draw_string(x + 120, cy + 30, hw_cpu_model, 0xFF333333);
+    gfx_draw_string(x + 32, cy + 50, "Architecture:", 0xFF8E8E93);
+    gfx_draw_string(x + 120, cy + 50, hw_cpu_arch, 0xFF333333);
+    gfx_draw_string(x + 32, cy + 70, "Status:", 0xFF8E8E93);
+    if (hw_cpu_supported) {
+        gfx_fill_rounded_rect(x + 120, cy + 67, 70, 18, 0xFFE8F5E9, 4);
+        gfx_draw_string(x + 130, cy + 70, "Supported", 0xFF34C759);
+    } else {
+        gfx_fill_rounded_rect(x + 120, cy + 67, 80, 18, 0xFFFFEBEE, 4);
+        gfx_draw_string(x + 130, cy + 70, "Unknown", 0xFFFF3B30);
+    }
+    cy += 105;
+    
+    // Features
+    gfx_draw_string(x + 20, cy, "CPU Features", 0xFF007AFF);
+    cy += 25;
+    
+    gfx_fill_rounded_rect(x + 20, cy, w - 40, 30, 0xFFF2F2F7, 8);
+    gfx_draw_rect(x + 20, cy, w - 40, 30, 0xFFE0E0E0);
+    // Check basic CPU features via CPUID leaf 1
+    uint32_t eax1, ebx1, ecx1, edx1;
+    asm volatile("cpuid" : "=a"(eax1), "=b"(ebx1), "=c"(ecx1), "=d"(edx1) : "a"(1));
+    char feat_str[128] = "";
+    if (edx1 & (1 << 0)) strcat(feat_str, "FPU ");
+    if (edx1 & (1 << 23)) strcat(feat_str, "MMX ");
+    if (edx1 & (1 << 25)) strcat(feat_str, "SSE ");
+    if (edx1 & (1 << 26)) strcat(feat_str, "SSE2 ");
+    if (ecx1 & (1 << 0)) strcat(feat_str, "SSE3 ");
+    if (ecx1 & (1 << 9)) strcat(feat_str, "SSSE3 ");
+    if (ecx1 & (1 << 19)) strcat(feat_str, "SSE4.1 ");
+    if (ecx1 & (1 << 20)) strcat(feat_str, "SSE4.2 ");
+    if (ecx1 & (1 << 28)) strcat(feat_str, "AVX ");
+    if (edx1 & (1 << 24)) strcat(feat_str, "FXSR ");
+    gfx_draw_string(x + 32, cy + 8, feat_str, 0xFF333333);
+    cy += 45;
+    
+    // Memory Section
+    gfx_draw_string(x + 20, cy, "Memory", 0xFF007AFF);
+    cy += 25;
+    
+    gfx_fill_rounded_rect(x + 20, cy, w - 40, 50, 0xFFF2F2F7, 8);
+    gfx_draw_rect(x + 20, cy, w - 40, 50, 0xFFE0E0E0);
+    gfx_draw_string(x + 32, cy + 10, "Total RAM:", 0xFF8E8E93);
+    gfx_draw_string(x + 140, cy + 10, hw_mem_total_str, 0xFF333333);
+    gfx_draw_string(x + 32, cy + 30, "Free:", 0xFF8E8E93);
+    gfx_draw_string(x + 140, cy + 30, sys_mem_str + 6, 0xFF333333);  // skip "Free: " prefix
+    cy += 65;
+    
+    // Disk Section
+    gfx_draw_string(x + 20, cy, "Disk (PFS32)", 0xFF007AFF);
+    cy += 25;
+    
+    gfx_fill_rounded_rect(x + 20, cy, w - 40, 70, 0xFFF2F2F7, 8);
+    gfx_draw_rect(x + 20, cy, w - 40, 70, 0xFFE0E0E0);
+    gfx_draw_string(x + 32, cy + 10, "Filesystem:", 0xFF8E8E93);
+    gfx_draw_string(x + 140, cy + 10, "PFS32 v3.0 (APFS+)", 0xFF333333);
+    gfx_draw_string(x + 32, cy + 30, "Usage:", 0xFF8E8E93);
+    gfx_draw_string(x + 140, cy + 30, hw_disk_size_str, 0xFF333333);
+    gfx_draw_string(x + 32, cy + 50, "Free blocks:", 0xFF8E8E93);
+    gfx_draw_string(x + 140, cy + 50, hw_disk_free_str, 0xFF333333);
+    cy += 85;
+    
+    // Network Section
+    gfx_draw_string(x + 20, cy, "Network Interfaces", 0xFF007AFF);
+    cy += 25;
+    
+    gfx_fill_rounded_rect(x + 20, cy, w - 40, 50, 0xFFF2F2F7, 8);
+    gfx_draw_rect(x + 20, cy, w - 40, 50, 0xFFE0E0E0);
+    gfx_draw_string(x + 32, cy + 10, "Driver:", 0xFF8E8E93);
+    gfx_draw_string(x + 140, cy + 10, "RTL8139 Ethernet", 0xFF333333);
+    gfx_draw_string(x + 32, cy + 30, "MAC:", 0xFF8E8E93);
+    gfx_draw_string(x + 140, cy + 30, "52:54:00:12:34:56", 0xFF333333);
+}
+
 static void draw_network_tab(int x, int y, int w, int h) {
     int cy = y + 20;
     
@@ -295,10 +459,11 @@ static void settings_on_paint(int x, int y, int w, int h) {
     int content_h = h - 32;
     
     switch (current_tab) {
-        case TAB_ABOUT:   draw_about_tab(x, content_y, w, content_h); break;
-        case TAB_USER:    draw_user_tab(x, content_y, w, content_h); break;
-        case TAB_DISPLAY: draw_display_tab(x, content_y, w, content_h); break;
-        case TAB_NETWORK: draw_network_tab(x, content_y, w, content_h); break;
+        case TAB_ABOUT:    draw_about_tab(x, content_y, w, content_h); break;
+        case TAB_USER:     draw_user_tab(x, content_y, w, content_h); break;
+        case TAB_DISPLAY:  draw_display_tab(x, content_y, w, content_h); break;
+        case TAB_NETWORK:  draw_network_tab(x, content_y, w, content_h); break;
+        case TAB_HARDWARE: draw_hardware_tab(x, content_y, w, content_h); break;
     }
 }
 
@@ -325,6 +490,9 @@ void init_settings_app() {
     Window* w = fw_create_window("Settings", 500, 420, settings_on_paint, settings_on_input, settings_on_mouse);
     w->min_w = 400;
     
+    // Detect hardware info
+    detect_cpu_info();
+    
     w->menu_count = 2;
     strcpy(w->menus[0].name, "File");
     strcpy(w->menus[0].items[0].label, "Refresh");
@@ -336,7 +504,8 @@ void init_settings_app() {
     strcpy(w->menus[1].items[1].label, "User");
     strcpy(w->menus[1].items[2].label, "Display");
     strcpy(w->menus[1].items[3].label, "Network");
-    w->menus[1].item_count = 4;
+    strcpy(w->menus[1].items[4].label, "Hardware");
+    w->menus[1].item_count = 5;
     
     fw_register_dock("Settings", 4, w);
 }

@@ -7,6 +7,7 @@
 #include "../../core/string.h"
 #include "../../core/memory.h"
 #include "../../hal/video/gfx_hal.h"
+#include "../../core/window_server.h"
 #include "../dock.h"
 
 // Forward declaration for framework image drawing
@@ -22,6 +23,11 @@ extern void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int 
 #define TOOLBAR_H     32      // Toolbar height at top
 #define MARGIN_LEFT   8
 #define MARGIN_TOP    (TOOLBAR_H + 4)
+
+// Scrollbar constants
+#define SCROLLBAR_W    14     // Scrollbar width in pixels
+#define SCROLLBAR_MIN_H 20    // Minimum thumb height
+#define SCROLLBAR_PAD   2     // Padding inside scrollbar track
 
 // ===== Globals =====
 char fm_path[128] = "/";
@@ -42,6 +48,11 @@ int prompt_is_dir = 0;   // 1=creating folder, 0=creating file
 char prompt_buffer[40];
 int prompt_len = 0;
 
+// Scrollbar drag state
+static int sb_dragging = 0;      // 1 when user is dragging the scrollbar thumb
+static int sb_drag_start_y = 0;  // Mouse Y when drag started
+static int sb_drag_start_offset = 0; // scroll_offset when drag started
+
 // Navigation history
 #define NAV_HISTORY_SIZE 16
 char nav_history[NAV_HISTORY_SIZE][128];
@@ -50,6 +61,40 @@ int nav_history_pos = -1;
 
 // Forward Declarations
 void files_refresh();
+void files_on_scroll(int delta);
+
+// External desktop path for sync
+extern char g_desktop_path[128];
+extern void desktop_refresh();
+
+// ===== Scrollbar helpers =====
+
+// Calculate the max scroll offset based on content size
+// win_w, win_h are the FULL window dimensions (including title bar)
+static int files_max_scroll(int win_w, int win_h) {
+    int cols = (win_w - MARGIN_LEFT - SCROLLBAR_W) / CELL_W;
+    if (cols < 1) cols = 1;
+    int total_rows = (last_count + cols - 1) / cols;
+    int total_content_h = total_rows * CELL_H;
+    int visible_h = win_h - MARGIN_TOP;
+    int max_s = total_content_h - visible_h;
+    if (max_s < 0) max_s = 0;
+    return max_s;
+}
+
+// Clamp scroll_offset to valid range
+static void files_clamp_scroll(int win_w, int win_h) {
+    int max_s = files_max_scroll(win_w, win_h);
+    if (scroll_offset < 0) scroll_offset = 0;
+    if (scroll_offset > max_s) scroll_offset = max_s;
+}
+
+// Scroll callback — called from the main loop via window->scroll_callback
+void files_on_scroll(int delta) {
+    scroll_offset -= delta * CELL_H;
+    // Content area dimensions: window(550x400) minus title bar(30px)
+    files_clamp_scroll(550, 370);
+}
 extern void sys_fs_copy_recursive(const char* src, const char* dest);
 extern int sys_fs_delete_recursive(const char* path);
 extern void sys_fs_generate_unique_name(const char* path, const char* base, int is_dir, char* out);
@@ -98,6 +143,7 @@ void files_refresh() {
     ctx_active = 0;
     prompt_active = 0;
     scroll_offset = 0;
+    sb_dragging = 0;  // Reset scrollbar drag on refresh
     
     uint32_t blk = 0;
     extern int get_dir_block(const char*, uint32_t*);
@@ -157,6 +203,11 @@ void op_paste() {
         clipboard_active = 0;
     }
     files_refresh();
+    
+    // Sync desktop if we modified the desktop directory
+    if (strcmp(fm_path, g_desktop_path) == 0) {
+        desktop_refresh();
+    }
 }
 
 void op_delete() {
@@ -175,6 +226,11 @@ void op_delete() {
         sys_fs_delete(path);
     
     files_refresh();
+    
+    // Sync desktop if we modified the desktop directory
+    if (strcmp(fm_path, g_desktop_path) == 0) {
+        desktop_refresh();
+    }
 }
 
 void op_new_item(int is_dir) {
@@ -195,6 +251,11 @@ void op_commit_new_item() {
     sys_fs_create(path, prompt_is_dir);
     prompt_active = 0;
     files_refresh();
+    
+    // Sync desktop if we modified the desktop directory
+    if (strcmp(fm_path, g_desktop_path) == 0) {
+        desktop_refresh();
+    }
 }
 
 // ===== Context Menu =====
@@ -332,9 +393,10 @@ void files_ctx_click(int click_x, int click_y) {
 // ===== Input Handling =====
 void files_on_input(int key) {
     if (prompt_active) {
-        if (key == '\n') {
+        // Accept both LF (10) and CR (13) as Enter/Return
+        if (key == '\n' || key == '\r' || key == 13) {
             op_commit_new_item();
-        } else if (key == '\b') {
+        } else if (key == '\b' || key == 127) {
             if (prompt_len > 0) {
                 prompt_len--;
                 prompt_buffer[prompt_len] = 0;
@@ -348,7 +410,7 @@ void files_on_input(int key) {
         return;
     }
     
-    if (key == '\b') op_up_dir();  // Backspace goes up
+    if (key == '\b' || key == 127) op_up_dir();  // Backspace goes up
     if (key == 0x107 || key == 0x14B) op_up_dir();  // Left arrow or back
 }
 
@@ -429,10 +491,11 @@ void files_on_paint(int x, int y, int w, int h) {
     // Toolbar
     draw_toolbar(x, y, w);
     
-    // Content area
+    // Content area (exclude scrollbar width)
+    int content_w = w - SCROLLBAR_W;
     int content_y = y + MARGIN_TOP;
     int content_h = h - MARGIN_TOP;
-    int cols = (w - MARGIN_LEFT) / CELL_W;
+    int cols = (content_w - MARGIN_LEFT) / CELL_W;
     if (cols < 1) cols = 1;
     
     // Draw folder icons in a grid
@@ -471,6 +534,31 @@ void files_on_paint(int x, int y, int w, int h) {
         // Shadow for readability
         sys_gfx_string(lx + 1, label_y + 1, display_name, 0xFF000000);
         sys_gfx_string(lx, label_y, display_name, 0xFF333333);
+    }
+    
+    // ===== Scrollbar =====
+    int max_s = files_max_scroll(w, h);
+    if (max_s > 0) {
+        int sb_x = x + w - SCROLLBAR_W;
+        int sb_track_y = content_y;
+        int sb_track_h = content_h;
+        
+        // Track background
+        gfx_fill_rect(sb_x, sb_track_y, SCROLLBAR_W, sb_track_h, 0xFFE8E8ED);
+        // Track border
+        gfx_draw_rect(sb_x, sb_track_y, SCROLLBAR_W, sb_track_h, 0xFFD1D1D6);
+        
+        // Thumb
+        int thumb_h = (sb_track_h * sb_track_h) / (sb_track_h + max_s);
+        if (thumb_h < SCROLLBAR_MIN_H) thumb_h = SCROLLBAR_MIN_H;
+        int thumb_y = sb_track_y + (scroll_offset * (sb_track_h - thumb_h)) / max_s;
+        
+        // Thumb body (rounded look)
+        gfx_fill_rect(sb_x + SCROLLBAR_PAD, thumb_y, 
+                       SCROLLBAR_W - SCROLLBAR_PAD * 2, thumb_h, 0xFFC1C1C6);
+        // Thumb highlight (top)
+        gfx_fill_rect(sb_x + SCROLLBAR_PAD + 1, thumb_y, 
+                       SCROLLBAR_W - SCROLLBAR_PAD * 2 - 2, 1, 0xFFD4D4D8);
     }
     
     // Prompt overlay (new folder/file name)
@@ -529,26 +617,41 @@ void files_on_paint(int x, int y, int w, int h) {
 
 // ===== Mouse Handling =====
 void files_on_mouse(int x, int y, int btn) {
-    // Handle scroll wheel
-    extern int mouse_scroll_delta;
-    if (mouse_scroll_delta != 0) {
-        scroll_offset -= mouse_scroll_delta * CELL_H;
-        int cols = (550 - MARGIN_LEFT) / CELL_W;
-        if (cols < 1) cols = 1;
-        int max_scroll = ((last_count + cols - 1) / cols) * CELL_H - 400 + MARGIN_TOP;
-        if (max_scroll < 0) max_scroll = 0;
-        if (scroll_offset < 0) scroll_offset = 0;
-        if (scroll_offset > max_scroll) scroll_offset = max_scroll;
-        mouse_scroll_delta = 0;
-        return;
+    // Content area dimensions — must match paint callback (window minus title bar)
+    int win_w = 550, win_h = 370;
+    int content_y_offset = MARGIN_TOP;
+    int content_h = win_h - MARGIN_TOP;
+    int cols = (win_w - MARGIN_LEFT - SCROLLBAR_W) / CELL_W;
+    if (cols < 1) cols = 1;
+
+    // ---- Scrollbar drag handling ----
+    if (sb_dragging) {
+        if (btn == 1) {
+            int max_s = files_max_scroll(win_w, win_h);
+            if (max_s > 0) {
+                int sb_track_h = content_h;
+                int thumb_h = (sb_track_h * sb_track_h) / (sb_track_h + max_s);
+                if (thumb_h < SCROLLBAR_MIN_H) thumb_h = SCROLLBAR_MIN_H;
+                int track_travel = sb_track_h - thumb_h;
+                if (track_travel > 0) {
+                    int dy = y - sb_drag_start_y;
+                    int d_offset = (dy * max_s) / track_travel;
+                    scroll_offset = sb_drag_start_offset + d_offset;
+                    files_clamp_scroll(win_w, win_h);
+                }
+            }
+            return;
+        } else {
+            sb_dragging = 0;
+        }
     }
-    
-    // Handle prompt mode - check button clicks
+
+    // ---- Handle prompt mode - check button clicks ----
     if (prompt_active) {
         if (btn == 1) {
             int pw = 320, ph = 130;
-            int px_off = (550 - pw) / 2;  // 550 is window width
-            int py_off = 200 / 2 - 65;     // approximate center
+            int px_off = (win_w - pw) / 2;
+            int py_off = win_h / 2 - 65;
             
             // Cancel button
             if (x >= px_off + 16 && x <= px_off + 116 && y >= py_off + 86 && y <= py_off + 118) {
@@ -564,7 +667,7 @@ void files_on_mouse(int x, int y, int btn) {
         return;
     }
     
-    // Handle context menu click
+    // ---- Handle context menu click ----
     if (ctx_active) {
         if (btn == 1) {
             files_ctx_click(x, y);
@@ -573,15 +676,38 @@ void files_on_mouse(int x, int y, int btn) {
         return;
     }
     
-    // Handle toolbar clicks
+    // ---- Handle toolbar clicks ----
     if (handle_toolbar_click(x, y, btn, 0, 0)) return;
-    
-    // Handle content area clicks
-    int content_y_offset = MARGIN_TOP;
-    int cols = (550 - MARGIN_LEFT) / CELL_W;  // Use window width
-    if (cols < 1) cols = 1;
-    
-    // Check icon clicks
+
+    // ---- Scrollbar click/drag ----
+    int max_s = files_max_scroll(win_w, win_h);
+    if (max_s > 0 && x >= win_w - SCROLLBAR_W && btn == 1) {
+        int sb_track_y = content_y_offset;
+        int sb_track_h = content_h;
+        int thumb_h = (sb_track_h * sb_track_h) / (sb_track_h + max_s);
+        if (thumb_h < SCROLLBAR_MIN_H) thumb_h = SCROLLBAR_MIN_H;
+        int thumb_y = sb_track_y + (scroll_offset * (sb_track_h - thumb_h)) / max_s;
+
+        if (y >= thumb_y && y < thumb_y + thumb_h) {
+            // Clicked on thumb — start drag
+            sb_dragging = 1;
+            sb_drag_start_y = y;
+            sb_drag_start_offset = scroll_offset;
+            return;
+        } else if (y < thumb_y) {
+            // Clicked above thumb — page up
+            scroll_offset -= content_h;
+            files_clamp_scroll(win_w, win_h);
+            return;
+        } else {
+            // Clicked below thumb — page down
+            scroll_offset += content_h;
+            files_clamp_scroll(win_w, win_h);
+            return;
+        }
+    }
+
+    // ---- Handle content area clicks ----
     for(int i = 0; i < last_count; i++) {
         int col = i % cols;
         int row = i / cols;
@@ -647,7 +773,10 @@ void files_menu_action(int menu_idx, int item_idx) {
 void init_files_app() {
     files_refresh();
     nav_push(fm_path);
-    Window* w = fw_create_window("Finder", 550, 400, files_on_paint, files_on_input, files_on_mouse);
+    window_t* w = ws_create_window("Finder", 550, 400, files_on_paint, files_on_input, files_on_mouse);
+    
+    // Set scroll callback so the main loop can dispatch scroll wheel events
+    w->scroll_callback = (void*)files_on_scroll;
     
     w->menu_count = 3;
     strcpy(w->menus[0].name, "File");

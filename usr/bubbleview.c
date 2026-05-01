@@ -163,6 +163,14 @@ static window_t* drag_win = 0;
 static int drag_off_x = 0;
 static int drag_off_y = 0;
 
+// Dirty-region tracking for drag optimisation
+// Records the window's position BEFORE the drag update so we can
+// repaint only the union of old+new rects instead of the whole screen.
+static int drag_prev_x = 0, drag_prev_y = 0;
+static int drag_was_active = 0;   // 1 when the previous frame was a drag frame
+
+#define DRAG_SHADOW_PAD 12       // extra pixels around the window for shadow
+
 static window_t* resize_win = 0;
 static int resize_orig_w, resize_orig_h;
 static int resize_mx, resize_my;
@@ -1060,6 +1068,17 @@ void start_bubble_view() {
         // NORMAL GUI MODE - Desktop interaction
         // ============================================
 
+        // --- FLICKER FIX: Save old drag position BEFORE input updates it ---
+        if (drag_win) {
+            drag_prev_x = drag_win->x;
+            drag_prev_y = drag_win->y;
+        }
+
+        // --- FLICKER FIX: Process input BEFORE rendering ---
+        // Previously handle_input was called AFTER gfx_swap_buffers(), which meant
+        // the window position was always one frame behind the visual output.
+        handle_input(mx, my, lb, rb);
+
         // App Switcher Logic
         int ctrl = 0, shift = 0, alt = 0;
         sys_kbd_state(&ctrl, &shift, &alt);
@@ -1075,14 +1094,49 @@ void start_bubble_view() {
              ((icb)active_win->input_callback)((int)k);
         }
 
+        // --- FLICKER FIX: Dirty-region optimisation for window dragging ---
+        // When a window is being dragged, only repaint the bounding box of its
+        // old and new positions instead of the full screen.  This cuts the
+        // wallpaper memcpy from ~3 MB to a small fraction, keeping each frame
+        // well within the vsync interval.
         buffer = gfx_get_active_buffer();
-        desktop_draw(buffer);
 
-        for(int i=0; i<MAX_WINDOWS; i++) {
-            window_t* w = ws_get_window_at_index(i);
-            if(!w || !w->is_visible) continue;
-            draw_window_animated(w, mx, my);
+        if (drag_was_active && drag_win) {
+            // Compute dirty rect = union of old position + new position + shadow pad
+            int ox = drag_prev_x, oy = drag_prev_y;
+            int nx = drag_win->x,   ny = drag_win->y;
+            int ww = drag_win->width, wh = drag_win->height;
+
+            int dx1 = (ox < nx ? ox : nx) - DRAG_SHADOW_PAD;
+            int dy1 = (oy < ny ? oy : ny) - DRAG_SHADOW_PAD;
+            int dx2 = ((ox + ww > nx + ww ? ox : nx) + ww) + DRAG_SHADOW_PAD;
+            int dy2 = ((oy + wh > ny + wh ? oy : ny) + wh) + DRAG_SHADOW_PAD;
+
+            // Restore wallpaper in dirty region from cache (fast per-row memcpy)
+            desktop_fill_wallpaper_region(buffer, dx1, dy1, dx2 - dx1, dy2 - dy1);
+            // Redraw desktop icons (they may have been uncovered)
+            desktop_draw_icons(buffer);
+
+            // Redraw all windows (those outside the dirty rect paint over
+            // unchanged pixels — harmless and cheaper than overlap testing)
+            for(int i=0; i<MAX_WINDOWS; i++) {
+                window_t* w = ws_get_window_at_index(i);
+                if(!w || !w->is_visible) continue;
+                draw_window_animated(w, mx, my);
+            }
+        } else {
+            // Full redraw (wallpaper cache makes this a fast memcpy)
+            desktop_draw(buffer);
+
+            for(int i=0; i<MAX_WINDOWS; i++) {
+                window_t* w = ws_get_window_at_index(i);
+                if(!w || !w->is_visible) continue;
+                draw_window_animated(w, mx, my);
+            }
         }
+
+        // Update drag state for next frame's dirty-region decision
+        drag_was_active = (drag_win != 0) ? 1 : 0;
 
         frame_counter++;
 
@@ -1153,7 +1207,10 @@ void start_bubble_view() {
         extern void gfx_swap_buffers();
         gfx_swap_buffers();
 
-        handle_input(mx, my, lb, rb);
+        // NOTE: handle_input was already called BEFORE rendering (line above).
+        // Do NOT call it again here — duplicate calls cause double-processing
+        // of mouse events and window position updates after the buffer swap,
+        // which results in visible flickering.
 
         prev_lb = lb;
         prev_rb = rb;
