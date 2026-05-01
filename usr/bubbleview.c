@@ -651,8 +651,45 @@ void ctx_menu_handle_click(int mx, int my) {
     extern int wrap_exec_with_args(const char*, const char*);
 
     switch(action) {
-        case 1: { /* New Folder */ char new_path[256]; strcpy(new_path, g_desktop_path); strcat(new_path, "/New Folder"); int counter = 1; char test_path[256]; while(1) { strcpy(test_path, new_path); if(counter > 1) { char num[10]; int_to_str(counter, num); strcat(test_path, " "); strcat(test_path, num); } strcat(test_path, "/"); if(!sys_fs_exists(test_path)) { strcpy(new_path, test_path); new_path[strlen(new_path)-1] = 0; break; } counter++; } sys_fs_create(new_path, 1); desktop_refresh(); } break;
-        case 2: /* New File */ { char dp[256]; strcpy(dp, g_desktop_path); strcat(dp, "/New_Text.txt"); sys_fs_create(dp, 0); desktop_refresh(); } break;
+        case 1: { /* New Folder */
+            char new_path[256];
+            strcpy(new_path, g_desktop_path);
+            strcat(new_path, "/New Folder");
+            int counter = 1;
+            while(1) {
+                // Check if the path exists directly (no trailing slash)
+                if(!sys_fs_exists(new_path)) {
+                    break;
+                }
+                counter++;
+                strcpy(new_path, g_desktop_path);
+                strcat(new_path, "/New Folder ");
+                char num[10];
+                int_to_str(counter, num);
+                strcat(new_path, num);
+            }
+            int res = sys_fs_create(new_path, 1);
+            if (res == 0 || res == -5) { // Success or already exists
+                desktop_refresh();
+            }
+        } break;
+        case 2: /* New File */ {
+            char dp[256];
+            strcpy(dp, g_desktop_path);
+            strcat(dp, "/New_Text.txt");
+            int counter = 1;
+            while(sys_fs_exists(dp)) {
+                counter++;
+                strcpy(dp, g_desktop_path);
+                strcat(dp, "/New_Text_");
+                char num[10];
+                int_to_str(counter, num);
+                strcat(dp, num);
+                strcat(dp, ".txt");
+            }
+            sys_fs_create(dp, 0);
+            desktop_refresh();
+        } break;
         case 3: /* Rename */ renaming_mode = 1; rename_cursor = 0; rename_buffer[0] = 0; menu_rect_x = mx; menu_rect_y = my + 20; g_ctx_menu.active = 0; break;
         case 4: /* Delete */ sys_fs_delete_recursive(target_name); desktop_refresh(); break;
         case 5: /* Copy */ strcpy(clip_file_path, target_name); clip_is_cut = 0; clip_active = 1; break;

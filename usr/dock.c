@@ -28,13 +28,12 @@ void dock_add_app(const char* label, const char* path, const char* icon_res);
 void dock_init() {
     dock_count = 0;
     // Register Default Apps - Using /Applications/ path (macOS-like)
-    // These .app bundles live in /Applications/ and resolve via app_bundle system
-    // Note: Only apps with actual .cdl binaries will launch successfully
+    // These .app bundles now have proper Info.plist and bundle structures
+    // that the app_bundle system can resolve to CDL executables or built-in apps
     dock_add_app("Finder",    "/Applications/Files.app",      "folder");
     dock_add_app("Terminal",  "/Applications/Terminal.app",   "terminal");
     dock_add_app("Monitor",   "/Applications/Monitor.app",    "waterhole");
     dock_add_app("NetDiag",   "/Applications/NetDiag.app",    "networking");
-    dock_add_app("NetTools",  "/Applications/NetTools.app",   "networking");
     dock_add_app("TextEdit",  "/Applications/TextEdit.app",   "file");
     dock_add_app("Browser",   "/Applications/Browser.app",    "browser");
     dock_add_app("Settings",  "/Applications/Settings.app",   "hdd_icon");
@@ -196,6 +195,7 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         if(i==3) asset = "networking";
         if(i==4) asset = "file";
         if(i==5) asset = "browser";
+        if(i==6) asset = "hdd_icon";
 
         cm_draw_image(buffer, asset, x_pos[i], y, sz, sz);
 

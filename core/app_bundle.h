@@ -22,12 +22,14 @@
 #define PLIST_KEY_CFTYPE         "CFBundleType"
 #define PLIST_KEY_CFICON         "CFBundleIconFile"
 #define PLIST_KEY_CFMINOS        "CFBundleMinOSVersion"
+#define PLIST_KEY_CFCDLPATH      "CFBundleCDLPath"
 
 // App bundle types
 #define APP_TYPE_CDL_COMPAT      "cdl"      // Legacy CDL-based app
 #define APP_TYPE_ELF             "elf"      // Native ELF executable
 #define APP_TYPE_MACHO           "macho"    // Mach-O binary (macOS compat)
 #define APP_TYPE_OBJC            "objc"     // Objective-C app
+#define APP_TYPE_BUILTIN         "builtin"  // Built-in kernel app (compiled in)
 
 // Maximum sizes
 #define BUNDLE_PATH_MAX  256
@@ -41,9 +43,10 @@ typedef struct {
     char identifier[BUNDLE_ID_MAX];
     char executable[BUNDLE_NAME_MAX];
     char version[16];
-    char type[16];           // "cdl", "elf", "macho", "objc"
+    char type[16];           // "cdl", "elf", "macho", "objc", "builtin"
     char icon_file[64];
     char min_os_version[16];
+    char cdl_path[BUNDLE_PATH_MAX];  // Direct path to CDL file (if type=cdl)
 } AppBundleInfo;
 
 // Loaded app bundle state

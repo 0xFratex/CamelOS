@@ -1641,16 +1641,18 @@ void install_tick(void) {
 
     // Smooth progress animation: gradually move install_pct toward install_target_pct
     if (install_pct < install_target_pct) {
-        install_pct += 3;
+        install_pct += 2;
         if (install_pct > install_target_pct) install_pct = install_target_pct;
     }
 
-    // Auto-advance: if progress animation is close enough (within 5%), don't block
-    // step transitions. This prevents the installer from getting stuck at ~29%.
-    #define PROGRESS_CLOSE(a, b) ((a) >= (b) - 5)
+    // Progress is considered "caught up" when within 3% of target or when
+    // the watchdog timer fires. This prevents the installer from getting
+    // stuck at ~28-29% where animation hasn't reached the target yet.
+    #define PROGRESS_CLOSE(a, b) ((a) >= (b) - 3)
 
     // Watchdog: if any step spends too long waiting for animation, force-advance
     // (install_idle_ticks is a file-scope variable)
+    // Reduced from 60 to 30 ticks to prevent visible stalling
 
     if (install_step == 0) {
         if (install_step_tick == 0) {
@@ -1679,7 +1681,7 @@ void install_tick(void) {
             install_idle_ticks = 0;
         } else {
             install_idle_ticks++;
-            if (install_idle_ticks > 60) { install_step++; install_step_tick = 0; install_idle_ticks = 0; }
+            if (install_idle_ticks > 30) { install_step++; install_step_tick = 0; install_idle_ticks = 0; }
         }
         return;
     }
@@ -1714,7 +1716,7 @@ void install_tick(void) {
                 install_idle_ticks = 0;
             } else {
                 install_idle_ticks++;
-                if (install_idle_ticks > 60) { install_step++; add_log("Kernel copied"); install_step_tick = 0; install_idle_ticks = 0; }
+                if (install_idle_ticks > 30) { install_step++; add_log("Kernel copied"); install_step_tick = 0; install_idle_ticks = 0; }
             }
         }
         return;
@@ -1744,7 +1746,7 @@ void install_tick(void) {
             install_idle_ticks = 0;
         } else {
             install_idle_ticks++;
-            if (install_idle_ticks > 60) { install_step++; install_step_tick = 0; add_log("PFS32 formatted"); install_idle_ticks = 0; }
+            if (install_idle_ticks > 30) { install_step++; install_step_tick = 0; add_log("PFS32 formatted"); install_idle_ticks = 0; }
         }
         return;
     }
@@ -1769,7 +1771,7 @@ void install_tick(void) {
                 install_idle_ticks = 0;
             } else {
                 install_idle_ticks++;
-                if (install_idle_ticks > 60) { install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0; install_idle_ticks = 0; }
+                if (install_idle_ticks > 30) { install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0; install_idle_ticks = 0; }
             }
             return;
         }
@@ -1786,17 +1788,59 @@ void install_tick(void) {
             install_target_pct = 47 + (install_file_idx * 43) / 9;
             return;
         }
-        // Create .app bundle directory stubs in /Applications/ for dock compatibility
+        // Create proper .app bundle structures in /Applications/ for dock compatibility
+        // Each bundle gets a Contents/MacOS directory and an Info.plist that
+        // allows the app_bundle resolver to find the CDL executable or built-in app
         {
-            const char* app_bundles[] = {
-                "/Applications/Files.app", "/Applications/Terminal.app",
-                "/Applications/Waterhole.app", "/Applications/NetTools.app",
-                "/Applications/NetDiag.app", "/Applications/TextEdit.app",
-                "/Applications/Browser.app", "/Applications/Settings.app",
-                "/Applications/Monitor.app"
+            struct { const char* path; const char* name; const char* cdl; const char* type; } app_bundles[] = {
+                {"/Applications/Files.app",     "Files",     "/usr/lib/gui.cdl",     "cdl"},
+                {"/Applications/Terminal.app",  "Terminal",  "",                      "builtin"},
+                {"/Applications/Monitor.app",   "Monitor",   "/usr/lib/sysmon.cdl",  "cdl"},
+                {"/Applications/NetDiag.app",   "NetDiag",   "/usr/apps/NetDiag.cdl","cdl"},
+                {"/Applications/TextEdit.app",  "TextEdit",  "",                      "builtin"},
+                {"/Applications/Browser.app",   "Browser",   "",                      "builtin"},
+                {"/Applications/Settings.app",  "Settings",  "",                      "builtin"},
             };
-            for (int i = 0; i < 9; i++) {
-                pfs32_create_directory(app_bundles[i]);
+            for (int i = 0; i < 7; i++) {
+                // Create the .app bundle directory structure
+                pfs32_create_directory(app_bundles[i].path);
+                
+                char contents_path[256];
+                strcpy(contents_path, app_bundles[i].path);
+                strcat(contents_path, "/Contents");
+                pfs32_create_directory(contents_path);
+                
+                char macos_path[256];
+                strcpy(macos_path, contents_path);
+                strcat(macos_path, "/MacOS");
+                pfs32_create_directory(macos_path);
+                
+                char res_path[256];
+                strcpy(res_path, contents_path);
+                strcat(res_path, "/Resources");
+                pfs32_create_directory(res_path);
+                
+                // Write Info.plist with app metadata
+                char plist_path[256];
+                strcpy(plist_path, contents_path);
+                strcat(plist_path, "/Info.plist");
+                
+                char plist[512];
+                int plen = 0;
+                plen += sprintf(plist + plen, "# CamelOS App Bundle Info\n");
+                plen += sprintf(plist + plen, "CFBundleName=%s\n", app_bundles[i].name);
+                plen += sprintf(plist + plen, "CFBundleIdentifier=com.camelos.%s\n", app_bundles[i].name);
+                plen += sprintf(plist + plen, "CFBundleExecutable=%s\n", app_bundles[i].name);
+                plen += sprintf(plist + plen, "CFBundleVersion=1.0\n");
+                plen += sprintf(plist + plen, "CFBundleType=%s\n", app_bundles[i].type);
+                plen += sprintf(plist + plen, "CFBundleMinOSVersion=1.0\n");
+                if (app_bundles[i].cdl[0]) {
+                    plen += sprintf(plist + plen, "CFBundleCDLPath=%s\n", app_bundles[i].cdl);
+                }
+                
+                // Create plist file and write content
+                pfs32_create_file(plist_path);
+                pfs32_write_file(plist_path, (uint8_t*)plist, plen);
             }
         }
         pfs32_sync(); disk_flush_cache();
@@ -1807,7 +1851,7 @@ void install_tick(void) {
             install_idle_ticks = 0;
         } else {
             install_idle_ticks++;
-            if (install_idle_ticks > 60) { install_step++; install_sub_step=0; install_step_tick = 0; install_idle_ticks = 0; }
+            if (install_idle_ticks > 30) { install_step++; install_sub_step=0; install_step_tick = 0; install_idle_ticks = 0; }
         }
         return;
     }

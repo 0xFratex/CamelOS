@@ -59,14 +59,21 @@ void desktop_refresh() {
     // Use the dynamic path (resolved from config in desktop_init)
     const char* desktop_path = g_desktop_path;
     if(get_dir_block(desktop_path, &blk) != 0) {
-        // Try the legacy fallback path
-        if(get_dir_block(DESKTOP_PATH_LEGACY, &blk) != 0) {
-            // Neither exists - create the dynamic path
-            // Ensure /Users exists first
-            sys_fs_create("/Users", 1);
-            sys_fs_create(g_desktop_path, 1);
-            get_dir_block(g_desktop_path, &blk);
+        // Dynamic path failed - create the full path structure
+        // First ensure /Users exists
+        sys_fs_create("/Users", 1);
+        
+        // Extract username from g_desktop_path to create /Users/<name>/Desktop
+        char user_home[128];
+        strcpy(user_home, g_desktop_path);
+        // Find the "/Desktop" suffix and truncate to get /Users/<name>
+        char* desktop_suffix = strstr(user_home, "/Desktop");
+        if (desktop_suffix) {
+            *desktop_suffix = 0;  // Truncate at /Desktop
+            sys_fs_create(user_home, 1);
         }
+        sys_fs_create(g_desktop_path, 1);
+        get_dir_block(g_desktop_path, &blk);
     }
     
     // Clear old state explicitly
@@ -83,9 +90,26 @@ void desktop_refresh() {
     if (blk != 0xFFFFFFFF) {
         pfs32_direntry_t temp[32];
         int raw = sys_fs_list_dir(g_desktop_path, temp, 32);
+        // Deduplicate: track seen filenames to prevent duplicate entries
+        char seen_names[32][40];
+        int seen_count = 0;
         for(int i=0; i<raw; i++) {
-            if(temp[i].filename[0] != 0 && temp[i].filename[0] != '.') {
-                desk_entries[desk_count++] = temp[i];
+            if(temp[i].filename[0] != 0 && temp[i].filename[0] != '.' &&
+               strcmp(temp[i].filename, ".") != 0 && strcmp(temp[i].filename, "..") != 0) {
+                // Check for duplicates
+                int is_dup = 0;
+                for(int j=0; j<seen_count; j++) {
+                    if(strcmp(seen_names[j], temp[i].filename) == 0) {
+                        is_dup = 1;
+                        break;
+                    }
+                }
+                if(!is_dup && desk_count < 32) {
+                    strncpy(seen_names[seen_count], temp[i].filename, 39);
+                    seen_names[seen_count][39] = 0;
+                    seen_count++;
+                    desk_entries[desk_count++] = temp[i];
+                }
             }
         }
     }

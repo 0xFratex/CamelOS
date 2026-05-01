@@ -197,19 +197,29 @@ int welcome_setup_save_config(void) {
     sys_fs_create("/Library", 1);
     sys_fs_create("/Library/Preferences", 1);
     
-    // Delete old config file if it exists, then create fresh and write
-    sys_fs_delete("/Library/Preferences/system.conf");
-    sys_fs_create("/Library/Preferences/system.conf", 0);
+    // Write config file - pfs32_write_file handles creation and overwrite internally.
+    // Do NOT delete+create separately as that can cause race conditions and
+    // duplicate directory entries. Just write directly.
     int wres = sys_fs_write("/Library/Preferences/system.conf", buffer, pos);
+    
+    // Flush immediately after writing the config to ensure persistence
+    pfs32_sync();
+    disk_flush_cache();
     
     // Verify the write succeeded by reading back
     if (wres > 0) {
         char verify[64];
         int vres = sys_fs_read("/Library/Preferences/system.conf", verify, sizeof(verify) - 1);
         if (vres <= 0 || strncmp(verify, "# CamelOS", 9) != 0) {
-            // Primary write failed verification
-            s_printf("[SETUP] ERROR: Config write verification failed!\n");
-            wres = -1;
+            // Primary write failed verification - try deleting and rewriting
+            s_printf("[SETUP] WARNING: Config verification failed, retrying...\n");
+            sys_fs_delete("/Library/Preferences/system.conf");
+            wres = sys_fs_write("/Library/Preferences/system.conf", buffer, pos);
+            pfs32_sync();
+            disk_flush_cache();
+            if (wres <= 0) {
+                s_printf("[SETUP] ERROR: Config rewrite also failed!\n");
+            }
         }
     } else {
         s_printf("[SETUP] ERROR: Failed to write config file!\n");
@@ -217,8 +227,6 @@ int welcome_setup_save_config(void) {
     
     // Also write to legacy path for backward compatibility during transition
     sys_fs_create("/etc", 1);
-    sys_fs_delete("/etc/system.conf");
-    sys_fs_create("/etc/system.conf", 0);
     sys_fs_write("/etc/system.conf", buffer, pos);
     
     // Create macOS-like user directory structure
@@ -269,8 +277,9 @@ int welcome_setup_save_config(void) {
     strcat(home_path, "/Public");
     sys_fs_create(home_path, 1);
     
-    // NOTE: Do NOT create /home/desktop - it causes duplicate folder issues.
-    // The desktop.c module now reads username from config and uses /Users/<name>/Desktop.
+    // NOTE: Do NOT create /Users/Desktop or /home/desktop - it causes duplicate folder issues.
+    // The desktop.c module reads username from config and uses /Users/<name>/Desktop.
+    // Only the user-specific Desktop at /Users/<username>/Desktop should exist.
     
     // Create macOS system directories
     sys_fs_create("/Applications", 1);

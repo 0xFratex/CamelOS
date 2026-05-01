@@ -80,6 +80,8 @@ int app_bundle_parse_plist(const char* bundle_path, AppBundleInfo* info) {
             strncpy(info->icon_file, value, 63);
         } else if (strcmp(key, PLIST_KEY_CFMINOS) == 0) {
             strncpy(info->min_os_version, value, 15);
+        } else if (strcmp(key, PLIST_KEY_CFCDLPATH) == 0) {
+            strncpy(info->cdl_path, value, BUNDLE_PATH_MAX - 1);
         }
         
         line = next;
@@ -99,6 +101,21 @@ const char* app_bundle_resolve_executable(const char* app_path) {
         AppBundleInfo info;
         memset(&info, 0, sizeof(info));
         app_bundle_parse_plist(app_path, &info);
+        
+        // If the plist specifies a direct CDL path, use it first
+        if (info.cdl_path[0] && sys_fs_exists(info.cdl_path)) {
+            strcpy(resolved, info.cdl_path);
+            return resolved;
+        }
+        
+        // If the app type is "builtin", return a special path that the
+        // kernel's execute_program can recognize
+        if (strcmp(info.type, "builtin") == 0) {
+            // Built-in apps are compiled into the kernel
+            // Return the app path itself - the launcher will detect the type
+            strcpy(resolved, app_path);
+            return resolved;
+        }
         
         if (info.executable[0]) {
             // Use the executable name from plist
@@ -167,6 +184,16 @@ int app_bundle_load(const char* path) {
     if (len > 4 && strcmp(path + len - 4, ".app") == 0) {
         // Parse the bundle's Info.plist
         app_bundle_parse_plist(path, &bundle->info);
+        
+        // Handle built-in apps - these are compiled into the kernel
+        // and launched via the kernel's built-in app dispatch mechanism
+        if (strcmp(bundle->info.type, APP_TYPE_BUILTIN) == 0) {
+            bundle->active = 1;
+            s_printf("[BUNDLE] Built-in app: ");
+            s_printf(bundle->info.name[0] ? bundle->info.name : path);
+            s_printf(" (launched via kernel dispatch)\n");
+            return slot;
+        }
         
         // Resolve the executable
         const char* exec_path = app_bundle_resolve_executable(path);

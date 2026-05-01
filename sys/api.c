@@ -156,15 +156,50 @@ int sys_fs_mount() {
             pfs32_create_directory("/Library/Preferences");
             pfs32_create_directory("/etc");
 
-            // Create .app bundle directory stubs for dock compatibility
-            const char* app_bundles[] = {
-                "/Applications/Files.app", "/Applications/Terminal.app",
-                "/Applications/Monitor.app", "/Applications/NetDiag.app",
-                "/Applications/NetTools.app", "/Applications/TextEdit.app",
-                "/Applications/Browser.app", "/Applications/Settings.app"
+            // Create .app bundle structures for dock compatibility
+            // Each bundle gets Contents/MacOS and Info.plist
+            struct { const char* path; const char* name; const char* cdl; const char* type; } app_bundles[] = {
+                {"/Applications/Files.app",     "Files",     "/usr/lib/gui.cdl",     "cdl"},
+                {"/Applications/Terminal.app",  "Terminal",  "",                      "builtin"},
+                {"/Applications/Monitor.app",   "Monitor",   "/usr/lib/sysmon.cdl",  "cdl"},
+                {"/Applications/NetDiag.app",   "NetDiag",   "/usr/apps/NetDiag.cdl","cdl"},
+                {"/Applications/TextEdit.app",  "TextEdit",  "",                      "builtin"},
+                {"/Applications/Browser.app",   "Browser",   "",                      "builtin"},
+                {"/Applications/Settings.app",  "Settings",  "",                      "builtin"},
             };
-            for (int i = 0; i < 8; i++) {
-                pfs32_create_directory(app_bundles[i]);
+            for (int i = 0; i < 7; i++) {
+                pfs32_create_directory(app_bundles[i].path);
+                char contents_path[256];
+                strcpy(contents_path, app_bundles[i].path);
+                strcat(contents_path, "/Contents");
+                pfs32_create_directory(contents_path);
+                char macos_path[256];
+                strcpy(macos_path, contents_path);
+                strcat(macos_path, "/MacOS");
+                pfs32_create_directory(macos_path);
+                char res_path[256];
+                strcpy(res_path, contents_path);
+                strcat(res_path, "/Resources");
+                pfs32_create_directory(res_path);
+                
+                // Write Info.plist
+                char plist_path[256];
+                strcpy(plist_path, contents_path);
+                strcat(plist_path, "/Info.plist");
+                char plist[512];
+                int plen = 0;
+                plen += sprintf(plist + plen, "# CamelOS App Bundle Info\n");
+                plen += sprintf(plist + plen, "CFBundleName=%s\n", app_bundles[i].name);
+                plen += sprintf(plist + plen, "CFBundleIdentifier=com.camelos.%s\n", app_bundles[i].name);
+                plen += sprintf(plist + plen, "CFBundleExecutable=%s\n", app_bundles[i].name);
+                plen += sprintf(plist + plen, "CFBundleVersion=1.0\n");
+                plen += sprintf(plist + plen, "CFBundleType=%s\n", app_bundles[i].type);
+                plen += sprintf(plist + plen, "CFBundleMinOSVersion=1.0\n");
+                if (app_bundles[i].cdl[0]) {
+                    plen += sprintf(plist + plen, "CFBundleCDLPath=%s\n", app_bundles[i].cdl);
+                }
+                pfs32_create_file(plist_path);
+                pfs32_write_file(plist_path, (uint8_t*)plist, plen);
             }
 
             pfs32_sync();
