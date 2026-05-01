@@ -729,8 +729,16 @@ int process_menu_bar(int px, int py, int click) {
         int my2 = HEADER_HEIGHT;
         if (click && px >= cur_x && px < cur_x + 160 && py >= my2) {
             int ry = py - my2;
-            if (ry >= 40 && ry < 60) outb(0x64, 0xFE);
-            else if (ry >= 60 && ry < 80) { outw(0x604, 0x2000); asm volatile("cli; hlt"); }
+            if (ry >= 40 && ry < 60) {
+                disk_flush_cache();
+                for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller
+                outb(0x64, 0xFE);
+            }
+            else if (ry >= 60 && ry < 80) {
+                disk_flush_cache();
+                for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller
+                outw(0x604, 0x2000); asm volatile("cli; hlt");
+            }
             open_menu_id = -2;
         }
     }
@@ -1574,7 +1582,11 @@ void render_success(void) {
     gfx_draw_string(CX - 190, CY + 124, "Files:",      C_WHITE);
     gfx_draw_string(CX - 140, CY + 124, "6 system files installed", 0xFFFFFFFF);
 
-    if (ui_button(CX - 110, CY + 166, 220, 50, "Restart Now", C_WHITE)) outb(0x64, 0xFE);
+    if (ui_button(CX - 110, CY + 166, 220, 50, "Restart Now", C_WHITE)) {
+        pfs32_sync(); disk_flush_cache();
+        for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller to commit
+        outb(0x64, 0xFE);
+    }
 }
 
 // --- Failure ---
@@ -1601,7 +1613,11 @@ void render_failure(void) {
 
     draw_centered_text(CY + 70, "Open View > Installer Logs for details", 1, 0xD0FFFFFF);
 
-    if (ui_button(CX - 110, CY + 106, 220, 50, "Restart", C_WHITE)) outb(0x64, 0xFE);
+    if (ui_button(CX - 110, CY + 106, 220, 50, "Restart", C_WHITE)) {
+        disk_flush_cache();
+        for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller to commit
+        outb(0x64, 0xFE);
+    }
 }
 
 // =============================================================================
@@ -1751,6 +1767,23 @@ void install_tick(void) {
                 return;
             }
             pfs32_sync(); disk_flush_cache();
+
+            // Verify superblock was actually written to disk
+            {
+                uint8_t verify_buf[512];
+                ata_read_sector(selected_drive_idx, part_start, verify_buf);
+                uint32_t* magic_ptr = (uint32_t*)verify_buf;
+                if (*magic_ptr != PFS32_MAGIC) {
+                    s_printf("[INSTALLER] ERROR: Superblock verification failed! magic=");
+                    char dbuf[16]; int_to_str(*magic_ptr, dbuf); s_printf(dbuf); s_printf("\n");
+                    strcpy(install_error_msg, "Superblock not persisted after format");
+                    install_error = 1;
+                    current_state = STATE_FAILURE;
+                    return;
+                }
+                add_log("Superblock verified on disk");
+            }
+
             install_step_tick = 1;
             install_target_pct = 50;
             return;  // Wait one tick to show progress

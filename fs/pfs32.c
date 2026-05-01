@@ -692,6 +692,20 @@ uint32_t pfs32_format_fast(const char* label, uint32_t total) {
     flush_fat();
     // CRITICAL: Flush all cached writes to actual disk so filesystem persists across reboots
     disk_flush_cache();
+
+    // Verify superblock was actually committed to disk
+    {
+        pfs32_superblock_t verify_sb;
+        memset(&verify_sb, 0, sizeof(verify_sb));
+        disk_read_block(disk_start, &verify_sb);
+        if (verify_sb.magic != PFS32_MAGIC) {
+            s_printf("[PFS] CRITICAL: Superblock verification failed after format!\n");
+            s_printf("[PFS] Retrying write...\n");
+            disk_write_block(disk_start, &sb);
+            disk_flush_cache();
+        }
+    }
+
     return PFS_OK;
 }
 

@@ -47,6 +47,15 @@ void disk_set_drive(int drive_id) {
     if(drive_id < 0 || drive_id > 1) return;
     
     disk_flush_cache();
+
+    // Invalidate all cache entries after switching drives to prevent
+    // stale data from the previous drive being served for the same block numbers
+    for(int i = 0; i < DISK_CACHE_SIZE; i++) {
+        disk_cache_valid[i] = 0;
+        disk_cache_dirty[i] = 0;
+        disk_cache_lru[i] = 0;
+    }
+    
     fs_drive_id = drive_id;
     
     if(ide_devices[drive_id].present) {

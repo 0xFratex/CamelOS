@@ -268,6 +268,21 @@ int sys_fs_mount() {
 
             pfs32_sync();
             disk_flush_cache();
+
+            // Verify superblock was actually committed to disk
+            {
+                uint8_t vbuf[512];
+                ata_read_sector(0, part_lba, vbuf);
+                uint32_t* vmagic = (uint32_t*)vbuf;
+                if (*vmagic != PFS32_MAGIC) {
+                    sys_print("[KERNEL] WARNING: Superblock verification failed, retrying write...\n");
+                    pfs32_sync();
+                    disk_flush_cache();
+                } else {
+                    sys_print("[KERNEL] Superblock verified on disk.\n");
+                }
+            }
+
             sys_print("[KERNEL] Directory structure created.\n");
 
             // Re-mount
