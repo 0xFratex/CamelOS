@@ -147,6 +147,43 @@ void ws_bring_to_front(window_t* win) {
     z_add(win);
 }
 
+void ws_set_title(window_t* win, const char* title) {
+    if(!win || !title) return;
+    strncpy(win->title, title, 63);
+    win->title[63] = 0;
+}
+
+void ws_set_opacity(window_t* win, float opacity) {
+    if(!win) return;
+    if(opacity < 0.0f) opacity = 0.0f;
+    if(opacity > 1.0f) opacity = 1.0f;
+    win->opacity = opacity;
+}
+
+void ws_close(window_t* win) {
+    if(!win || !win->is_active) return;
+    // Call close callback if registered
+    if(win->close_callback) {
+        typedef void (*close_cb)(window_t*);
+        ((close_cb)win->close_callback)(win);
+    }
+    z_remove(win);
+    win->is_active = 0;
+    win->is_visible = 0;
+    win->is_focused = 0;
+    // If this was the active window, clear it
+    if(active_win == win) active_win = 0;
+}
+
+window_t* ws_get_active_window(void) {
+    return active_win;
+}
+
+void ws_set_active_window(window_t* win) {
+    if(!win) return;
+    ws_bring_to_front(win);
+}
+
 void ws_handle_mouse(int x, int y, int button) {
     int handled = 0;
 
