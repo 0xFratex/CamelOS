@@ -446,7 +446,7 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
         }
     }
     
-    // Cursor - positioned directly after last character/dot
+    // Cursor - positioned at cursor_pos (character index)
     if (active) {
         static int blink = 0;
         blink++;
@@ -456,10 +456,11 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
                 int dot_spacing = 10;
                 cursor_x_pos = text_x + cursor_pos * dot_spacing + 2;
             } else {
-                int vlen = value ? strlen(value) : 0;
-                cursor_x_pos = text_x + vlen * 8;
+                // Use cursor_pos (character index) instead of strlen(value)
+                // to correctly position cursor within the text
+                cursor_x_pos = text_x + cursor_pos * 8;
             }
-            gfx_fill_rect(cursor_x_pos, text_y, 1, 16, C_ACCENT);
+            gfx_fill_rect(cursor_x_pos, text_y, 2, 16, C_ACCENT);
         }
     }
 }
@@ -467,17 +468,17 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
 // --- State Renderers ---
 
 static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int click) {
-    // Logo / Title
-    int title_y = cy - 100;
+    // Logo / Title - shifted up to make room for features and button
+    int title_y = cy - 140;
     gfx_draw_string_scaled(cx - 100, title_y, "Camel", C_ACCENT, 4);
     gfx_draw_string_scaled(cx - 40, title_y + 60, "OS", C_TEXT_DARK, 4);
     
     // Subtitle
     char* subtitle = "Welcome to your new operating system";
-    gfx_draw_string(cx - strlen(subtitle) * 4, title_y + 130, subtitle, C_TEXT_MUTED);
+    gfx_draw_string(cx - strlen(subtitle) * 4, title_y + 120, subtitle, C_TEXT_MUTED);
     
     // Feature list
-    int feat_y = title_y + 180;
+    int feat_y = title_y + 160;
     char* features[] = {
         "Fast and lightweight performance",
         "Beautiful macOS-inspired interface",
@@ -487,12 +488,14 @@ static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int cli
     };
     
     for (int i = 0; i < 5; i++) {
-        gfx_draw_string(cx - 160, feat_y + i * 25, ">", C_ACCENT);
-        gfx_draw_string(cx - 145, feat_y + i * 25, features[i], C_TEXT_DARK);
+        gfx_draw_string(cx - 160, feat_y + i * 22, ">", C_ACCENT);
+        gfx_draw_string(cx - 145, feat_y + i * 22, features[i], C_TEXT_DARK);
     }
     
-    // Continue button
-    if (draw_button(cx - 80, cy + 150, 160, 48, "Continue", 1, mx, my, click)) {
+    // Continue button - placed below feature list with proper spacing
+    // Feature list ends at feat_y + 4*22 = feat_y + 88
+    int btn_y = feat_y + 88 + 30;  // 30px gap after last feature
+    if (draw_button(cx - 80, btn_y, 160, 48, "Continue", 1, mx, my, click)) {
         g_setup.state = SETUP_STATE_USER;
         g_setup.current_step = 1;
         g_setup.input_buffer[0] = 0;
@@ -521,7 +524,7 @@ static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int 
     
     // Subtitle
     char* subtitle = "This will be your user account name";
-    gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
+    gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2, 
                    card_y + 60, subtitle, C_TEXT_MUTED);
     
     // Avatar preview
@@ -585,14 +588,14 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
         gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
                               card_y + 50, title, C_TEXT_DARK, 2);
         char* subtitle = "This protects your account and locks your screen";
-        gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
+        gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2, 
                        card_y + 85, subtitle, C_TEXT_MUTED);
     } else {
         char* title = "Confirm Password";
         gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
                               card_y + 50, title, C_TEXT_DARK, 2);
         char* subtitle = "Enter your password again to confirm";
-        gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
+        gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2, 
                        card_y + 85, subtitle, C_TEXT_MUTED);
     }
     
@@ -613,17 +616,17 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
     
     // Optional hint
     char* hint = "Leave blank to skip password protection";
-    gfx_draw_string(cx - strlen(hint) * 3, card_y + 220, hint, C_TEXT_MUTED);
+    gfx_draw_string(cx - strlen(hint) * 4, card_y + 220, hint, C_TEXT_MUTED);
     
     // Error message
     if (g_setup.password_match_error) {
         char* error = "Passwords do not match. Try again.";
-        gfx_draw_string(cx - strlen(error) * 3, card_y + 250, error, C_ERROR);
+        gfx_draw_string(cx - strlen(error) * 4, card_y + 250, error, C_ERROR);
     }
     
     // Security note
     char* security = "Your password is encrypted with SHA-256";
-    gfx_draw_string(cx - strlen(security) * 3, card_y + 280, security, C_TEXT_MUTED);
+    gfx_draw_string(cx - strlen(security) * 4, card_y + 280, security, C_TEXT_MUTED);
     
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
@@ -682,7 +685,7 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
     
     // Subtitle
     char* subtitle = "This helps show the correct time on your system";
-    gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
+    gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2, 
                    card_y + 60, subtitle, C_TEXT_MUTED);
     
     // Timezone list (scrollable region)
@@ -732,7 +735,7 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
     strcat(preview, offset_str);
     strcat(preview, ")");
     
-    gfx_draw_string(card_x + (card_w - strlen(preview) * 6) / 2, 
+    gfx_draw_string(card_x + (card_w - strlen(preview) * 8) / 2, 
                    card_y + card_h - 100, preview, C_TEXT_MUTED);
     
     // Buttons
@@ -767,7 +770,7 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
     
     // Subtitle
     char* subtitle = "Personalize your CamelOS experience";
-    gfx_draw_string(card_x + (card_w - strlen(subtitle) * 6) / 2, 
+    gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2, 
                    card_y + 60, subtitle, C_TEXT_MUTED);
     
     // Theme options
@@ -816,7 +819,7 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
         gfx_fill_rect(preview_x, preview_y + 20, 20, 40, themes[i].secondary);
         
         // Theme name
-        gfx_draw_string(theme_x + (theme_w - strlen(themes[i].name) * 6) / 2, 
+        gfx_draw_string(theme_x + (theme_w - strlen(themes[i].name) * 8) / 2, 
                        theme_y + theme_h - 30, themes[i].name, 
                        is_selected ? C_ACCENT : C_TEXT_DARK);
         

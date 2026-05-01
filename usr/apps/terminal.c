@@ -5,15 +5,15 @@
 
 #define TERM_COLS 80
 #define TERM_ROWS 24
-#define CHAR_W 6
-#define CHAR_H 10
-#define PAD 6
+#define CHAR_W 8
+#define CHAR_H 16
+#define PAD 8
 
 char term_buffer[TERM_ROWS][TERM_COLS + 1];
 int terminal_row = 0;
 int terminal_col = 0;
 char current_term_path[64] = "/";
-int term_fg_color = 0xFF00FF00;  // Green on black
+int term_fg_color = 0xFFCCCCCC;  // Light gray on black (modern terminal look)
 
 void term_reset() {
     for(int y=0; y<TERM_ROWS; y++) {
@@ -24,7 +24,7 @@ void term_reset() {
     terminal_col = 0;
     strcpy(current_term_path, "/");
     
-    char prompt[] = "camel@pro: /$ ";
+    char prompt[] = "camelos: / $ ";
     for(int i=0; prompt[i] && i < TERM_COLS; i++) {
         term_buffer[0][i] = prompt[i];
     }
@@ -77,14 +77,14 @@ void term_clear() {
         for(int x=0; x<=TERM_COLS; x++) term_buffer[y][x] = 0;
     terminal_row = 0;
     terminal_col = 0;
-    term_print("camel@pro: "); 
+    term_print("camelos: "); 
     term_print(current_term_path); 
-    term_print("$ ");
+    term_print(" $ ");
 }
 
 void term_on_paint(int x, int y, int w, int h) {
-    // Draw black background
-    gfx_fill_rect(x, y, w, h, 0xFF000000);
+    // Draw dark background with slight blue tint (modern terminal look)
+    gfx_fill_rect(x, y, w, h, 0xFF1E1E2E);
 
     // Calculate how many chars/rows fit in the window
     int max_cols = (w - PAD*2) / CHAR_W;
@@ -92,26 +92,36 @@ void term_on_paint(int x, int y, int w, int h) {
     if (max_cols > TERM_COLS) max_cols = TERM_COLS;
     if (max_rows > TERM_ROWS) max_rows = TERM_ROWS;
 
-    // Blinking cursor
-    static int blink = 0; blink++;
-    if(blink % 60 < 30) {
-        if (terminal_row < max_rows && terminal_col < max_cols) {
-            gfx_fill_rect(x + PAD + terminal_col * CHAR_W, 
-                          y + PAD + terminal_row * CHAR_H, 
-                          CHAR_W + 1, CHAR_H - 1, 0xFFFFFFFF);
-        }
-    }
-
-    // Draw text
+    // Draw text first (behind cursor)
     for(int r=0; r<max_rows && r<TERM_ROWS; r++) {
         if(term_buffer[r][0] != 0) {
             int len = 0;
             while(term_buffer[r][len] && len < max_cols) len++;
             for(int c = 0; c < len; c++) {
+                // Color prompt differently from command output
+                uint32_t ch_color = term_fg_color;
+                // Check if this is the prompt line (contains "$ ")
+                char* dollar = strchr(term_buffer[r], '$');
+                if (dollar && r == terminal_row) {
+                    // Characters before and including $ are accent colored
+                    int prompt_end = (int)(dollar - term_buffer[r]) + 1;
+                    if (c < prompt_end) ch_color = 0xFF89B4FA; // Purple for prompt
+                }
                 gfx_draw_char_scaled(x + PAD + c * CHAR_W, 
                                      y + PAD + r * CHAR_H, 
-                                     term_buffer[r][c], term_fg_color, 1);
+                                     term_buffer[r][c], ch_color, 1);
             }
+        }
+    }
+
+    // Blinking cursor (drawn after text so it overlays)
+    static int blink = 0; blink++;
+    if(blink % 60 < 30) {
+        if (terminal_row < max_rows && terminal_col < max_cols) {
+            // Use a semi-transparent block cursor
+            gfx_fill_rect(x + PAD + terminal_col * CHAR_W, 
+                          y + PAD + terminal_row * CHAR_H, 
+                          CHAR_W, CHAR_H, 0xFF89B4FA); // Purple cursor matching prompt
         }
     }
 }
@@ -240,16 +250,16 @@ void execute_term_cmd() {
     }
     
     terminal_col = 0;
-    term_print("camel@pro: ");
+    term_print("camelos: ");
     term_print(current_term_path);
-    term_print("$ ");
+    term_print(" $ ");
 }
 
 void term_on_input(int key) {
     if(key == 0) return;
     if(key == '\n') { execute_term_cmd(); }
     else if (key == '\b') {
-        int prompt_len = 13 + strlen(current_term_path); 
+        int prompt_len = 11 + strlen(current_term_path); 
         if(terminal_col > prompt_len) {
             terminal_col--;
             term_buffer[terminal_row][terminal_col] = 0;

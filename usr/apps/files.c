@@ -439,7 +439,7 @@ void files_on_paint(int x, int y, int w, int h) {
         char display_name[42];
         strncpy(display_name, last_entries[i].filename, 40);
         display_name[40] = 0;
-        int text_w = strlen(display_name) * 6;
+        int text_w = strlen(display_name) * 8;
         int lx = label_x - text_w / 2;
         
         // Shadow for readability

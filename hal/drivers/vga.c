@@ -194,6 +194,9 @@ void vga_print(const char* str) {
     extern void s_printf(const char*);
     s_printf(str); // Always log to serial for debugging
 
+    // If GUI logging is suppressed (vga_mute_log(1) called), skip screen rendering
+    if (g_suppress_text) return;
+
     // If in GUI mode (32bpp or 24bpp), draw text using fonts
     if (screen_bpp == 32 || screen_bpp == 24) {
         // Check if framebuffer is ready

@@ -310,7 +310,7 @@ void sys_requirements_render_summary(int x, int y) {
             strcpy(val_str, req->status_text);
         }
         
-        int val_x = x + 300 - strlen(val_str) * 6;
+        int val_x = x + 300 - strlen(val_str) * 8;
         gfx_draw_string(val_x, req_y, val_str, sys_requirements_status_color(req->status));
         
         req_y += 20;

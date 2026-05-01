@@ -1581,7 +1581,7 @@ void render_failure(void) {
     draw_centered_text(CY - 16, "Installation Failed", 2, C_WHITE);
 
     if (install_error_msg[0]) {
-        int msg_w = strlen(install_error_msg) * 6;
+        int msg_w = strlen(install_error_msg) * 8;
         if (msg_w > 480) msg_w = 480;
         gfx_fill_rounded_rect(CX - msg_w/2 - 20, CY + 16, msg_w + 40, 38, 0x40FFFFFF, 8);
         gfx_draw_rect(CX - msg_w/2 - 20, CY + 16, msg_w + 40, 38, 0x60FFFFFF);
@@ -1643,6 +1643,10 @@ void install_tick(void) {
         if (install_pct > install_target_pct) install_pct = install_target_pct;
     }
 
+    // Auto-advance: if progress animation is close enough (within 5%), don't block
+    // step transitions. This prevents the installer from getting stuck at ~29%.
+    #define PROGRESS_CLOSE(a, b) ((a) >= (b) - 5)
+
     if (install_step == 0) {
         if (install_step_tick == 0) {
             strcpy(install_status, "Writing Bootloader & Partition Table...");
@@ -1664,7 +1668,7 @@ void install_tick(void) {
         }
         // Wait for progress bar to catch up before advancing
         install_target_pct = 5;
-        if (install_pct >= install_target_pct) {
+        if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
             install_step++; install_step_tick = 0;
         }
         return;
@@ -1687,7 +1691,7 @@ void install_tick(void) {
         install_target_pct = 5 + (kernel_write_offset * 25 / k_sectors);
         if (kernel_write_offset >= k_sectors) {
             install_target_pct = 30;
-            if (install_pct >= install_target_pct) {
+            if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
                 install_step++; add_log("Kernel copied");
             }
         }
@@ -1710,7 +1714,7 @@ void install_tick(void) {
             install_step_tick = 1;
         }
         install_target_pct = 45;
-        if (install_pct >= install_target_pct) {
+        if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
             install_step++; install_step_tick = 0; add_log("PFS32 formatted");
         }
         return;
@@ -1730,7 +1734,7 @@ void install_tick(void) {
                 install_step_tick = 1;
             }
             install_target_pct = 47;
-            if (install_pct >= install_target_pct) {
+            if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
                 install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0;
             }
             return;
@@ -1764,7 +1768,7 @@ void install_tick(void) {
         }
         pfs32_sync(); disk_flush_cache();
         install_target_pct = 90;
-        if (install_pct >= install_target_pct) {
+        if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
             install_step++; install_sub_step=0; install_step_tick = 0;
             add_log("System files installed");
         }

@@ -125,7 +125,7 @@ void desktop_draw(uint32_t* buffer) {
 
         // --- RENAME LOGIC FIX ---
         if (desktop_rename_active && desktop_rename_idx == i) {
-            int text_w = strlen(desktop_rename_buf) * 6;
+            int text_w = strlen(desktop_rename_buf) * 8;
             int box_w = (text_w < 60) ? 60 : text_w + 10;
             int box_x = x + 24 - (box_w / 2);
 
@@ -150,7 +150,7 @@ void desktop_draw(uint32_t* buffer) {
             }
         } else {
             // Normal Label (Shadowed for visibility)
-            int text_w = strlen(desk_entries[i].filename) * 6;
+            int text_w = strlen(desk_entries[i].filename) * 8;
             int label_x = x + 24 - (text_w / 2);
             sys_gfx_string(label_x+1, y+53, desk_entries[i].filename, 0xFF000000); // Shadow
             sys_gfx_string(label_x, y+52, desk_entries[i].filename, 0xFFFFFFFF);   // Text

@@ -21,7 +21,7 @@ int is_dragging = 0;
 int current_step = 0; // 0=Welcome, 1=Disk, 2=Install, 3=Done
 
 void draw_text_centered(int y, const char* str, int scale, uint32_t color) {
-    int w = strlen(str) * 6 * scale;
+    int w = strlen(str) * 8 * scale;
     gfx_draw_string_scaled((1024 - w) / 2, y, str, color, scale);
 }
 
@@ -39,7 +39,7 @@ void draw_modern_button(int x, int y, int w, int h, const char* label, int prima
     gfx_fill_rounded_rect(x, y, w, h, bg, 8);
     if (!primary) gfx_draw_rect(x, y, w, h, border); // Border for secondary
     
-    int tw = strlen(label) * 6;
+    int tw = strlen(label) * 8;
     gfx_draw_string(x + (w-tw)/2, y + (h-8)/2, label, text);
     
     // Logic (Simple click detection)

@@ -281,7 +281,7 @@ void gfx_draw_char_scaled(int x, int y, char c, uint32_t color, int scale) {
     }
 }
 void gfx_draw_string_scaled(int x, int y, const char* str, uint32_t color, int scale) { 
-    while(*str) { gfx_draw_char_scaled(x, y, *str++, color, scale); x+=6*scale; } 
+    while(*str) { gfx_draw_char_scaled(x, y, *str++, color, scale); x+=8*scale; } 
 }
 void gfx_draw_string(int x, int y, const char* str, uint32_t color) { 
     gfx_draw_string_scaled(x, y, str, color, 1); 

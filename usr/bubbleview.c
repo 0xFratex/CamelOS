@@ -172,7 +172,7 @@ static char* sys_menu_items[] = { "About Camel OS", "-", "Restart", "Shutdown" }
 static int sys_menu_count = 4;
 static char* def_menus[] = { "File", "Edit", "View", "Window", "Help" };
 
-int measure_text_width(const char* str) { return strlen(str) * 6; }
+int measure_text_width(const char* str) { return strlen(str) * 8; }
 
 // --- Cursor Drawing ---
 // Draw a crisp pixel-perfect macOS-style arrow cursor
@@ -860,6 +860,11 @@ void start_bubble_view() {
     dock_init();
     
     sys_print("[GUI] Framework Initialized.\n");
+    
+    // Mute VGA console logging in GUI mode to prevent annoying text overlay
+    // when apps are opened. Debug output still goes to serial port.
+    extern void vga_mute_log(int enable);
+    vga_mute_log(1);
     
     // Initialize screenlock and load user from config
     screenlock_init();

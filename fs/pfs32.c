@@ -683,10 +683,10 @@ uint32_t pfs32_format_fast(const char* label, uint32_t total) {
     disk_write_block(disk_start, &sb);
     
     flush_fat();
+    // CRITICAL: Flush all cached writes to actual disk so filesystem persists across reboots
+    disk_flush_cache();
     return PFS_OK;
 }
-
-// --- Path Resolution ---
 
 int get_dir_block(const char* path, uint32_t* block_out) {
     if(!mounted) return PFS_ERR_NO_FS;
@@ -1177,6 +1177,9 @@ int pfs32_sync() {
         sb.superblock_checksum = pfs32_compute_checksum(&sb, sizeof(sb) - sizeof(pfs32_checksum_t));
         disk_rw(1, 0, &sb);
     }
+    // CRITICAL: Flush disk write-back cache so data actually reaches disk.
+    // Without this, all writes stay in RAM and are lost on reboot.
+    disk_flush_cache();
     return PFS_OK;
 }
 

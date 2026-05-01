@@ -29,7 +29,7 @@ void gui_draw_button(int x, int y, int w, int h, const char* label, int pressed)
     sys->draw_rect(x, y, w, 1, 0x40FFFFFF);
 
     // Text centering
-    int tlen = sys->strlen(label) * 6;
+    int tlen = sys->strlen(label) * 8;
     int tx = x + (w - tlen) / 2;
     int ty = y + (h - 7) / 2;
 

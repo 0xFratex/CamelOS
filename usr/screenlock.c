@@ -402,7 +402,7 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     
     // Date display (below time)
     char date_str[32] = "Welcome to CamelOS";
-    gfx_draw_string_scaled(cx - strlen(date_str) * 6, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
+    gfx_draw_string_scaled(cx - strlen(date_str) * 8, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
     
     // Avatar
     int avatar_y = cy + 20;
