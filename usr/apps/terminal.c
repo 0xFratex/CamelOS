@@ -1,6 +1,7 @@
 #include "../usr/framework.h"
 #include "../core/string.h"
-#include "../../sys/api.h" 
+#include "../../sys/api.h"
+#include "../../hal/video/gfx_hal.h"
 // api.h includes pfs32.h, so pfs32_direntry_t and pfs32_listdir are known.
 
 #define TERM_COLS 33 
@@ -66,19 +67,24 @@ void term_clear() {
 }
 
 void term_on_paint(int x, int y, int w, int h) {
-    extern void fw_draw_rect(int,int,int,int,int);
-    extern void fw_draw_text_clipped(int,int,const char*,int,int);
-
-    fw_draw_rect(x, y, w, h, 0); 
+    // Draw black background for terminal
+    gfx_fill_rect(x, y, w, h, 0xFF000000);
 
     static int blink = 0; blink++;
     if(blink % 60 < 30) {
-        fw_draw_rect(x + 4 + (terminal_col * 6), y + 4 + (terminal_row * 10), 7, 9, 2);
+        // Blinking cursor - white block
+        gfx_fill_rect(x + 4 + (terminal_col * 6), y + 4 + (terminal_row * 10), 7, 9, 0xFFFFFFFF);
     }
 
     for(int r=0; r<TERM_ROWS; r++) {
         if(term_buffer[r][0] != 0) {
-            fw_draw_text_clipped(x + 4, y + 4 + (r * 10), term_buffer[r], 15, w - 4);
+            // Draw text line (green on black, like classic terminal)
+            int max_chars = (w - 8) / 6;
+            int len = 0;
+            while(term_buffer[r][len] && len < max_chars) len++;
+            for(int c = 0; c < len; c++) {
+                gfx_draw_char_scaled(x + 4 + c * 6, y + 4 + (r * 10), term_buffer[r][c], 0xFF00FF00, 1);
+            }
         }
     }
 }

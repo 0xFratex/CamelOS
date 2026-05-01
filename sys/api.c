@@ -112,8 +112,74 @@ int sys_fs_mount() {
     uint8_t mbr[512];
     if (disk_read_block(0, mbr) != 0) return -1;
 
-    uint32_t part_lba = *(uint32_t*)(mbr + 0x1BE + 8); // first partition start
-    return pfs32_init(part_lba, disk_total_blocks - part_lba);
+    // Check if MBR has a valid partition table (signature 0xAA55)
+    uint32_t part_lba;
+    if (mbr[510] == 0x55 && mbr[511] == 0xAA) {
+        part_lba = *(uint32_t*)(mbr + 0x1BE + 8); // first partition start
+    } else {
+        part_lba = 0; // No valid MBR partition table
+    }
+
+    // If no valid partition, create one with default offset
+    if (part_lba == 0 || part_lba >= disk_total_blocks) {
+        part_lba = 16384; // Default partition start offset
+
+        // Write a default MBR partition table
+        memset(mbr, 0, 512);
+        mbr[0x1BE] = 0x80;     // Bootable
+        mbr[0x1BE + 4] = 0x7F; // Partition type (CamelOS)
+        *(uint32_t*)(mbr + 0x1BE + 8) = part_lba;
+        *(uint32_t*)(mbr + 0x1BE + 12) = disk_total_blocks - part_lba;
+        mbr[510] = 0x55;
+        mbr[511] = 0xAA;
+        disk_write_block(0, mbr);
+    }
+
+    int result = pfs32_init(part_lba, disk_total_blocks - part_lba);
+
+    // If no filesystem found, auto-format and create directory structure
+    if (result != 0) {
+        sys_print("[KERNEL] No filesystem found. Auto-formatting...\n");
+        pfs32_init(part_lba, disk_total_blocks - part_lba);
+        // Temporarily disable bad block scan for fast boot-time format
+        extern uint32_t pfs32_format_fast(const char* label, uint32_t total);
+        if (pfs32_format_fast("Camel Sys", disk_total_blocks - part_lba) == 0) {
+            sys_print("[KERNEL] PFS32 formatted successfully.\n");
+
+            // Create essential directory structure (same as installer)
+            pfs32_create_directory("/home");
+            pfs32_create_directory("/home/desktop");
+            pfs32_create_directory("/usr");
+            pfs32_create_directory("/usr/lib");
+            pfs32_create_directory("/usr/apps");
+            pfs32_create_directory("/Applications");
+            pfs32_create_directory("/Library");
+            pfs32_create_directory("/Library/Preferences");
+            pfs32_create_directory("/etc");
+
+            // Create .app bundle directory stubs for dock compatibility
+            const char* app_bundles[] = {
+                "/Applications/Files.app", "/Applications/Terminal.app",
+                "/Applications/Monitor.app", "/Applications/NetDiag.app",
+                "/Applications/NetTools.app", "/Applications/TextEdit.app",
+                "/Applications/Browser.app", "/Applications/Settings.app"
+            };
+            for (int i = 0; i < 8; i++) {
+                pfs32_create_directory(app_bundles[i]);
+            }
+
+            pfs32_sync();
+            disk_flush_cache();
+            sys_print("[KERNEL] Directory structure created.\n");
+
+            // Re-mount
+            result = pfs32_init(part_lba, disk_total_blocks - part_lba);
+        } else {
+            sys_print("[KERNEL] PFS32 format failed!\n");
+        }
+    }
+
+    return result;
 }
 
 int sys_fs_write(const char* filename, char* data, int size) {

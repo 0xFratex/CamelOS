@@ -97,7 +97,7 @@ void welcome_setup_init(void) {
 }
 
 void welcome_setup_set_defaults(void) {
-    strcpy(g_setup.config.username, "User");
+    g_setup.config.username[0] = 0;  // Empty - show placeholder "Enter name..."
     strcpy(g_setup.config.computer_name, "CamelOS");
     g_setup.config.password_hash[0] = 0;
     memcpy(&g_setup.config.timezone, &timezones[0], sizeof(TimeZone));
@@ -514,8 +514,7 @@ static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int cli
         g_setup.input_buffer[0] = 0;
         g_setup.input_cursor = 0;
         g_setup.input_active = 1;
-        strcpy(g_setup.input_buffer, g_setup.config.username);
-        g_setup.input_cursor = strlen(g_setup.config.username);  // Cursor at end of pre-filled text
+        // Don't pre-fill - show placeholder text instead
     }
     
     // Progress dots

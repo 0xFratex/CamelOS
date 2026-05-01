@@ -333,18 +333,15 @@ static void draw_avatar(int cx, int cy, int size, int color_idx) {
 static void draw_password_dots(int x, int y, int count, int show_error) {
     int dot_size = 8;
     int spacing = 12;
-    // Dynamic: show dots based on actual count + a few empty slots for visual reference
-    int max_dots = count + 2;
-    if (max_dots < 6) max_dots = 6;
-    if (max_dots > 20) max_dots = count;  // Just show filled dots for very long passwords
-    int total_w = max_dots * spacing;
+    // Only show dots for actually typed characters
+    // No empty placeholder dots - they confuse the character count
+    int total_w = count * spacing;
+    if (total_w == 0) total_w = 0;  // No dots when empty
     int start_x = x - total_w / 2;
     
-    for (int i = 0; i < max_dots; i++) {
+    for (int i = 0; i < count; i++) {
         int dot_x = start_x + i * spacing + spacing / 2;
-        uint32_t color = (i < count) ? 
-            (show_error ? C_LOCK_ERROR : C_LOCK_TEXT) : 
-            C_LOCK_INPUT_BG;
+        uint32_t color = show_error ? C_LOCK_ERROR : C_LOCK_TEXT;
         gfx_fill_rounded_rect(dot_x - dot_size/2, y - dot_size/2, 
                               dot_size, dot_size, color, dot_size/2);
     }
@@ -436,11 +433,8 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         static int blink_timer = 0;
         blink_timer++;
         if ((blink_timer / 30) % 2 == 0) {
-            // Calculate cursor position matching the dynamic dot layout
-            int max_dots = g_lock.cursor_pos + 2;
-            if (max_dots < 6) max_dots = 6;
-            if (max_dots > 20) max_dots = g_lock.cursor_pos;
-            int total_w = max_dots * 12;
+            // Calculate cursor position matching the dot layout (only typed chars)
+            int total_w = g_lock.cursor_pos * 12;
             int start_x = cx - total_w / 2;
             int cursor_x = start_x + g_lock.cursor_pos * 12 + 6;
             gfx_fill_rect(cursor_x, input_y - 8, 2, 16, C_LOCK_TEXT);
@@ -467,11 +461,39 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     int lock_y = 30;
     gfx_draw_string(lock_x - 10, lock_y, "LOCK", C_LOCK_TEXT_DIM);
     
-    // Draw mouse cursor
+    // Draw mouse cursor - proper arrow shape
     if (g_lock.state == LOCK_STATE_LOCKED) {
-        // Simple cursor
-        gfx_fill_rect(mx, my, 12, 18, 0xFFFFFFFF);
-        gfx_fill_rect(mx + 2, my + 2, 8, 14, 0xFF000000);
+        static const uint8_t cursor_shape[19][12] = {
+            {1,0,0,0,0,0,0,0,0,0,0,0},
+            {1,1,0,0,0,0,0,0,0,0,0,0},
+            {1,2,1,0,0,0,0,0,0,0,0,0},
+            {1,2,2,1,0,0,0,0,0,0,0,0},
+            {1,2,2,2,1,0,0,0,0,0,0,0},
+            {1,2,2,2,2,1,0,0,0,0,0,0},
+            {1,2,2,2,2,2,1,0,0,0,0,0},
+            {1,2,2,2,2,2,2,1,0,0,0,0},
+            {1,2,2,2,2,2,2,2,1,0,0,0},
+            {1,2,2,2,2,2,2,2,2,1,0,0},
+            {1,2,2,2,2,2,2,2,2,2,1,0},
+            {1,2,2,2,2,2,1,1,1,1,1,1},
+            {1,2,2,2,1,2,2,1,0,0,0,0},
+            {1,2,2,1,0,1,2,2,1,0,0,0},
+            {1,2,1,0,0,1,2,2,1,0,0,0},
+            {1,1,0,0,0,0,1,2,2,1,0,0},
+            {1,0,0,0,0,0,1,2,2,1,0,0},
+            {0,0,0,0,0,0,0,1,2,1,0,0},
+            {0,0,0,0,0,0,0,1,1,0,0,0},
+        };
+        for (int row = 0; row < 19; row++) {
+            for (int col = 0; col < 12; col++) {
+                int px = mx + col;
+                int py = my + row;
+                if (px < 0 || px >= 1024 || py < 0 || py >= 768) continue;
+                uint8_t v = cursor_shape[row][col];
+                if (v == 1) gfx_put_pixel(px, py, 0xFF000000);
+                else if (v == 2) gfx_put_pixel(px, py, 0xFFFFFFFF);
+            }
+        }
     }
 }
 

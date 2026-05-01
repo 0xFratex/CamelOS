@@ -174,6 +174,50 @@ static char* def_menus[] = { "File", "Edit", "View", "Window", "Help" };
 
 int measure_text_width(const char* str) { return strlen(str) * 6; }
 
+// --- Cursor Drawing ---
+// Draw a crisp pixel-perfect macOS-style arrow cursor
+// Arrow pointing top-left, ~12x19 pixels
+static void draw_cursor(int mx, int my) {
+    // Classic arrow cursor shape (1=black outline, 2=white fill)
+    // Row 0: 1 pixel at tip
+    // Each row builds the arrow shape
+    static const uint8_t cursor_shape[19][12] = {
+        {1,0,0,0,0,0,0,0,0,0,0,0},  // row 0: tip
+        {1,1,0,0,0,0,0,0,0,0,0,0},  // row 1
+        {1,2,1,0,0,0,0,0,0,0,0,0},  // row 2
+        {1,2,2,1,0,0,0,0,0,0,0,0},  // row 3
+        {1,2,2,2,1,0,0,0,0,0,0,0},  // row 4
+        {1,2,2,2,2,1,0,0,0,0,0,0},  // row 5
+        {1,2,2,2,2,2,1,0,0,0,0,0},  // row 6
+        {1,2,2,2,2,2,2,1,0,0,0,0},  // row 7
+        {1,2,2,2,2,2,2,2,1,0,0,0},  // row 8
+        {1,2,2,2,2,2,2,2,2,1,0,0},  // row 9
+        {1,2,2,2,2,2,2,2,2,2,1,0},  // row 10
+        {1,2,2,2,2,2,1,1,1,1,1,1},  // row 11: start of tail
+        {1,2,2,2,1,2,2,1,0,0,0,0},  // row 12
+        {1,2,2,1,0,1,2,2,1,0,0,0},  // row 13
+        {1,2,1,0,0,1,2,2,1,0,0,0},  // row 14
+        {1,1,0,0,0,0,1,2,2,1,0,0},  // row 15
+        {1,0,0,0,0,0,1,2,2,1,0,0},  // row 16
+        {0,0,0,0,0,0,0,1,2,1,0,0},  // row 17
+        {0,0,0,0,0,0,0,1,1,0,0,0},  // row 18
+    };
+
+    for (int row = 0; row < 19; row++) {
+        for (int col = 0; col < 12; col++) {
+            int px = mx + col;
+            int py = my + row;
+            if (px < 0 || px >= 1024 || py < 0 || py >= 768) continue;
+            uint8_t v = cursor_shape[row][col];
+            if (v == 1) {
+                gfx_put_pixel(px, py, 0xFF000000);  // Black outline
+            } else if (v == 2) {
+                gfx_put_pixel(px, py, 0xFFFFFFFF);  // White fill
+            }
+        }
+    }
+}
+
 // Context Menu Functions
 void ctx_menu_init() {
     g_ctx_menu.active = 0;
@@ -888,7 +932,7 @@ void start_bubble_view() {
             welcome_setup_render(buffer, 1024, 768, mx, my);
             
             // Draw cursor on top
-            cm_draw_image(buffer, "cursor", mx, my, 12, 19);
+            draw_cursor(mx, my);
             
             sys_vsync();
             extern void gfx_swap_buffers();
@@ -1036,7 +1080,7 @@ void start_bubble_view() {
 
         dock_render(buffer, 1024, 768, mx, my);
         process_global_bar(mx, my, (lb && !prev_lb));
-        cm_draw_image(buffer, "cursor", mx, my, 12, 19);
+        draw_cursor(mx, my);
 
         ctx_menu_draw();
 

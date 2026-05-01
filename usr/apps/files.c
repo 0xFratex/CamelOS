@@ -7,8 +7,10 @@
 #include "../../core/memory.h"
 #include "../dock.h"
 
+// Forward declaration for framework image drawing
+extern void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int req_w, int req_h);
+
 // Globals
-static kernel_api_t* sys = 0;
 char fm_path[128] = "/";
 pfs32_direntry_t last_entries[64];
 int is_selected[64];
@@ -141,7 +143,7 @@ void files_on_paint(int x, int y, int w, int h) {
         int len = strlen(last_entries[i].filename);  // Changed from desk_entries to last_entries
         if(len > 4 && strcmp(last_entries[i].filename + len - 4, ".app") == 0) icon = "terminal"; // Changed from desk_entries to last_entries
 
-        sys->draw_image(x, y, icon);
+        cm_draw_image(0, icon, x, y, 48, 48);
 
         // --- RENAME LOGIC FIX (Removed as it's from desktop) ---
         // Normal Label (Shadowed for visibility)
@@ -208,7 +210,6 @@ void files_on_mouse(int x, int y, int btn) {
 }
 
 void init_files_app() {
-    sys = fw_get_api();
     files_refresh();
     Window* w = fw_create_window("Finder", 550, 400, files_on_paint, files_on_input, files_on_mouse);
     // Setup Header Menu

@@ -590,6 +590,102 @@ int pfs32_format(const char* label, uint32_t total) {
     return PFS_OK;
 }
 
+// Fast format - same as pfs32_format but skips bad block scan for boot-time speed
+uint32_t pfs32_format_fast(const char* label, uint32_t total) {
+    init_fat_cache();
+    memset(&sb, 0, sizeof(sb));
+    sb.magic = PFS32_MAGIC;
+    sb.version = PFS32_VERSION;
+    sb.block_size = PFS32_BLOCK_SIZE;
+    sb.page_size = PFS32_PAGE_SIZE;
+    sb.total_blocks = total;
+    sb.total_pages = total / PFS32_PAGE_BLOCKS;
+    sb.cluster_blocks = 8;
+    sb.volume_label[0] = 0;
+    if(label) strncpy(sb.volume_label, label, 31);
+
+    block_bitmap_blocks = (total + 4095) / 4096;
+    if(block_bitmap_blocks < 1) block_bitmap_blocks = 1;
+    sb.block_bitmap_blocks = block_bitmap_blocks;
+    sb.block_bitmap_start = 1;
+
+    uint32_t total_clusters = total / sb.cluster_blocks;
+    uint32_t fat_blocks = (total_clusters + 127) / 128;
+    sb.fat_blocks = fat_blocks;
+    
+    sb.data_start_block = 1 + block_bitmap_blocks + fat_blocks + 1;
+    sb.bad_block_list_start = 1 + block_bitmap_blocks + fat_blocks;
+    sb.root_dir_block = sb.data_start_block;
+    sb.free_blocks = total - sb.data_start_block;
+    sb.free_pages = sb.free_blocks / PFS32_PAGE_BLOCKS;
+
+    // Skip FULL_DISK_UTIL feature to avoid slow bad block scan
+    sb.feature_flags = PFS32_DEFAULT_FEATURES & ~PFS32_FEATURE_FULL_DISK_UTIL;
+    sb.checksum_algo = 1;
+    sb.next_transaction_id = 1;
+    sb.container_id = 0xCAFEBABE;
+    sb.volume_count = 1;
+    sb.bad_block_count = 0;
+    sb.snapshot_count = 0;
+
+    mounted = 1;
+
+    // Write superblock
+    if(disk_write_block(disk_start, &sb) != 0) {
+        mounted = 0;
+        return PFS_ERR_IO;
+    }
+
+    // Initialize block bitmap
+    uint8_t zero[512]; memset(zero, 0, 512);
+    for(uint32_t i = 0; i < block_bitmap_blocks; i++) {
+        disk_write_block(disk_start + sb.block_bitmap_start + i, zero);
+    }
+    
+    // Initialize FAT
+    for(uint32_t i=1; i <= fat_blocks; i++) {
+        disk_write_block(disk_start + 1 + block_bitmap_blocks + i - 1, zero);
+    }
+
+    // Initialize bad block list
+    disk_write_block(disk_start + sb.bad_block_list_start, zero);
+
+    // Mark system blocks as used
+    for(uint32_t i=0; i <= sb.root_dir_block; i++) {
+        set_fat(i, PFS32_END_BLOCK);
+    }
+    for(uint32_t i = 0; i < sb.data_start_block; i++) {
+        pfs32_bitmap_set(i);
+    }
+    sb.free_blocks = total - sb.data_start_block;
+
+    flush_fat();
+    pfs32_flush_bitmap();
+    
+    // Write root directory
+    memset(zero, 0, 512);
+    pfs32_direntry_t* root = (pfs32_direntry_t*)zero;
+    strcpy(root[0].filename, ".");
+    root[0].attributes = PFS32_ATTR_DIRECTORY;
+    root[0].uid = 0;
+    root[0].permissions = 0xE8;
+    root[0].start_block = sb.root_dir_block;
+    root[0].create_time = pfs32_time_now();
+    strcpy(root[1].filename, "..");
+    root[1].attributes = PFS32_ATTR_DIRECTORY;
+    root[1].uid = 0;
+    root[1].permissions = 0xE8;
+    root[1].start_block = sb.root_dir_block;
+    root[1].create_time = pfs32_time_now();
+    if(disk_write_block(disk_start + sb.root_dir_block, zero) != 0) return PFS_ERR_IO;
+    
+    sb.superblock_checksum = pfs32_compute_checksum(&sb, sizeof(sb) - sizeof(pfs32_checksum_t));
+    disk_write_block(disk_start, &sb);
+    
+    flush_fat();
+    return PFS_OK;
+}
+
 // --- Path Resolution ---
 
 int get_dir_block(const char* path, uint32_t* block_out) {

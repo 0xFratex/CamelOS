@@ -236,6 +236,24 @@ static int resolve_and_load(const char* path) {
             return internal_load_library(actual_path);
         }
         
+        // Try 5: Built-in kernel apps (compiled into the kernel, not CDL)
+        // These apps are linked directly into the kernel and can be launched by name
+        if (name_len > 0 && name_len < 60) {
+            char app_name[64];
+            strncpy(app_name, name_start, name_len);
+            app_name[name_len] = 0;
+            
+            // Use the kernel's built-in app launcher
+            extern int kernel_launch_builtin_app(const char* name);
+            int builtin_result = kernel_launch_builtin_app(app_name);
+            if (builtin_result == 0) {
+                serial_write_string("CDL: Launched built-in app: ");
+                serial_write_string(app_name);
+                serial_write_string("\n");
+                return 0;  // Success
+            }
+        }
+        
         // Last resort: try the path as-is
         return internal_load_library(path);
     }

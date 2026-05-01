@@ -148,6 +148,43 @@ void rtl8139_test_loopback() {
     s_printf("[TEST] Test complete\n");
 }
 
+// --- Built-in App Launcher ---
+// Dispatches launch requests for apps compiled into the kernel (not CDL)
+// Returns 0 on success, -1 if app not found
+int kernel_launch_builtin_app(const char* name) {
+    extern void init_files_app(void);
+    extern void init_terminal_app(void);
+    
+    // Built-in app dispatch table
+    struct { const char* name; void (*init)(void); } builtin_apps[] = {
+        {"Files",     init_files_app},
+        {"Finder",    init_files_app},    // Finder = Files alias
+        {"Terminal",  init_terminal_app},
+        {"Monitor",   0},                 // No built-in, uses CDL sysmon
+        {"NetDiag",   0},                 // Has CDL, handled by CDL loader
+        {"NetTools",  0},                 // No built-in app yet
+        {"TextEdit",  0},                 // No built-in app yet
+        {"Browser",   0},                 // No built-in app yet
+        {"Settings",  0},                 // No built-in app yet
+        {"Waterhole", 0},                 // No built-in app yet
+        {0, 0}
+    };
+    
+    for (int i = 0; builtin_apps[i].name != 0; i++) {
+        if (strcmp(name, builtin_apps[i].name) == 0) {
+            if (builtin_apps[i].init) {
+                s_printf("[KERNEL] Launching built-in app: ");
+                s_printf(name);
+                s_printf("\n");
+                builtin_apps[i].init();
+                return 0;  // Success
+            }
+            return -1;  // Known app but no built-in implementation
+        }
+    }
+    return -1;  // Unknown app
+}
+
 void kernel_main(void* mboot_ptr) {
     kernel_init_hal(); 
     s_printf("\n[KERNEL] Entry successful.\n");

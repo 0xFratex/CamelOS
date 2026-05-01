@@ -1700,7 +1700,10 @@ void install_tick(void) {
             add_log("Formatting partition");
             uint32_t part_start=16384, part_size=ide_devices[selected_drive_idx].sectors-part_start;
             pfs32_init(part_start, part_size);
-            if (pfs32_format("Camel Sys", part_size) < 0) {
+            // Use format_fast to skip bad block scan (huge speed improvement)
+            // Bad block scan writes/reads every sector twice, taking forever on large disks
+            extern uint32_t pfs32_format_fast(const char* label, uint32_t total);
+            if ((int)pfs32_format_fast("Camel Sys", part_size) < 0) {
                 strcpy(install_error_msg, "PFS32 format failed"); install_error=1; return;
             }
             pfs32_sync(); disk_flush_cache();
