@@ -110,6 +110,7 @@ typedef struct {
     void* paint_callback;
     void* input_callback;
     void* mouse_callback;
+    void* scroll_callback;     // Called on mouse wheel: void scroll_cb(int delta)
     void* resize_callback;    // Called when window is resized
     void* close_callback;     // Called before window closes
 

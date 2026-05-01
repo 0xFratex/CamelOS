@@ -257,7 +257,7 @@ static void browser_on_paint(int x, int y, int w, int h) {
     
     // Empty state
     if (page_line_count == 0) {
-        gfx_draw_string(x + w/2 - 80, y + h/2, "Enter a URL and press Go", 0xFF999999);
+        gfx_draw_string_centered(x + w/2, y + h/2, "Enter a URL and press Go", 0xFF999999, 1);
     }
     
     // Status bar

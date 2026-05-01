@@ -370,7 +370,7 @@ void partition_tool_render_bar(int x, int y, int w, int h, int selected) {
     
     if (!g_ptool.has_mbr) {
         // Uninitialized disk
-        gfx_draw_string(x + w/2 - 50, y + h/2 - 8, "Uninitialized", 0xFF8E8E93);
+        gfx_draw_string_centered(x + w/2, y + h/2 - 8, "Uninitialized", 0xFF8E8E93, 1);
         return;
     }
     

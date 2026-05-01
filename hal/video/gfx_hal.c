@@ -286,6 +286,10 @@ void gfx_draw_string_scaled(int x, int y, const char* str, uint32_t color, int s
 void gfx_draw_string(int x, int y, const char* str, uint32_t color) { 
     gfx_draw_string_scaled(x, y, str, color, 1); 
 }
+void gfx_draw_string_centered(int cx, int y, const char* str, uint32_t color, int scale) {
+    int len = 0; while (str[len]) len++;
+    gfx_draw_string_scaled(cx - len * 4 * scale, y, str, color, scale);
+}
 
 // Rounded Rect Fill (Updated to use blend_fast for edges)
 void gfx_fill_rounded_rect(int x, int y, int w, int h, uint32_t color, int r) {

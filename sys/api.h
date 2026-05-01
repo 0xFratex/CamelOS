@@ -12,6 +12,9 @@ void sys_shutdown();
 void sys_reboot();
 void sys_delay(int amount);
 void sys_get_time(int* h, int* m, int* s);
+void sys_get_date(int* year, int* month, int* day);
+void sys_set_tz_offset(int offset_min);
+int  sys_get_tz_offset(void);
 
 // --- Notification ---
 uint32_t sys_get_fs_generation();
@@ -29,6 +32,7 @@ int sys_get_key();
 int sys_wait_key();
 void sys_flush_input();
 int  sys_mouse_read(int* x, int* y, int* left_click);
+int  sys_mouse_scroll();  // Returns scroll delta: +1 = up, -1 = down, 0 = none
 void sys_kbd_state(int* ctrl, int* shift, int* alt); // Updated to include Alt
 
 // --- Storage API ---

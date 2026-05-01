@@ -142,7 +142,8 @@ void screenlock_on_activity(void) {
 int screenlock_check_inactivity(void) {
     if (!inactivity_enabled) return 0;
     if (g_lock.state != LOCK_STATE_UNLOCKED) return 0;
-    if (!g_lock.user.has_password) return 0;  // Don't auto-lock if no password set
+    // Auto-lock on inactivity even without password
+    // (lock screen will show, but any key/click unlocks immediately)
     
     uint32_t now = get_tick_count();
     uint32_t elapsed = now - last_activity_time;
@@ -399,11 +400,25 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     
     // Draw large time
     int time_y = cy - 120;
-    gfx_draw_string_scaled(cx - strlen(time_str) * 16, time_y, time_str, C_LOCK_TEXT, 4);
+    gfx_draw_string_centered(cx, time_y, time_str, C_LOCK_TEXT, 4);
     
     // Date display (below time)
-    char date_str[32] = "Welcome to CamelOS";
-    gfx_draw_string_scaled(cx - strlen(date_str) * 4, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
+    int date_year, date_month, date_day;
+    sys_get_date(&date_year, &date_month, &date_day);
+    static const char* month_names[] = {
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    };
+    char date_str[32];
+    const char* mname = (date_month >= 1 && date_month <= 12) ? month_names[date_month] : "";
+    // Format: "January 1" or "January 12, 2026"
+    int di = 0;
+    while (*mname && di < 20) date_str[di++] = *mname++;
+    date_str[di++] = ' ';
+    if (date_day >= 10) { date_str[di++] = '0' + (date_day / 10); }
+    date_str[di++] = '0' + (date_day % 10);
+    date_str[di] = 0;
+    gfx_draw_string_centered(cx, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
     
     // Avatar
     int avatar_y = cy + 20;
@@ -411,7 +426,7 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     draw_avatar(cx, avatar_y, avatar_size, g_lock.user.avatar_color);
     
     // Username
-    gfx_draw_string_scaled(cx - strlen(g_lock.user.username) * 4, 
+    gfx_draw_string_centered(cx, 
                           avatar_y + avatar_size/2 + 30, 
                           g_lock.user.username, C_LOCK_TEXT, 1);
     
@@ -443,17 +458,17 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         // Error message
         if (g_lock.show_error) {
             char* error_msg = "Incorrect password. Try again.";
-            gfx_draw_string(cx - strlen(error_msg) * 4, input_y + 30, error_msg, C_LOCK_ERROR);
+            gfx_draw_string_centered(cx, input_y + 30, error_msg, C_LOCK_ERROR, 1);
         }
         
         // Bottom hint
         char* bottom_hint = "Enter password to unlock";
-        gfx_draw_string(cx - strlen(bottom_hint) * 4, h - 50, bottom_hint, C_LOCK_TEXT_DIM);
+        gfx_draw_string_centered(cx, h - 50, bottom_hint, C_LOCK_TEXT_DIM, 1);
     } else {
         // No password - show "Click to unlock"
         int input_y = avatar_y + avatar_size/2 + 80;
         char* hint = "Click or press Enter to unlock";
-        gfx_draw_string(cx - strlen(hint) * 4, input_y, hint, C_LOCK_TEXT_DIM);
+        gfx_draw_string_centered(cx, input_y, hint, C_LOCK_TEXT_DIM, 1);
     }
     
     // Lock icon in corner

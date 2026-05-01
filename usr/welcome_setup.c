@@ -38,10 +38,41 @@ static WelcomeSetup g_setup;
 
 // Timezone data (comprehensive worldwide coverage)
 static TimeZone timezones[] = {
-    // UTC / GMT
+    // UTC offsets (standard reference)
+    {"UTC-12",   "UTC-12:00 (Baker Island)", -720},
+    {"UTC-11",   "UTC-11:00 (Samoa)", -660},
+    {"UTC-10",   "UTC-10:00 (Hawaii)", -600},
+    {"UTC-9",    "UTC-09:00 (Alaska)", -540},
+    {"UTC-8",    "UTC-08:00 (Pacific)", -480},
+    {"UTC-7",    "UTC-07:00 (Mountain)", -420},
+    {"UTC-6",    "UTC-06:00 (Central)", -360},
+    {"UTC-5",    "UTC-05:00 (Eastern)", -300},
+    {"UTC-4",    "UTC-04:00 (Atlantic)", -240},
+    {"UTC-3",    "UTC-03:00 (Brasilia)", -180},
+    {"UTC-2",    "UTC-02:00 (Mid-Atlantic)", -120},
+    {"UTC-1",    "UTC-01:00 (Azores)", -60},
     {"UTC",      "UTC (Coordinated Universal Time)", 0},
-    {"GMT",      "GMT (Greenwich Mean Time)", 0},
-    // Americas
+    {"UTC+1",    "UTC+01:00 (Central Europe)", 60},
+    {"UTC+2",    "UTC+02:00 (Eastern Europe)", 120},
+    {"UTC+3",    "UTC+03:00 (Moscow)", 180},
+    {"UTC+3:30", "UTC+03:30 (Tehran)", 210},
+    {"UTC+4",    "UTC+04:00 (Gulf)", 240},
+    {"UTC+4:30", "UTC+04:30 (Kabul)", 270},
+    {"UTC+5",    "UTC+05:00 (Pakistan)", 300},
+    {"UTC+5:30", "UTC+05:30 (India)", 330},
+    {"UTC+5:45", "UTC+05:45 (Nepal)", 345},
+    {"UTC+6",    "UTC+06:00 (Bangladesh)", 360},
+    {"UTC+6:30", "UTC+06:30 (Myanmar)", 390},
+    {"UTC+7",    "UTC+07:00 (Indochina)", 420},
+    {"UTC+8",    "UTC+08:00 (China)", 480},
+    {"UTC+9",    "UTC+09:00 (Japan/Korea)", 540},
+    {"UTC+9:30", "UTC+09:30 (Central Australia)", 570},
+    {"UTC+10",   "UTC+10:00 (Eastern Australia)", 600},
+    {"UTC+11",   "UTC+11:00 (Solomon Islands)", 660},
+    {"UTC+12",   "UTC+12:00 (New Zealand)", 720},
+    {"UTC+13",   "UTC+13:00 (Tonga)", 780},
+    {"UTC+14",   "UTC+14:00 (Line Islands)", 840},
+    // Americas - detailed cities
     {"NST",      "Newfoundland (NST)", -210},
     {"AST",      "Halifax (AST)", -240},
     {"EST",      "New York (EST)", -300},
@@ -55,10 +86,16 @@ static TimeZone timezones[] = {
     {"COT",      "Bogota (COT)", -300},
     {"PET",      "Lima (PET)", -300},
     {"CST_MX",   "Mexico City (CST)", -360},
-    // Europe
+    {"VET",      "Caracas (VET)", -270},
+    {"CLT",      "Santiago (CLT)", -240},
+    {"UYT",      "Montevideo (UYT)", -180},
+    {"GYT",      "Georgetown (GYT)", -240},
+    {"SRT",      "Paramaribo (SRT)", -180},
+    // Europe - detailed cities
+    {"GMT",      "GMT (Greenwich Mean Time)", 0},
     {"WET",      "Lisbon (WET)", 0},
     {"IST_EURO", "Dublin (IST)", 60},
-    {"CET",      "Paris/Berlin (CET)", 60},
+    {"CET",      "Paris (CET)", 60},
     {"CET_ROM",  "Rome (CET)", 60},
     {"CET_MAD",  "Madrid (CET)", 60},
     {"CET_AMS",  "Amsterdam (CET)", 60},
@@ -66,12 +103,25 @@ static TimeZone timezones[] = {
     {"CET_WAR",  "Warsaw (CET)", 60},
     {"CET_STO",  "Stockholm (CET)", 60},
     {"CET_VIE",  "Vienna (CET)", 60},
-    {"EET",      "Athens/Helsinki (EET)", 120},
+    {"CET_BER",  "Berlin (CET)", 60},
+    {"CET_BEL",  "Belgrade (CET)", 60},
+    {"CET_PRA",  "Prague (CET)", 60},
+    {"CET_BUD",  "Budapest (CET)", 60},
+    {"EET",      "Athens (EET)", 120},
     {"EET_BUC",  "Bucharest (EET)", 120},
+    {"EET_HEL",  "Helsinki (EET)", 120},
+    {"EET_SOF",  "Sofia (EET)", 120},
+    {"EET_TAL",  "Tallinn (EET)", 120},
+    {"EET_RIG",  "Riga (EET)", 120},
+    {"EET_VIL",  "Vilnius (EET)", 120},
+    {"EET_KIE",  "Kyiv (EET)", 120},
     {"MSK",      "Moscow (MSK)", 180},
-    // Asia
+    {"SAMT",     "Samara (SAMT)", 240},
+    // Asia - detailed cities
     {"TRT",      "Istanbul (TRT)", 180},
     {"GST",      "Dubai (GST)", 240},
+    {"AZT",      "Baku (AZT)", 240},
+    {"GET",      "Tbilisi (GET)", 240},
     {"IST",      "Mumbai (IST)", 330},
     {"NPT",      "Kathmandu (NPT)", 345},
     {"BST",      "Dhaka (BST)", 360},
@@ -81,13 +131,24 @@ static TimeZone timezones[] = {
     {"CST_ASIA", "Beijing/Shanghai (CST)", 480},
     {"HKT",      "Hong Kong (HKT)", 480},
     {"PHT",      "Manila (PHT)", 480},
+    {"MYT",      "Kuala Lumpur (MYT)", 480},
+    {"TWT",      "Taipei (TWT)", 480},
     {"KST",      "Seoul (KST)", 540},
     {"JST",      "Tokyo (JST)", 540},
+    {"IRKT",     "Irkutsk (IRKT)", 480},
+    {"YAKT",     "Yakutsk (YAKT)", 540},
+    {"VLAT",     "Vladivostok (VLAT)", 600},
     // Oceania
     {"AWST",     "Perth (AWST)", 480},
     {"ACST",     "Darwin (ACST)", 570},
     {"AEST",     "Sydney (AEST)", 600},
-    {"NZST",     "Auckland (NZST)", 720}
+    {"NZST",     "Auckland (NZST)", 720},
+    {"CHAST",    "Chatham Islands (CHAST)", 765},
+    // Africa
+    {"WAT",      "Lagos (WAT)", 60},
+    {"CAT",      "Johannesburg (CAT)", 120},
+    {"EAT",      "Nairobi (EAT)", 180},
+    {"MUT",      "Mauritius (MUT)", 240}
 };
 #define TIMEZONE_COUNT (sizeof(timezones) / sizeof(TimeZone))
 
@@ -401,6 +462,12 @@ int welcome_setup_finish(void) {
     extern void kbd_set_layout(int);
     kbd_set_layout(g_setup.config.kbd_layout);
     
+    // Apply timezone offset to system clock
+    extern void sys_set_tz_offset(int);
+    if (g_setup.selected_tz_idx >= 0 && g_setup.selected_tz_idx < (int)TIMEZONE_COUNT) {
+        sys_set_tz_offset(timezones[g_setup.selected_tz_idx].offset_minutes);
+    }
+    
     g_setup.state = SETUP_STATE_COMPLETE;
     return 0;
 }
@@ -539,8 +606,8 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
 static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int click) {
     // Logo / Title - shifted up to make room for features and button
     int title_y = cy - 140;
-    gfx_draw_string_scaled(cx - 100, title_y, "Camel", C_ACCENT, 4);
-    gfx_draw_string_scaled(cx - 40, title_y + 60, "OS", C_TEXT_DARK, 4);
+    gfx_draw_string_centered(cx, title_y, "Camel", C_ACCENT, 4);
+    gfx_draw_string_centered(cx, title_y + 60, "OS", C_TEXT_DARK, 4);
     
     // Subtitle
     char* subtitle = "Welcome to your new operating system";
@@ -588,7 +655,7 @@ static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int 
     
     // Title
     char* title = "Create Your Account";
-    gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
+    gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 16) / 2, 
                           card_y + 24, title, C_TEXT_DARK, 2);
     
     // Subtitle
@@ -654,14 +721,14 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
     // Title
     if (g_setup.password_step == 0) {
         char* title = "Set Your Password";
-        gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
+        gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 16) / 2, 
                               card_y + 50, title, C_TEXT_DARK, 2);
         char* subtitle = "This protects your account and locks your screen";
         gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2, 
                        card_y + 85, subtitle, C_TEXT_MUTED);
     } else {
         char* title = "Confirm Password";
-        gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
+        gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 16) / 2, 
                               card_y + 50, title, C_TEXT_DARK, 2);
         char* subtitle = "Enter your password again to confirm";
         gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2, 
@@ -749,7 +816,7 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
     
     // Title
     char* title = "Select Your Time Zone";
-    gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
+    gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 16) / 2, 
                           card_y + 24, title, C_TEXT_DARK, 2);
     
     // Subtitle
@@ -854,7 +921,7 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
     
     // Title
     char* title = "Choose Your Theme";
-    gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 12) / 2, 
+    gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 16) / 2, 
                           card_y + 24, title, C_TEXT_DARK, 2);
     
     // Subtitle
@@ -979,7 +1046,7 @@ void welcome_setup_render(uint32_t* buffer, int w, int h, int mx, int my) {
             break;
         case SETUP_STATE_COMPLETE:
             // Show completion briefly
-            gfx_draw_string_scaled(cx - 120, cy - 20, "All Done!", C_SUCCESS, 3);
+            gfx_draw_string_centered(cx, cy - 20, "All Done!", C_SUCCESS, 3);
             break;
     }
 }

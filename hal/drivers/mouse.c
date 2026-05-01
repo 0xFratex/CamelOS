@@ -1,4 +1,5 @@
 // hal/drivers/mouse.c
+// PS/2 Mouse driver with Intellimouse scroll wheel support
 #include "../common/ports.h"
 #include "vga.h"
 
@@ -12,11 +13,16 @@ typedef signed char int8_t;
 
 // Mouse state
 uint8_t mouse_cycle = 0;
-int8_t mouse_byte[3]; 
-int mouse_x = 160;    
-int mouse_y = 100;    
+int8_t mouse_byte[4];      // 4 bytes for Intellimouse protocol
+int mouse_x = 160;
+int mouse_y = 100;
 int mouse_btn_left = 0;
 int mouse_btn_right = 0;
+int mouse_btn_middle = 0;
+int8_t mouse_scroll_delta = 0;  // Scroll wheel: positive = up, negative = down
+
+// Intellimouse support flag
+static uint8_t mouse_has_wheel = 0;
 
 void mouse_wait(uint8_t type) {
     uint32_t timeout = 100000;
@@ -33,7 +39,7 @@ void mouse_wait(uint8_t type) {
 
 void mouse_write(uint8_t a_write) {
     mouse_wait(1);
-    outb(0x64, 0xD4); 
+    outb(0x64, 0xD4);
     mouse_wait(1);
     outb(0x60, a_write);
 }
@@ -51,7 +57,7 @@ void mouse_handler() {
 
     uint8_t data = inb(0x60);
 
-    // --- FIX: Packet Synchronization ---
+    // --- Packet Synchronization ---
     // The first byte of a standard PS/2 mouse packet always has Bit 3 set (0x08).
     // If we are at cycle 0 and this bit is missing, we are out of sync.
     if (mouse_cycle == 0 && !(data & 0x08)) {
@@ -61,14 +67,18 @@ void mouse_handler() {
     mouse_byte[mouse_cycle] = data;
     mouse_cycle++;
 
-    if (mouse_cycle == 3) {
+    // Determine packet length based on wheel support
+    uint8_t packet_len = mouse_has_wheel ? 4 : 3;
+
+    if (mouse_cycle >= packet_len) {
         mouse_cycle = 0;
 
         // Byte 0: Flags
         mouse_btn_left = (mouse_byte[0] & 0x01);
         mouse_btn_right = (mouse_byte[0] & 0x02) >> 1;
+        mouse_btn_middle = (mouse_byte[0] & 0x04) >> 2;
 
-        // Byte 0 Check: Overflow bits (X=Bit6, Y=Bit7). If set, discard packet to prevent huge jumps.
+        // Byte 0 Check: Overflow bits (X=Bit6, Y=Bit7). If set, discard packet.
         if ((mouse_byte[0] & 0xC0) != 0) return;
 
         // Byte 1: X Movement
@@ -80,8 +90,16 @@ void mouse_handler() {
         mouse_x += rel_x;
         mouse_y -= rel_y; // PS/2 Y is positive upwards, screen is positive downwards
 
-        // === FIX: Use Dynamic Screen Size ===
-        // Use 320x200 as safe fallback if screen vars are 0 (during boot)
+        // Byte 3: Scroll wheel (Intellimouse)
+        if (mouse_has_wheel) {
+            mouse_scroll_delta = (int8_t)mouse_byte[3];
+            // Some mice use 4-bit signed for scroll; sign-extend if needed
+            // Values are typically -1, 0, or +1 per notch
+        } else {
+            mouse_scroll_delta = 0;
+        }
+
+        // === Use Dynamic Screen Size ===
         int limit_w = (screen_w > 0) ? screen_w : 320;
         int limit_h = (screen_h > 0) ? screen_h : 200;
 
@@ -93,12 +111,16 @@ void mouse_handler() {
 }
 
 void init_mouse() {
-    // FIX: Explicitly zero out buttons to prevent ghost clicks on startup
+    // Zero out state
     mouse_btn_left = 0;
     mouse_btn_right = 0;
+    mouse_btn_middle = 0;
+    mouse_scroll_delta = 0;
     mouse_cycle = 0;
+    mouse_has_wheel = 0;
 
     uint8_t _status;
+    uint8_t ack;
 
     mouse_wait(1);
     outb(0x64, 0xA8); // Enable Aux
@@ -108,8 +130,8 @@ void init_mouse() {
     mouse_wait(0);
     _status = inb(0x60);
 
-    _status |= 2; // Enable IRQ 12
-    _status &= ~0x20; // Disable Mouse Clock (Clear bit 5) to enable it? No, clear disables disable.
+    _status |= 2;     // Enable IRQ 12
+    _status &= ~0x20; // Enable mouse clock
 
     mouse_wait(1);
     outb(0x64, 0x60); // Set Compaq Status
@@ -118,15 +140,46 @@ void init_mouse() {
 
     // Reset Mouse
     mouse_write(0xFF);
-    mouse_read(); // Ack
+    ack = mouse_read(); // Ack (0xFA)
+
+    // --- Enable Intellimouse (scroll wheel) protocol ---
+    // Step 1: Set sample rate 200
+    mouse_write(0xF3); // Set Sample Rate command
+    ack = mouse_read();
+    mouse_write(200);  // Sample rate = 200
+    ack = mouse_read();
+
+    // Step 2: Set sample rate 100
+    mouse_write(0xF3);
+    ack = mouse_read();
+    mouse_write(100);
+    ack = mouse_read();
+
+    // Step 3: Set sample rate 80
+    mouse_write(0xF3);
+    ack = mouse_read();
+    mouse_write(80);
+    ack = mouse_read();
+
+    // Step 4: Read device ID — if 0x03, Intellimouse is supported
+    mouse_write(0xF2); // Get Device ID
+    ack = mouse_read();
+    uint8_t device_id = mouse_read();
+
+    if (device_id == 0x03) {
+        mouse_has_wheel = 1;
+        // Re-set sample rate to reasonable value
+        mouse_write(0xF3);
+        ack = mouse_read();
+        mouse_write(100);  // 100 samples/sec
+        ack = mouse_read();
+    }
 
     // Enable Streaming
     mouse_write(0xF4);
-    mouse_read(); // Ack
+    ack = mouse_read(); // Ack
 
     // Unmask IRQ 12 on PIC (Slave)
-    // Master PIC (0x21) bit 2 (Cascade) must be 0
-    // Slave PIC (0xA1) bit 4 (IRQ 12) must be 0
     uint8_t mask = inb(0xA1);
     outb(0xA1, mask & ~(1 << 4));
 

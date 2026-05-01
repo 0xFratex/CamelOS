@@ -47,3 +47,32 @@ void rtc_read_time(int* h, int* m, int* s) {
     *m = (int)minute;
     *h = (int)hour;
 }
+
+void rtc_read_date(int* year, int* month, int* day) {
+    unsigned char century, registerB;
+
+    // Wait until update is not in progress
+    while (rtc_get_update_in_progress_flag());
+
+    *day   = rtc_get_register(0x07);
+    *month = rtc_get_register(0x08);
+    *year  = rtc_get_register(0x09);
+    century = rtc_get_register(0x32);
+
+    registerB = rtc_get_register(0x0B);
+
+    // Convert BCD to binary values if necessary
+    if (!(registerB & 0x04)) {
+        *day   = bcd2bin(*day);
+        *month = bcd2bin(*month);
+        *year  = bcd2bin(*year);
+        century = bcd2bin(century);
+    }
+
+    // Compute full year
+    if (century > 0) {
+        *year = century * 100 + *year;
+    } else {
+        *year = 2000 + *year;
+    }
+}

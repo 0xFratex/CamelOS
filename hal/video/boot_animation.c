@@ -5,6 +5,7 @@
 #include "gfx_hal.h"
 #include "../../core/string.h"
 #include "../../kernel/assets.h"
+#include "../../common/math_util.h"
 
 // External screen dimensions
 extern int screen_w;
@@ -236,10 +237,10 @@ void boot_animation_render(void) {
     draw_logo(cx, cy - 80, g_boot_state.logo_scale * 3);
     
     // Title
-    gfx_draw_string_scaled(cx - 80, cy + 40, "Camel OS", C_TEXT, 3);
+    gfx_draw_string_centered(cx, cy + 40, "Camel OS", C_TEXT, 3);
     
     // Version/tagline
-    gfx_draw_string(cx - 80, cy + 90, "Loading your experience...", C_TEXT_DIM);
+    gfx_draw_string_centered(cx, cy + 90, "Loading your experience...", C_TEXT_DIM, 1);
     
     // Progress bar
     int bar_w = 300;
@@ -251,7 +252,7 @@ void boot_animation_render(void) {
     
     // Current step text
     const char* step_name = boot_step_names[g_boot_state.current_step];
-    gfx_draw_string(cx - strlen(step_name) * 3, bar_y + 20, step_name, C_TEXT_DIM);
+    gfx_draw_string_centered(cx, bar_y + 20, step_name, C_TEXT_DIM, 1);
     
     // Spinner
     g_boot_state.spinner_angle = (g_boot_state.spinner_angle + 5) % 360;

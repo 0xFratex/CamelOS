@@ -911,6 +911,17 @@ void start_bubble_view() {
     // Initialize welcome setup
     welcome_setup_init();
     
+    // Apply saved timezone offset and keyboard layout from config
+    {
+        extern void sys_set_tz_offset(int);
+        extern void kbd_set_layout(int);
+        SystemConfig* cfg = welcome_setup_get_config();
+        if (cfg && cfg->is_configured) {
+            sys_set_tz_offset(cfg->timezone.offset_minutes);
+            kbd_set_layout(cfg->kbd_layout);
+        }
+    }
+    
     desktop_init();
     
     // Explicitly reset menu state
@@ -923,14 +934,15 @@ void start_bubble_view() {
         welcome_setup_start();
         sys_print("[GUI] First boot detected - showing welcome setup.\n");
     } else {
-        // User is configured - lock screen at uptime
+        // User is configured - show lock screen at boot
         g_setup_mode = 0;
+        screenlock_lock();
+        g_first_boot_lock = 1;
         if (screenlock_get_user()->has_password) {
-            screenlock_lock();
-            g_first_boot_lock = 1;
             sys_print("[GUI] Screen locked at boot - waiting for authentication.\n");
+        } else {
+            sys_print("[GUI] Screen locked at boot - no password, click/key to unlock.\n");
         }
-        // No password = no lock screen at boot. User goes straight to desktop.
     }
 
     int mx = 0, my = 0;
@@ -959,6 +971,13 @@ void start_bubble_view() {
         // Polling
         char k = sys_get_key();
         int click = (lb && !prev_lb);
+
+        // Scroll wheel handling
+        int scroll_delta = sys_mouse_scroll();
+        if (scroll_delta != 0 && active_win && active_win->scroll_callback) {
+            typedef void (*scb)(int);
+            ((scb)active_win->scroll_callback)(scroll_delta);
+        }
 
         // ============================================
         // WELCOME SETUP MODE - First boot configuration

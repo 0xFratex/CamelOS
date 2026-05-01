@@ -66,7 +66,63 @@ void sys_delay(int milliseconds) {
 }
 
 extern void rtc_read_time(int* h, int* m, int* s);
-void sys_get_time(int* h, int* m, int* s) { rtc_read_time(h, m, s); }
+extern void rtc_read_date(int* year, int* month, int* day);
+
+// Timezone offset in minutes from UTC (e.g., -300 for EST, 60 for CET)
+static int tz_offset_minutes = 0;
+
+void sys_set_tz_offset(int offset_min) {
+    tz_offset_minutes = offset_min;
+}
+
+int sys_get_tz_offset(void) {
+    return tz_offset_minutes;
+}
+
+void sys_get_time(int* h, int* m, int* s) {
+    rtc_read_time(h, m, s);
+    // Apply timezone offset
+    if (tz_offset_minutes != 0 && h && m && s) {
+        int total_min = (*h) * 60 + (*m) + tz_offset_minutes;
+        // Normalize to 0-23 hours
+        while (total_min < 0) total_min += 24 * 60;
+        total_min %= 24 * 60;
+        *h = total_min / 60;
+        *m = total_min % 60;
+    }
+}
+
+void sys_get_date(int* year, int* month, int* day) {
+    rtc_read_date(year, month, day);
+    // Adjust date if timezone offset crosses midnight
+    if (tz_offset_minutes != 0 && year && month && day) {
+        int h, m, s;
+        rtc_read_time(&h, &m, &s);
+        int total_min = h * 60 + m + tz_offset_minutes;
+        if (total_min < 0) {
+            // Previous day
+            (*day)--;
+            if (*day < 1) {
+                (*month)--;
+                if (*month < 1) { *month = 12; (*year)--; }
+                // Simple days per month
+                int days_in_month[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                if (*year % 4 == 0 && (*year % 100 != 0 || *year % 400 == 0)) days_in_month[2] = 29;
+                *day = days_in_month[*month];
+            }
+        } else if (total_min >= 24 * 60) {
+            // Next day
+            (*day)++;
+            int days_in_month[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+            if (*year % 4 == 0 && (*year % 100 != 0 || *year % 400 == 0)) days_in_month[2] = 29;
+            if (*day > days_in_month[*month]) {
+                *day = 1;
+                (*month)++;
+                if (*month > 12) { *month = 1; (*year)++; }
+            }
+        }
+    }
+}
 
 // Updated to support Alt
 void sys_kbd_state(int* ctrl, int* shift, int* alt) {
@@ -79,6 +135,13 @@ extern int mouse_x, mouse_y, mouse_btn_left, mouse_btn_right;
 int sys_mouse_read(int* x, int* y, int* left_click) {
     *x = mouse_x; *y = mouse_y; *left_click = mouse_btn_left;
     return (mouse_btn_left | (mouse_btn_right << 1));
+}
+
+extern int8_t mouse_scroll_delta;
+int sys_mouse_scroll() {
+    int8_t delta = mouse_scroll_delta;
+    mouse_scroll_delta = 0;  // Consume the scroll event
+    return (int)delta;
 }
 
 void sys_print(const char* str) { vga_print(str); }

@@ -1270,7 +1270,7 @@ void render_disk_utility(void) {
         }
     } else {
         gfx_fill_rounded_rect(cx+4, bar_y+4, bar_w-8, bar_h-8, C_PART_FREE, 5);
-        gfx_draw_string(cx + bar_w/2 - 32, bar_y + bar_h/2 - 7, "Unallocated", C_TEXT_MUTED);
+        gfx_draw_string_centered(cx + bar_w/2, bar_y + bar_h/2 - 7, "Unallocated", C_TEXT_MUTED, 1);
     }
 
     // Partition detail / controls
