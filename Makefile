@@ -14,24 +14,24 @@ INSTALLER_LDFLAGS       =       $(LDFLAGS) -L/usr/lib/gcc/x86_64-linux-gnu/14/32
 #       FIX:    Added   -mno-sse        -mno-mmx        -msoft-float    to      prevent #UD     (Int    6)      exceptions
 #       caused  by      the     compiler        generating      SSE     instructions    when    the     kernel  hasn't  enabled them.
 CDL_CFLAGS      =       -m32    -fno-stack-protector    -fno-builtin    -O2     \
-	-Iinclude       -Icore  -Isys   -Iusr   -Ikernel        -I/usr/include  -fPIC   -g      -Wall   -Wno-unused-parameter   \
-	-ffunction-sections     -fdata-sections \
-	-march=i386     -mtune=i386     \
-	-mno-sse        -mno-sse2       -mno-sse3       -mno-ssse3      -mno-sse4       -mno-sse4.1     -mno-sse4.2     \
-	-mno-avx        -mno-avx2       -mno-mmx        -mno-3dnow      \
-	-mno-80387      -mno-fp-ret-in-387      \
-	-mgeneral-regs-only     \
-	-fno-tree-loop-distribute-patterns      \
-	-fno-strict-aliasing    \
-	-ffreestanding  \
-	-fno-asynchronous-unwind-tables \
-	-fno-exceptions \
-	-fno-unwind-tables      \
-	-fomit-frame-pointer    \
-	-minline-all-stringops  \
-	-fno-tree-vectorize     \
-	-fno-tree-loop-vectorize        \
-	-fno-tree-slp-vectorize
+        -Iinclude       -Icore  -Isys   -Iusr   -Ikernel        -I/usr/include  -fPIC   -g      -Wall   -Wno-unused-parameter   \
+        -ffunction-sections     -fdata-sections \
+        -march=i386     -mtune=i386     \
+        -mno-sse        -mno-sse2       -mno-sse3       -mno-ssse3      -mno-sse4       -mno-sse4.1     -mno-sse4.2     \
+        -mno-avx        -mno-avx2       -mno-mmx        -mno-3dnow      \
+        -mno-80387      -mno-fp-ret-in-387      \
+        -mgeneral-regs-only     \
+        -fno-tree-loop-distribute-patterns      \
+        -fno-strict-aliasing    \
+        -ffreestanding  \
+        -fno-asynchronous-unwind-tables \
+        -fno-exceptions \
+        -fno-unwind-tables      \
+        -fomit-frame-pointer    \
+        -minline-all-stringops  \
+        -fno-tree-vectorize     \
+        -fno-tree-loop-vectorize        \
+        -fno-tree-slp-vectorize
 
 #       CDL     Flags
 #       -shared creates a       relocatable     ELF     (like   a       DLL)
@@ -42,14 +42,14 @@ COMMON_SRC      =       common/font.c
 
 #       ---     SOURCES ---
 HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/serial.c    \
-	hal/drivers/keyboard.c  hal/drivers/mouse.c     hal/drivers/sound.c     \
-	hal/drivers/pci.c       hal/drivers/net_rtl8139.c       hal/drivers/net_rtl8169.c       hal/drivers/net.c       \
-	hal/drivers/net_e1000.c hal/drivers/ahci.c      \
-	hal/drivers/usb_xhci.c  hal/drivers/usb.c       hal/drivers/wifi_rtl.c  \
-	hal/drivers/rtc.c       hal/drivers/sb16.c      \
-	hal/cpu/apic.c  hal/cpu/idt.c   hal/cpu/isr.c   hal/cpu/gdt.c   hal/cpu/timer.c hal/cpu/paging.c        hal/cpu/syscall.c       \
-	hal/video/gfx_hal.c     hal/video/compositor.c  hal/video/animation.c   hal/video/loading_animation.c
-	
+        hal/drivers/keyboard.c  hal/drivers/mouse.c     hal/drivers/sound.c     \
+        hal/drivers/pci.c       hal/drivers/net_rtl8139.c       hal/drivers/net_rtl8169.c       hal/drivers/net.c       \
+        hal/drivers/net_e1000.c hal/drivers/ahci.c      \
+        hal/drivers/usb_xhci.c  hal/drivers/usb.c       hal/drivers/wifi_rtl.c  \
+        hal/drivers/rtc.c       hal/drivers/sb16.c      \
+        hal/cpu/apic.c  hal/cpu/idt.c   hal/cpu/isr.c   hal/cpu/gdt.c   hal/cpu/timer.c hal/cpu/paging.c        hal/cpu/syscall.c       \
+        hal/video/gfx_hal.c     hal/video/compositor.c  hal/video/animation.c   hal/video/loading_animation.c
+        
 CORE_SRC        =       core/kernel.c   core/panic.c    sys/api.c       core/string.c   core/memory.c   core/task.c     core/cdl_loader.c       core/window_server.c    core/net.c      core/net_if.c   core/net_dhcp.c core/socket.c   core/tcp.c      core/http.c     core/tls.c      core/tls13.c    core/http2.c    core/tls_ca_store.c     core/app_switcher.c     core/dns.c      core/debug.c    core/arp.c      core/scheduler.c        core/firewall.c  core/sha256.c   core/objc_runtime.c    core/macho_loader.c    core/foundation_stub.c    core/app_bundle.c    core/dmg_mount.c      core/zlib_inflate.c    core/app_installer.c
 ASSETS_SRC      =       kernel/assets.c
 FS_SRC  =       fs/pfs32.c      fs/disk.c
@@ -57,7 +57,7 @@ USR_SRC =       usr/shell.c     usr/bubbleview.c        usr/desktop.c   usr/fram
 
 #       NOTE:   files.c and terminal.c are compiled into the kernel as built-in apps
 #       They are launched via the kernel_launch_builtin_app() dispatch mechanism
-KERNEL_OBJ      =       system/entry.o  $(HAL_SRC:.c=.o)        $(CORE_SRC:.c=.o)       $(FS_SRC:.c=.o) $(USR_SRC:.c=.o)        $(ASSETS_SRC:.c=.o)     $(COMMON_SRC:.c=.o)
+KERNEL_OBJ      =       system/entry.o  core/objc_msgSend.o     $(HAL_SRC:.c=.o)        $(CORE_SRC:.c=.o)       $(FS_SRC:.c=.o) $(USR_SRC:.c=.o)        $(ASSETS_SRC:.c=.o)     $(COMMON_SRC:.c=.o)
 
 #       Installer       objects -       explicitly      list    them    to      avoid   dependency      issues
 INSTALLER_OBJ   =       installer/entry.o       installer/installer_main.o      installer/panic_framework.o     sys/api_installer.o     core/string.o   core/memory.o   core/task.o     core/scheduler.o        core/panic.o    hal/drivers/ata.o       hal/drivers/vga.o       hal/video/gfx_hal.o     hal/drivers/serial.o    hal/cpu/apic.o  hal/cpu/timer.o hal/cpu/paging.o        fs/pfs32.o      fs/disk.o       hal/drivers/keyboard.o  hal/drivers/mouse.o     hal/drivers/rtc.o       installer/payload.o     common/font.o   kernel/assets.o installer/arp_stub.o    installer/disk_tools.o  installer/sys_requirements.o    installer/disk_health.o   installer/soft_div.o
@@ -78,6 +78,9 @@ mbr.bin:        boot/mbr.asm
 
 system/entry.o: boot/system_entry.asm
 	mkdir   -p      system
+	$(AS)   -f      elf32   $<      -o      $@
+
+core/objc_msgSend.o: core/objc_msgSend.asm
 	$(AS)   -f      elf32   $<      -o      $@
 
 system.bin:     $(KERNEL_OBJ)
@@ -173,7 +176,7 @@ install:        camel_install.iso       disk.img
 
 #       Enhanced        QEMU    networking
 QEMU_NET        =       -netdev user,id=net0,net=10.0.2.0/24,host=10.0.2.2,dhcpstart=10.0.2.15  \
-	-device rtl8139,netdev=net0,mac=52:54:00:12:34:56
+        -device rtl8139,netdev=net0,mac=52:54:00:12:34:56
 
 #       Enable  GDB     stub    for     debugging
 QEMU_DEBUG      =       -s      -S
@@ -183,7 +186,7 @@ QEMU_NET_SIMPLE =       -net    nic,model=rtl8139       -net    user
 
 run:    disk.img
 	qemu-system-i386        -m      512     -drive  file=disk.img,format=raw,index=0,media=disk     \
-	-vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
+        -vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
 
 #       Explicit        compilation     rules   to      handle  different       flags
 sys/api.o:      sys/api.c

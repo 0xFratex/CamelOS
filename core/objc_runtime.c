@@ -333,20 +333,17 @@ const char* object_getClassName(id obj) {
 
 // --- Message Sending ---
 
-// Simple method lookup and dispatch
-id objc_msgSend(id self, SEL op, ...) {
-    if (!self || !op) return 0;
+// Method lookup helper - called by assembly objc_msgSend
+// Returns the IMP (function pointer) for the method, or NULL if not found
+IMP objc_lookupMethod(Class cls, SEL op) {
+    if (!cls || !op) return 0;
     
-    Class cls = self->isa;
     Method method = class_getInstanceMethod(cls, op);
-    
     if (method && method->imp) {
-        // Cast and call - simplified, real implementation needs va_args
-        typedef id (*msg_impl)(id, SEL, ...);
-        return ((msg_impl)method->imp)(self, op);
+        return method->imp;
     }
     
-    // Method not found - could call forwardInvocation: here
+    // Method not found
     s_printf("[ObjC] WARNING: Unrecognized selector ");
     s_printf(sel_getName(op));
     s_printf(" sent to class ");
@@ -356,14 +353,32 @@ id objc_msgSend(id self, SEL op, ...) {
     return 0;
 }
 
-id objc_msgSendSuper(id self, Class super_class, SEL op, ...) {
-    if (!self || !op || !super_class) return 0;
+// C fallback for objc_msgSend - used when assembly version is not available
+// The assembly version in objc_msgSend.asm properly forwards variadic args
+id objc_msgSend_c(id self, SEL op, ...) {
+    if (!self || !op) return 0;
     
-    Method method = class_getInstanceMethod(super_class, op);
+    Class cls = self->isa;
+    IMP imp = objc_lookupMethod(cls, op);
     
-    if (method && method->imp) {
+    if (imp) {
+        // Cast and call - simplified, real implementation needs va_args
         typedef id (*msg_impl)(id, SEL, ...);
-        return ((msg_impl)method->imp)(self, op);
+        return ((msg_impl)imp)(self, op);
+    }
+    
+    return 0;
+}
+
+// C fallback for objc_msgSendSuper
+id objc_msgSendSuper_c(struct objc_super* super, SEL op, ...) {
+    if (!super || !op) return 0;
+    
+    IMP imp = objc_lookupMethod(super->class, op);
+    
+    if (imp) {
+        typedef id (*msg_impl)(id, SEL, ...);
+        return ((msg_impl)imp)(super->receiver, op);
     }
     
     return 0;

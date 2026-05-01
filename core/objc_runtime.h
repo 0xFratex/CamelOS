@@ -106,6 +106,16 @@ void object_dispose(id obj);
 Class object_getClass(id obj);
 const char* object_getClassName(id obj);
 
+// --- Message Sending ---
+struct objc_super {
+    id receiver;        // The object that received the message
+    Class class;        // The superclass to start searching from
+};
+
+IMP objc_lookupMethod(Class cls, SEL op);   // Called by assembly objc_msgSend
+id objc_msgSend_c(id self, SEL op, ...);    // C fallback (assembly version preferred)
+id objc_msgSendSuper_c(struct objc_super* super, SEL op, ...);  // C fallback
+
 // --- Runtime Initialization ---
 void objc_runtime_init(void);
 
