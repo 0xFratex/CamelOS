@@ -9,6 +9,25 @@
 gfx_context_t gfx_ctx;
 static int use_backbuffer = 0;
 
+// --- SOFTWARE CLIP RECTANGLE ---
+// When set, all drawing primitives are clipped to this rectangle.
+// By default the clip rect covers the entire screen.
+static int clip_x1 = 0, clip_y1 = 0;
+static int clip_x2 = 0, clip_y2 = 0;
+static int clip_enabled = 0;
+
+void gfx_set_clip(int x, int y, int w, int h) {
+    clip_x1 = x; clip_y1 = y;
+    clip_x2 = x + w; clip_y2 = y + h;
+    clip_enabled = 1;
+}
+
+void gfx_reset_clip(void) {
+    clip_x1 = 0; clip_y1 = 0;
+    clip_x2 = gfx_ctx.width; clip_y2 = gfx_ctx.height;
+    clip_enabled = 0;
+}
+
 // --- GLASS ENGINE STATE ---
 static uint32_t* wallpaper_blur_ptr = 0; // Secondary buffer for "frosted" background
 
@@ -148,6 +167,8 @@ void gfx_put_pixel_aa(int x, int y, uint32_t color, uint8_t alpha) {
 
 void gfx_put_pixel(int x, int y, uint32_t color) {
     if ((unsigned int)x >= (unsigned int)gfx_ctx.width || (unsigned int)y >= (unsigned int)gfx_ctx.height) return;
+    // Software clip rectangle
+    if (clip_enabled && (x < clip_x1 || x >= clip_x2 || y < clip_y1 || y >= clip_y2)) return;
     if (use_backbuffer) {
         uint32_t* ptr = &gfx_ctx.back_ptr[y * gfx_ctx.width + x];
         unsigned int a = (color >> 24) & 0xFF;
@@ -168,6 +189,13 @@ void gfx_fill_rect(int x, int y, int w, int h, uint32_t color) {
     if (y < 0) { h += y; y = 0; }
     if (x + w > (int)gfx_ctx.width) w = (int)gfx_ctx.width - x;
     if (y + h > (int)gfx_ctx.height) h = (int)gfx_ctx.height - y;
+    // Apply software clip rectangle
+    if (clip_enabled) {
+        if (x < clip_x1) { w -= (clip_x1 - x); x = clip_x1; }
+        if (y < clip_y1) { h -= (clip_y1 - y); y = clip_y1; }
+        if (x + w > clip_x2) w = clip_x2 - x;
+        if (y + h > clip_y2) h = clip_y2 - y;
+    }
     if (w <= 0 || h <= 0) return;
 
     if (use_backbuffer) {

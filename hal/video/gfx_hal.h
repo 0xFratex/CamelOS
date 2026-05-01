@@ -31,4 +31,8 @@ uint32_t* gfx_get_active_buffer();
 void gfx_draw_asset_scaled(uint32_t* buffer, int x, int y, const uint32_t* data, int sw, int sh, int dw, int dh);
 void gfx_draw_icon(int x, int y, int w, int h, const uint32_t* data);
 
+// Software clipping rectangle
+void gfx_set_clip(int x, int y, int w, int h);
+void gfx_reset_clip(void);
+
 #endif

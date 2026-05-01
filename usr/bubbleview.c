@@ -447,7 +447,9 @@ void draw_window_animated(window_t* w, int mx, int my) {
         if (w->anim_t > 0.8f && w->anim_state != 2) {
             if(w->paint_callback) {
                 typedef void (*pcb)(int,int,int,int);
+                gfx_set_clip(curr.x, curr.y + 30, curr.w, curr.h - 30);
                 ((pcb)w->paint_callback)(curr.x, curr.y + 30, curr.w, curr.h - 30);
+                gfx_reset_clip();
             }
         }
     } else {
@@ -456,7 +458,9 @@ void draw_window_animated(window_t* w, int mx, int my) {
         // Call paint callback for content
         if(w->paint_callback) {
             typedef void (*pcb)(int,int,int,int);
+            gfx_set_clip(w->x, w->y + 30, w->width, w->height - 30);
             ((pcb)w->paint_callback)(w->x, w->y + 30, w->width, w->height - 30);
+            gfx_reset_clip();
         }
     }
 }
@@ -1114,9 +1118,8 @@ void start_bubble_view() {
             // Draw cursor on top
             draw_cursor(mx, my);
             
-            sys_vsync();
-            extern void gfx_swap_buffers();
             gfx_swap_buffers();
+            sys_vsync();
             
             // Check if setup is complete
             if (!welcome_setup_is_active()) {
@@ -1161,9 +1164,8 @@ void start_bubble_view() {
                 // Draw lock screen overlay
                 screenlock_render(buffer, 1024, 768, mx, my);
                 
-                sys_vsync();
-                extern void gfx_swap_buffers();
                 gfx_swap_buffers();
+                sys_vsync();
                 
                 prev_lb = lb;
                 prev_rb = rb;
@@ -1310,10 +1312,10 @@ void start_bubble_view() {
         }
 
         // Handle rename mode input (inline editor rendered by desktop.c)
-        if (renaming_mode) {
-            char rk = sys_get_key();
-            if (rk) {
-                if (rk == 13 || rk == '\n') {
+        // Use 'k' from the main loop - do NOT call sys_get_key() again,
+        // the key was already consumed at the top of the loop.
+        if (renaming_mode && k) {
+                if (k == 13 || k == '\n') {
                     // Commit rename
                     if (strlen(desktop_rename_buf) > 0 && desktop_rename_idx >= 0 && desktop_rename_idx < 32) {
                         // Check for duplicate name - append (1), (2), etc.
@@ -1383,11 +1385,11 @@ void start_bubble_view() {
                     renaming_mode = 0;
                     desktop_rename_active = 0;
                     desktop_rename_idx = -1;
-                } else if (rk == 27) { // Escape - cancel
+                } else if (k == 27) { // Escape - cancel
                     renaming_mode = 0;
                     desktop_rename_active = 0;
                     desktop_rename_idx = -1;
-                } else if (rk == 8 || rk == '\b') {
+                } else if (k == 8 || k == '\b') {
                     if (desktop_rename_cursor > 0) {
                         desktop_rename_cursor--;
                         // Remove char at cursor position
@@ -1396,18 +1398,17 @@ void start_bubble_view() {
                             desktop_rename_buf[ci] = desktop_rename_buf[ci + 1];
                         }
                     }
-                } else if (rk >= 32 && rk <= 126 && desktop_rename_cursor < 63) {
+                } else if (k >= 32 && k <= 126 && desktop_rename_cursor < 63) {
                     // Insert char at cursor position
                     int len = strlen(desktop_rename_buf);
                     if (len < 63) {
                         for (int ci = len; ci > desktop_rename_cursor; ci--) {
                             desktop_rename_buf[ci] = desktop_rename_buf[ci - 1];
                         }
-                        desktop_rename_buf[desktop_rename_cursor++] = (char)rk;
+                        desktop_rename_buf[desktop_rename_cursor++] = (char)k;
                         desktop_rename_buf[len + 1] = 0;
                     }
                 }
-            }
         }
 
         // Draw Snap Preview Overlay
@@ -1428,9 +1429,8 @@ void start_bubble_view() {
             app_switcher_render(1024, 768);
         }
 
-        sys_vsync();
-        extern void gfx_swap_buffers();
         gfx_swap_buffers();
+        sys_vsync();
 
         // NOTE: handle_input was already called BEFORE rendering (line above).
         // Do NOT call it again here — duplicate calls cause double-processing

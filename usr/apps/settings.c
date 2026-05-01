@@ -430,13 +430,24 @@ static void draw_hardware_tab(int x, int y, int w, int h) {
     
     // Draw scrollbar if content overflows
     int total_content_h = cy + 75 - (y + 20 - scroll);  // Estimated total content height
+    // Clamp scroll to valid range
+    int max_scroll = (total_content_h > h) ? (total_content_h - h) : 0;
+    if (settings_scroll_y > max_scroll) settings_scroll_y = max_scroll;
     if (total_content_h > h) {
-        int sb_x = x + w - 10;
-        int sb_h = h;
+        int sb_x = x + w - 12;
+        int sb_h = h - 4;
         int thumb_h = (h * h) / total_content_h;
         if (thumb_h < 20) thumb_h = 20;
-        int thumb_y = y + (scroll * (sb_h - thumb_h)) / (total_content_h - h);
-        gfx_fill_rect(sb_x, y, 8, sb_h, 0x20C0C0C0);
+        if (thumb_h > sb_h) thumb_h = sb_h;
+        int scroll_range = total_content_h - h;
+        int thumb_y = y + 2;
+        if (scroll_range > 0) {
+            thumb_y = y + 2 + (settings_scroll_y * (sb_h - thumb_h)) / scroll_range;
+        }
+        // Ensure thumb stays within scrollbar bounds
+        if (thumb_y < y + 2) thumb_y = y + 2;
+        if (thumb_y + thumb_h > y + 2 + sb_h) thumb_y = y + 2 + sb_h - thumb_h;
+        gfx_fill_rect(sb_x, y + 2, 8, sb_h, 0x20C0C0C0);
         gfx_fill_rounded_rect(sb_x + 1, thumb_y, 6, thumb_h, 0xFFC0C0C0, 3);
     }
 }
@@ -546,6 +557,9 @@ static void settings_on_input(int key) {
 static void settings_on_scroll(int delta) {
     settings_scroll_y += delta * 20;
     if (settings_scroll_y < 0) settings_scroll_y = 0;
+    // Upper bound is clamped dynamically in draw_hardware_tab based on content height
+    // A generous max prevents overflow while the exact clamp is computed at draw time
+    if (settings_scroll_y > 2000) settings_scroll_y = 2000;
 }
 
 static void settings_on_resize(int new_w, int new_h) {

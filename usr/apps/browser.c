@@ -212,18 +212,26 @@ static void browser_load_page(const char* url) {
         tcp_conn_send(conn, request, rlen);
     }
     
-    // Read response
-    char response[16384];
+    // Read response - allocate on heap to avoid 16KB stack overflow
+    #define BROWSER_RESPONSE_SIZE 16384
+    char* response = (char*)kmalloc(BROWSER_RESPONSE_SIZE);
+    if (!response) {
+        strcpy(page_lines[0], "Error: Out of memory");
+        page_line_count = 1;
+        strcpy(status_text, "Memory Error");
+        is_loading = 0;
+        return;
+    }
     int total_read = 0;
-    for (int retry = 0; retry < 200 && total_read < (int)sizeof(response) - 1; retry++) {
+    for (int retry = 0; retry < 200 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         extern void rtl8139_poll();
         rtl8139_poll();
         int n;
         if (use_tls) {
             extern int tls_client_recv(void* conn, char* buf, int len);
-            n = tls_client_recv(conn, response + total_read, sizeof(response) - total_read - 1);
+            n = tls_client_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
         } else {
-            n = tcp_conn_recv(conn, response + total_read, sizeof(response) - total_read - 1);
+            n = tcp_conn_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
         }
         if (n > 0) total_read += n;
         else if (n == 0) break;
@@ -237,7 +245,15 @@ static void browser_load_page(const char* url) {
     int http_status = 0;
     if (strncmp(response, "HTTP/", 5) == 0) {
         char* sp = strchr(response, ' ');
-        if (sp) http_status = atoi(sp + 1);
+        if (sp) {
+            // Simple atoi - parse integer from string
+            http_status = 0;
+            sp++;
+            while (*sp >= '0' && *sp <= '9') {
+                http_status = http_status * 10 + (*sp - '0');
+                sp++;
+            }
+        }
     }
     
     // Handle redirects (301, 302, 307)
@@ -389,6 +405,7 @@ static void browser_load_page(const char* url) {
     strcat(status_text, " lines)");
     if (use_tls) strcat(status_text, " [TLS]");
     is_loading = 0;
+    kfree(response);
 }
 
 static void browser_navigate(const char* url) {
@@ -504,19 +521,25 @@ connected:
     download_progress = 10;
     strcpy(status_text, "Downloading...");
     
-    char response[16384];
+    // Allocate response on heap to avoid 16KB stack overflow
+    char* response = (char*)kmalloc(BROWSER_RESPONSE_SIZE);
+    if (!response) {
+        strcpy(status_text, "Download: Out of memory");
+        download_active = 0;
+        return;
+    }
     int total_read = 0;
-    for (int retry = 0; retry < 200 && total_read < (int)sizeof(response) - 1; retry++) {
+    for (int retry = 0; retry < 200 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         extern void rtl8139_poll();
         rtl8139_poll();
         int n;
         if (use_tls) {
             extern int tls_client_recv(void* conn, char* buf, int len);
-            n = tls_client_recv(conn, response + total_read, sizeof(response) - total_read - 1);
+            n = tls_client_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
         } else {
-            n = tcp_conn_recv(conn, response + total_read, sizeof(response) - total_read - 1);
+            n = tcp_conn_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
         }
-        if (n > 0) { total_read += n; download_progress = 10 + (total_read * 80) / (int)sizeof(response); }
+        if (n > 0) { total_read += n; download_progress = 10 + (total_read * 80) / BROWSER_RESPONSE_SIZE; }
         else if (n == 0) break;
         else { for (volatile int d = 0; d < 50000; d++); }
     }
@@ -552,6 +575,7 @@ connected:
     } else {
         strcpy(status_text, "Download: Save Error");
     }
+    kfree(response);
     download_active = 0;
 }
 

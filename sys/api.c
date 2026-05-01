@@ -42,6 +42,10 @@ void sys_notify_fs_change() { g_fs_generation++; }
 uint32_t sys_get_fs_generation() { return g_fs_generation; }
 
 void sys_shutdown() {
+    // Flush filesystem before shutdown to prevent data loss
+    extern int pfs32_sync(void);
+    pfs32_sync();
+    disk_flush_cache();
     sys_print("\nShutting down in 3s...");
     sys_delay(3000);
     outw(0x604, 0x2000);
@@ -50,6 +54,15 @@ void sys_shutdown() {
 }
 
 void sys_reboot() {
+    // Flush filesystem and disk cache before rebooting to prevent data loss
+    extern int pfs32_sync(void);
+    pfs32_sync();
+    disk_flush_cache();
+    // Wait for ATA write completion - poll status register until not busy
+    for (volatile int wait = 0; wait < 100000; wait++) {
+        if ((inb(0x1F7) & 0x80) == 0) break;
+    }
+
     uint8_t good = 0x02;
     while (good & 0x02) good = inb(0x64);
     outb(0x64, 0xFE);
