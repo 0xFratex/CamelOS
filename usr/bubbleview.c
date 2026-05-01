@@ -644,14 +644,24 @@ void ctx_menu_handle_click(int mx, int my) {
                     if (sub_idx >= 0 && sub_idx < parent_item->submenu_count) {
                         char* target_name = (char*)g_ctx_menu.target_obj;
                         extern int wrap_exec_with_args(const char*, const char*);
+                        extern int wrap_exec(const char*);
+                        
+                        // Null-check the target name
+                        if (!target_name || !target_name[0]) {
+                            g_ctx_menu.active = 0;
+                            return;
+                        }
                         
                         // Handle submenu item actions
                         if (strcmp(parent_item->submenu_items[sub_idx], "TextEdit") == 0) {
-                            if (target_name) wrap_exec_with_args("/usr/apps/TextEdit.app", target_name);
+                            const char* app = resolve_app_path("TextEdit.app");
+                            if (sys_fs_exists(app)) wrap_exec_with_args(app, target_name);
                         } else if (strcmp(parent_item->submenu_items[sub_idx], "Terminal") == 0) {
-                            if (target_name) wrap_exec_with_args("/usr/apps/Terminal.app", target_name);
+                            const char* app = resolve_app_path("Terminal.app");
+                            if (sys_fs_exists(app)) wrap_exec_with_args(app, target_name);
                         } else if (strcmp(parent_item->submenu_items[sub_idx], "Files") == 0) {
-                            if (target_name) wrap_exec_with_args("/usr/apps/Files.app", target_name);
+                            const char* app = resolve_app_path("Files.app");
+                            if (sys_fs_exists(app)) wrap_exec_with_args(app, target_name);
                         }
                     }
                 }
@@ -674,49 +684,122 @@ void ctx_menu_handle_click(int mx, int my) {
     int action = g_ctx_menu.items[idx].action_id;
     char* target_name = (char*)g_ctx_menu.target_obj;
 
+    // Null-check target_name for file operations
+    if (!target_name && action != 1 && action != 2 && action != 6) {
+        g_ctx_menu.active = 0;
+        return;
+    }
+
     extern int wrap_exec_with_args(const char*, const char*);
 
     switch(action) {
         case 1: { /* New Folder */
             char new_path[256];
-            strcpy(new_path, g_desktop_path);
-            strcat(new_path, "/New Folder");
+            char new_name[64] = "New Folder";
+            // Find unique name
             int counter = 1;
-            while(1) {
-                // Check if the path exists directly (no trailing slash)
-                if(!sys_fs_exists(new_path)) {
-                    break;
-                }
-                counter++;
+            while (1) {
                 strcpy(new_path, g_desktop_path);
-                strcat(new_path, "/New Folder ");
+                strcat(new_path, "/");
+                strcat(new_path, new_name);
+                if (!sys_fs_exists(new_path)) break;
+                counter++;
+                strcpy(new_name, "New Folder (");
                 char num[10];
                 int_to_str(counter, num);
-                strcat(new_path, num);
+                strcat(new_name, num);
+                strcat(new_name, ")");
             }
+            strcpy(new_path, g_desktop_path);
+            strcat(new_path, "/");
+            strcat(new_path, new_name);
             int res = sys_fs_create(new_path, 1);
-            if (res == 0 || res == -5) { // Success or already exists
+            if (res == 0 || res == -5) {
                 desktop_refresh();
+                // Start inline rename for the newly created folder
+                // Find the index of the new item
+                for (int fi = 0; fi < desk_count; fi++) {
+                    if (strcmp(desk_entries[fi].filename, new_name) == 0) {
+                        renaming_mode = 1;
+                        rename_target_idx = fi;
+                        desktop_rename_active = 1;
+                        desktop_rename_idx = fi;
+                        strncpy(desktop_rename_buf, new_name, 63);
+                        desktop_rename_buf[63] = 0;
+                        desktop_rename_cursor = strlen(new_name);
+                        // Select all text by default for easy replacement
+                        break;
+                    }
+                }
             }
         } break;
         case 2: /* New File */ {
             char dp[256];
-            strcpy(dp, g_desktop_path);
-            strcat(dp, "/New_Text.txt");
+            char new_name[64] = "New_Text.txt";
             int counter = 1;
-            while(sys_fs_exists(dp)) {
-                counter++;
+            while (1) {
                 strcpy(dp, g_desktop_path);
-                strcat(dp, "/New_Text_");
+                strcat(dp, "/");
+                strcat(dp, new_name);
+                if (!sys_fs_exists(dp)) break;
+                counter++;
+                strcpy(new_name, "New_Text (");
                 char num[10];
                 int_to_str(counter, num);
-                strcat(dp, num);
-                strcat(dp, ".txt");
+                strcat(new_name, num);
+                strcat(new_name, ").txt");
             }
+            strcpy(dp, g_desktop_path);
+            strcat(dp, "/");
+            strcat(dp, new_name);
             sys_fs_create(dp, 0);
             desktop_refresh();
+            // Start inline rename for the newly created file
+            for (int fi = 0; fi < desk_count; fi++) {
+                if (strcmp(desk_entries[fi].filename, new_name) == 0) {
+                    renaming_mode = 1;
+                    rename_target_idx = fi;
+                    desktop_rename_active = 1;
+                    desktop_rename_idx = fi;
+                    strncpy(desktop_rename_buf, new_name, 63);
+                    desktop_rename_buf[63] = 0;
+                    desktop_rename_cursor = strlen(new_name);
+                    break;
+                }
+            }
         } break;
-        case 3: /* Rename */ renaming_mode = 1; rename_cursor = 0; rename_buffer[0] = 0; menu_rect_x = mx; menu_rect_y = my + 20; g_ctx_menu.active = 0; break;
+        case 3: /* Rename */ {
+            // Find the desktop icon index for this target
+            int rename_idx = -1;
+            for (int ri = 0; ri < 32; ri++) {
+                if (desk_entries[ri].filename[0] == 0) continue;
+                static char check_path[128];
+                strcpy(check_path, g_desktop_path);
+                strcat(check_path, "/");
+                strcat(check_path, desk_entries[ri].filename);
+                if (target_name && strcmp(check_path, target_name) == 0) {
+                    rename_idx = ri;
+                    break;
+                }
+            }
+            
+            if (rename_idx >= 0) {
+                // Set up inline rename mode (rendered below the icon in desktop.c)
+                renaming_mode = 1;
+                rename_target_idx = rename_idx;
+                strncpy(rename_buffer, desk_entries[rename_idx].filename, 63);
+                rename_buffer[63] = 0;
+                rename_cursor = strlen(rename_buffer);
+                
+                // Export state for desktop.c inline rendering
+                desktop_rename_active = 1;
+                desktop_rename_idx = rename_idx;
+                strncpy(desktop_rename_buf, desk_entries[rename_idx].filename, 63);
+                desktop_rename_buf[63] = 0;
+                desktop_rename_cursor = strlen(desktop_rename_buf);
+            }
+            g_ctx_menu.active = 0;
+        } break;
         case 4: /* Delete */ sys_fs_delete_recursive(target_name); desktop_refresh(); break;
         case 5: /* Copy */ strcpy(clip_file_path, target_name); clip_is_cut = 0; clip_active = 1; break;
         case 6: /* Paste */ if (clip_active) { char dest[128]; strcpy(dest, g_desktop_path); strcat(dest, "/Copy_of_File"); sys_fs_copy(clip_file_path, dest); desktop_refresh(); } break;
@@ -1225,40 +1308,103 @@ void start_bubble_view() {
             last_fs_gen = gen;
         }
 
-        // Handle rename mode input
+        // Handle rename mode input (inline editor rendered by desktop.c)
         if (renaming_mode) {
-            sys_gfx_rect(menu_rect_x, menu_rect_y, 200, 30, 0xFFFFFFFF);
-            sys_gfx_rect(menu_rect_x, menu_rect_y, 200, 30, 0xFF000000);
-            sys_gfx_string(menu_rect_x + 5, menu_rect_y + 8, rename_buffer, 0xFF000000);
-            static int cursor_frame = 0;
-            cursor_frame++;
-            if ((cursor_frame / 30) % 2) {
-                int cursor_x = menu_rect_x + 5 + (rename_cursor * 6);
-                sys_gfx_rect(cursor_x, menu_rect_y + 10, 1, 12, 0xFF000000);
-            }
-
             char rk = sys_get_key();
             if (rk) {
-                if (rk == 13) {
-                    if (strlen(rename_buffer) > 0 && rename_target_idx >= 0 && rename_target_idx < 32) {
+                if (rk == 13 || rk == '\n') {
+                    // Commit rename
+                    if (strlen(desktop_rename_buf) > 0 && desktop_rename_idx >= 0 && desktop_rename_idx < 32) {
+                        // Check for duplicate name - append (1), (2), etc.
+                        char final_name[64];
+                        strncpy(final_name, desktop_rename_buf, 63);
+                        final_name[63] = 0;
+                        
+                        if (strcmp(desk_entries[desktop_rename_idx].filename, final_name) != 0) {
+                            // Name changed - check for duplicates
+                            int dup_count = 0;
+                            char test_name[64];
+                            strncpy(test_name, final_name, 63);
+                            test_name[63] = 0;
+                            
+                            while (1) {
+                                int is_dup = 0;
+                                for (int di = 0; di < desk_count; di++) {
+                                    if (di != desktop_rename_idx && 
+                                        strcmp(desk_entries[di].filename, test_name) == 0) {
+                                        is_dup = 1;
+                                        break;
+                                    }
+                                }
+                                if (!is_dup) break;
+                                dup_count++;
+                                // Append (N) before extension or at end
+                                char base[64];
+                                strncpy(base, final_name, 63);
+                                base[63] = 0;
+                                // Check for extension
+                                char* dot = strrchr(base, '.');
+                                if (dot && dot != base) {
+                                    char ext[16];
+                                    strncpy(ext, dot, 15);
+                                    ext[15] = 0;
+                                    *dot = 0;
+                                    char num_str[8];
+                                    int_to_str(dup_count, num_str);
+                                    strcpy(test_name, base);
+                                    strcat(test_name, " (");
+                                    strcat(test_name, num_str);
+                                    strcat(test_name, ")");
+                                    strcat(test_name, ext);
+                                } else {
+                                    char num_str[8];
+                                    int_to_str(dup_count, num_str);
+                                    strcpy(test_name, base);
+                                    strcat(test_name, " (");
+                                    strcat(test_name, num_str);
+                                    strcat(test_name, ")");
+                                }
+                            }
+                            strncpy(final_name, test_name, 63);
+                            final_name[63] = 0;
+                        }
+                        
                         char old_path[128], new_path[128];
                         strcpy(old_path, g_desktop_path);
                         strcat(old_path, "/");
-                        strcat(old_path, desk_entries[rename_target_idx].filename);
+                        strcat(old_path, desk_entries[desktop_rename_idx].filename);
                         strcpy(new_path, g_desktop_path);
                         strcat(new_path, "/");
-                        strcat(new_path, rename_buffer);
+                        strcat(new_path, final_name);
                         sys_fs_rename(old_path, new_path);
                         desktop_refresh();
                     }
                     renaming_mode = 0;
-                } else if (rk == 8) {
-                    if (rename_cursor > 0) {
-                        rename_buffer[--rename_cursor] = 0;
+                    desktop_rename_active = 0;
+                    desktop_rename_idx = -1;
+                } else if (rk == 27) { // Escape - cancel
+                    renaming_mode = 0;
+                    desktop_rename_active = 0;
+                    desktop_rename_idx = -1;
+                } else if (rk == 8 || rk == '\b') {
+                    if (desktop_rename_cursor > 0) {
+                        desktop_rename_cursor--;
+                        // Remove char at cursor position
+                        int len = strlen(desktop_rename_buf);
+                        for (int ci = desktop_rename_cursor; ci < len; ci++) {
+                            desktop_rename_buf[ci] = desktop_rename_buf[ci + 1];
+                        }
                     }
-                } else if (rk >= 32 && rk <= 126 && rename_cursor < 63) {
-                    rename_buffer[rename_cursor++] = rk;
-                    rename_buffer[rename_cursor] = 0;
+                } else if (rk >= 32 && rk <= 126 && desktop_rename_cursor < 63) {
+                    // Insert char at cursor position
+                    int len = strlen(desktop_rename_buf);
+                    if (len < 63) {
+                        for (int ci = len; ci > desktop_rename_cursor; ci--) {
+                            desktop_rename_buf[ci] = desktop_rename_buf[ci - 1];
+                        }
+                        desktop_rename_buf[desktop_rename_cursor++] = (char)rk;
+                        desktop_rename_buf[len + 1] = 0;
+                    }
                 }
             }
         }

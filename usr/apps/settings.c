@@ -318,37 +318,56 @@ static void draw_display_tab(int x, int y, int w, int h) {
 }
 
 static void draw_hardware_tab(int x, int y, int w, int h) {
-    int cy = y + 20;
+    // Apply scroll offset
+    int scroll = settings_scroll_y;
+    int cy = y + 20 - scroll;
+    int max_y = y + h;  // Bottom clipping boundary
+    
+    // Helper: only draw if within visible area
+    #define DRAW_STRING_IF_VISIBLE(sx, sy, str, col) do { \
+        if ((sy) >= y - 16 && (sy) < max_y) gfx_draw_string(sx, sy, str, col); \
+    } while(0)
+    #define FILL_RECT_IF_VISIBLE(rx, ry, rw, rh, col) do { \
+        if ((ry) + (rh) > y && (ry) < max_y) gfx_fill_rect(rx, ry, rw, rh, col); \
+    } while(0)
+    #define FILL_ROUNDED_IF_VISIBLE(rx, ry, rw, rh, col, rad) do { \
+        if ((ry) + (rh) > y && (ry) < max_y) gfx_fill_rounded_rect(rx, ry, rw, rh, col, rad); \
+    } while(0)
+    #define DRAW_RECT_IF_VISIBLE(rx, ry, rw, rh, col) do { \
+        if ((ry) + (rh) > y && (ry) < max_y) gfx_draw_rect(rx, ry, rw, rh, col); \
+    } while(0)
     
     // CPU Section
-    gfx_draw_string(x + 20, cy, "Processor", 0xFF007AFF);
+    DRAW_STRING_IF_VISIBLE(x + 20, cy, "Processor", 0xFF007AFF);
     cy += 25;
     
-    gfx_fill_rounded_rect(x + 20, cy, w - 40, 90, 0xFFF2F2F7, 8);
-    gfx_draw_rect(x + 20, cy, w - 40, 90, 0xFFE0E0E0);
+    FILL_ROUNDED_IF_VISIBLE(x + 20, cy, w - 40, 90, 0xFFF2F2F7, 8);
+    DRAW_RECT_IF_VISIBLE(x + 20, cy, w - 40, 90, 0xFFE0E0E0);
     
-    gfx_draw_string(x + 32, cy + 10, "Vendor:", 0xFF8E8E93);
-    gfx_draw_string(x + 120, cy + 10, hw_cpu_vendor, 0xFF333333);
-    gfx_draw_string(x + 32, cy + 30, "Model:", 0xFF8E8E93);
-    gfx_draw_string(x + 120, cy + 30, hw_cpu_model, 0xFF333333);
-    gfx_draw_string(x + 32, cy + 50, "Architecture:", 0xFF8E8E93);
-    gfx_draw_string(x + 120, cy + 50, hw_cpu_arch, 0xFF333333);
-    gfx_draw_string(x + 32, cy + 70, "Status:", 0xFF8E8E93);
-    if (hw_cpu_supported) {
-        gfx_fill_rounded_rect(x + 120, cy + 67, 70, 18, 0xFFE8F5E9, 4);
-        gfx_draw_string(x + 130, cy + 70, "Supported", 0xFF34C759);
-    } else {
-        gfx_fill_rounded_rect(x + 120, cy + 67, 80, 18, 0xFFFFEBEE, 4);
-        gfx_draw_string(x + 130, cy + 70, "Unknown", 0xFFFF3B30);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 10, "Vendor:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 120, cy + 10, hw_cpu_vendor, 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 30, "Model:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 120, cy + 30, hw_cpu_model, 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 50, "Architecture:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 120, cy + 50, hw_cpu_arch, 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 70, "Status:", 0xFF8E8E93);
+    if (cy + 67 + 18 > y && cy + 67 < max_y) {
+        if (hw_cpu_supported) {
+            gfx_fill_rounded_rect(x + 120, cy + 67, 70, 18, 0xFFE8F5E9, 4);
+            gfx_draw_string(x + 130, cy + 70, "Supported", 0xFF34C759);
+        } else {
+            gfx_fill_rounded_rect(x + 120, cy + 67, 80, 18, 0xFFFFEBEE, 4);
+            gfx_draw_string(x + 130, cy + 70, "Unknown", 0xFFFF3B30);
+        }
     }
     cy += 105;
     
     // Features
-    gfx_draw_string(x + 20, cy, "CPU Features", 0xFF007AFF);
+    DRAW_STRING_IF_VISIBLE(x + 20, cy, "CPU Features", 0xFF007AFF);
     cy += 25;
     
-    gfx_fill_rounded_rect(x + 20, cy, w - 40, 30, 0xFFF2F2F7, 8);
-    gfx_draw_rect(x + 20, cy, w - 40, 30, 0xFFE0E0E0);
+    FILL_ROUNDED_IF_VISIBLE(x + 20, cy, w - 40, 30, 0xFFF2F2F7, 8);
+    DRAW_RECT_IF_VISIBLE(x + 20, cy, w - 40, 30, 0xFFE0E0E0);
     // Check basic CPU features via CPUID leaf 1
     uint32_t eax1, ebx1, ecx1, edx1;
     asm volatile("cpuid" : "=a"(eax1), "=b"(ebx1), "=c"(ecx1), "=d"(edx1) : "a"(1));
@@ -363,45 +382,62 @@ static void draw_hardware_tab(int x, int y, int w, int h) {
     if (ecx1 & (1 << 20)) strcat(feat_str, "SSE4.2 ");
     if (ecx1 & (1 << 28)) strcat(feat_str, "AVX ");
     if (edx1 & (1 << 24)) strcat(feat_str, "FXSR ");
-    gfx_draw_string(x + 32, cy + 8, feat_str, 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 8, feat_str, 0xFF333333);
     cy += 45;
     
     // Memory Section
-    gfx_draw_string(x + 20, cy, "Memory", 0xFF007AFF);
+    DRAW_STRING_IF_VISIBLE(x + 20, cy, "Memory", 0xFF007AFF);
     cy += 25;
     
-    gfx_fill_rounded_rect(x + 20, cy, w - 40, 50, 0xFFF2F2F7, 8);
-    gfx_draw_rect(x + 20, cy, w - 40, 50, 0xFFE0E0E0);
-    gfx_draw_string(x + 32, cy + 10, "Total RAM:", 0xFF8E8E93);
-    gfx_draw_string(x + 140, cy + 10, hw_mem_total_str, 0xFF333333);
-    gfx_draw_string(x + 32, cy + 30, "Free:", 0xFF8E8E93);
-    gfx_draw_string(x + 140, cy + 30, sys_mem_str + 6, 0xFF333333);  // skip "Free: " prefix
+    FILL_ROUNDED_IF_VISIBLE(x + 20, cy, w - 40, 50, 0xFFF2F2F7, 8);
+    DRAW_RECT_IF_VISIBLE(x + 20, cy, w - 40, 50, 0xFFE0E0E0);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 10, "Total RAM:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 140, cy + 10, hw_mem_total_str, 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 30, "Free:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 140, cy + 30, sys_mem_str + 6, 0xFF333333);  // skip "Free: " prefix
     cy += 65;
     
     // Disk Section
-    gfx_draw_string(x + 20, cy, "Disk (PFS32)", 0xFF007AFF);
+    DRAW_STRING_IF_VISIBLE(x + 20, cy, "Disk (PFS32)", 0xFF007AFF);
     cy += 25;
     
-    gfx_fill_rounded_rect(x + 20, cy, w - 40, 70, 0xFFF2F2F7, 8);
-    gfx_draw_rect(x + 20, cy, w - 40, 70, 0xFFE0E0E0);
-    gfx_draw_string(x + 32, cy + 10, "Filesystem:", 0xFF8E8E93);
-    gfx_draw_string(x + 140, cy + 10, "PFS32 v3.0 (APFS+)", 0xFF333333);
-    gfx_draw_string(x + 32, cy + 30, "Usage:", 0xFF8E8E93);
-    gfx_draw_string(x + 140, cy + 30, hw_disk_size_str, 0xFF333333);
-    gfx_draw_string(x + 32, cy + 50, "Free blocks:", 0xFF8E8E93);
-    gfx_draw_string(x + 140, cy + 50, hw_disk_free_str, 0xFF333333);
+    FILL_ROUNDED_IF_VISIBLE(x + 20, cy, w - 40, 70, 0xFFF2F2F7, 8);
+    DRAW_RECT_IF_VISIBLE(x + 20, cy, w - 40, 70, 0xFFE0E0E0);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 10, "Filesystem:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 140, cy + 10, "PFS32 v3.0 (APFS+)", 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 30, "Usage:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 140, cy + 30, hw_disk_size_str, 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 50, "Free blocks:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 140, cy + 50, hw_disk_free_str, 0xFF333333);
     cy += 85;
     
     // Network Section
-    gfx_draw_string(x + 20, cy, "Network Interfaces", 0xFF007AFF);
+    DRAW_STRING_IF_VISIBLE(x + 20, cy, "Network Interfaces", 0xFF007AFF);
     cy += 25;
     
-    gfx_fill_rounded_rect(x + 20, cy, w - 40, 50, 0xFFF2F2F7, 8);
-    gfx_draw_rect(x + 20, cy, w - 40, 50, 0xFFE0E0E0);
-    gfx_draw_string(x + 32, cy + 10, "Driver:", 0xFF8E8E93);
-    gfx_draw_string(x + 140, cy + 10, "RTL8139 Ethernet", 0xFF333333);
-    gfx_draw_string(x + 32, cy + 30, "MAC:", 0xFF8E8E93);
-    gfx_draw_string(x + 140, cy + 30, "52:54:00:12:34:56", 0xFF333333);
+    FILL_ROUNDED_IF_VISIBLE(x + 20, cy, w - 40, 50, 0xFFF2F2F7, 8);
+    DRAW_RECT_IF_VISIBLE(x + 20, cy, w - 40, 50, 0xFFE0E0E0);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 10, "Driver:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 140, cy + 10, "RTL8139 Ethernet", 0xFF333333);
+    DRAW_STRING_IF_VISIBLE(x + 32, cy + 30, "MAC:", 0xFF8E8E93);
+    DRAW_STRING_IF_VISIBLE(x + 140, cy + 30, "52:54:00:12:34:56", 0xFF333333);
+    
+    #undef DRAW_STRING_IF_VISIBLE
+    #undef FILL_RECT_IF_VISIBLE
+    #undef FILL_ROUNDED_IF_VISIBLE
+    #undef DRAW_RECT_IF_VISIBLE
+    
+    // Draw scrollbar if content overflows
+    int total_content_h = cy + 75 - (y + 20 - scroll);  // Estimated total content height
+    if (total_content_h > h) {
+        int sb_x = x + w - 10;
+        int sb_h = h;
+        int thumb_h = (h * h) / total_content_h;
+        if (thumb_h < 20) thumb_h = 20;
+        int thumb_y = y + (scroll * (sb_h - thumb_h)) / (total_content_h - h);
+        gfx_fill_rect(sb_x, y, 8, sb_h, 0x20C0C0C0);
+        gfx_fill_rounded_rect(sb_x + 1, thumb_y, 6, thumb_h, 0xFFC0C0C0, 3);
+    }
 }
 
 static void draw_network_tab(int x, int y, int w, int h) {
@@ -471,6 +507,7 @@ static void settings_on_paint(int x, int y, int w, int h) {
 
 // Current window dimensions (updated on resize)
 static int settings_win_w = 500;
+static int settings_scroll_y = 0;
 
 static void settings_on_mouse(int x, int y, int btn) {
     if (btn != 1) return;
@@ -481,6 +518,7 @@ static void settings_on_mouse(int x, int y, int btn) {
         int tab = x / tab_w;
         if (tab >= 0 && tab < TAB_COUNT) {
             current_tab = tab;
+            settings_scroll_y = 0;  // Reset scroll when switching tabs
         }
     }
 }
@@ -506,7 +544,8 @@ static void settings_on_input(int key) {
 }
 
 static void settings_on_scroll(int delta) {
-    // Settings doesn't need scroll, but wire it up for future use
+    settings_scroll_y += delta * 20;
+    if (settings_scroll_y < 0) settings_scroll_y = 0;
 }
 
 static void settings_on_resize(int new_w, int new_h) {

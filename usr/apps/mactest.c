@@ -274,23 +274,37 @@ static void run_objc_tests(void) {
     {
         Class nsobj = objc_getClass("NSObject");
         if (nsobj) {
-            // Try sending +alloc to NSObject
-            id obj = objc_msgSend((id)nsobj, sel_registerName("alloc"));
-            if (obj) {
-                objc_test_pass++;
-                strcat(objc_result, "[PASS] objc_msgSend([NSObject alloc]) works\n");
-                // Try sending +init
-                id initialized = objc_msgSend(obj, sel_registerName("init"));
-                if (initialized) {
+            // Try sending +alloc to NSObject (class method -> send to meta class)
+            SEL alloc_sel = sel_registerName("alloc");
+            Method alloc_method = class_getClassMethod(nsobj, alloc_sel);
+            if (alloc_method && alloc_method->imp) {
+                id obj = ((id(*)(id,SEL))alloc_method->imp)((id)nsobj, alloc_sel);
+                if (obj) {
                     objc_test_pass++;
-                    strcat(objc_result, "[PASS] objc_msgSend([obj init]) works\n");
+                    strcat(objc_result, "[PASS] objc_msgSend([NSObject alloc]) works\n");
+                    // Try sending +init
+                    SEL init_sel = sel_registerName("init");
+                    Method init_method = class_getInstanceMethod(nsobj, init_sel);
+                    if (init_method && init_method->imp) {
+                        id initialized = ((id(*)(id,SEL))init_method->imp)(obj, init_sel);
+                        if (initialized) {
+                            objc_test_pass++;
+                            strcat(objc_result, "[PASS] objc_msgSend([obj init]) works\n");
+                        } else {
+                            objc_test_fail++;
+                            strcat(objc_result, "[FAIL] objc_msgSend([obj init]) returned nil\n");
+                        }
+                    } else {
+                        objc_test_fail++;
+                        strcat(objc_result, "[FAIL] init method not found on NSObject\n");
+                    }
                 } else {
                     objc_test_fail++;
-                    strcat(objc_result, "[FAIL] objc_msgSend([obj init]) returned nil\n");
+                    strcat(objc_result, "[FAIL] objc_msgSend([NSObject alloc]) returned nil\n");
                 }
             } else {
                 objc_test_fail++;
-                strcat(objc_result, "[FAIL] objc_msgSend([NSObject alloc]) returned nil\n");
+                strcat(objc_result, "[FAIL] alloc method not found on NSObject\n");
             }
         }
     }

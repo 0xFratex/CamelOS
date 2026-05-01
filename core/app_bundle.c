@@ -219,8 +219,29 @@ int app_bundle_load(const char* path) {
         }
     }
     
-    // Load the executable using the existing ELF loader (or Mach-O loader)
-    // For now, delegate to internal_load_library which handles ELF
+    // Load the executable using the appropriate loader
+    if (bundle->is_macho) {
+        // Mach-O binary - use the Mach-O loader
+        extern loaded_macho_t* macho_load(const char* path);
+        loaded_macho_t* macho_img = macho_load(resolved_path);
+        if (!macho_img) {
+            s_printf("[BUNDLE] Mach-O load failed: ");
+            s_printf(resolved_path);
+            s_printf("\n");
+            return -1;
+        }
+        bundle->loaded_image = macho_img->base_addr;
+        bundle->image_size = macho_img->image_size;
+        bundle->active = 1;
+        
+        s_printf("[BUNDLE] Loaded Mach-O: ");
+        s_printf(bundle->info.name[0] ? bundle->info.name : path);
+        s_printf("\n");
+        
+        return slot;
+    }
+    
+    // CDL/ELF binary - use the CDL loader
     int cdl_slot = internal_load_library(resolved_path);
     if (cdl_slot < 0) {
         s_printf("[BUNDLE] Failed to load executable: ");
