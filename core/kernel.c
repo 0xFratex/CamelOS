@@ -302,6 +302,10 @@ void kernel_main(void* mboot_ptr) {
     s_printf("[KERNEL] Initializing network...\n");
     net_init();
 
+    // Initialize Intel e1000/e1000e Gigabit Ethernet (PCI-based probing)
+    extern void e1000_init_all(void);
+    e1000_init_all();
+
     // Test RTL8139 basic functionality
     rtl8139_test_loopback();
 

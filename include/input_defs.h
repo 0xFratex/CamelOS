@@ -25,7 +25,9 @@
 #define KEY_F11       148
 #define KEY_F12       149
 #define KEY_CAPSLOCK  150
-#define KEY_LWIN      151 
+#define KEY_LWIN      151
+#define KEY_SCROLL_UP  152
+#define KEY_SCROLL_DOWN 153
 #define KEY_ENTER     '\n'
 #define KEY_ESC       27
 #define KEY_TAB       '\t'

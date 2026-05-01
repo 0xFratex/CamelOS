@@ -44,6 +44,7 @@ typedef struct {
 // Setup wizard state - now includes password step
 typedef enum {
     SETUP_STATE_WELCOME,
+    SETUP_STATE_KEYBOARD,
     SETUP_STATE_USER,
     SETUP_STATE_PASSWORD,
     SETUP_STATE_TIMEZONE,
@@ -60,6 +61,8 @@ typedef struct {
     int total_steps;
     int selected_tz_idx;
     int selected_theme_idx;
+    int selected_kbd_idx;       // Currently selected keyboard layout index
+    int kbd_scroll;             // Scroll offset for keyboard layout list
     int show_keyboard;
     int tz_scroll;              // Timezone list scroll offset
     char input_buffer[SETUP_USERNAME_MAX];

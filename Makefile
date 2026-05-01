@@ -47,7 +47,7 @@ HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/seri
         hal/drivers/net_e1000.c hal/drivers/ahci.c      \
         hal/drivers/usb_xhci.c  hal/drivers/usb.c       hal/drivers/wifi_rtl.c  \
         hal/drivers/rtc.c       hal/drivers/sb16.c      \
-        hal/cpu/apic.c  hal/cpu/idt.c   hal/cpu/isr.c   hal/cpu/gdt.c   hal/cpu/timer.c hal/cpu/paging.c        hal/cpu/syscall.c       \
+        hal/cpu/apic.c  hal/cpu/idt.c   hal/cpu/isr.c   hal/cpu/gdt.c   hal/cpu/timer.c hal/cpu/paging.c        hal/cpu/syscall.c	hal/cpu/cpu_info.c       \
         hal/video/gfx_hal.c     hal/video/compositor.c  hal/video/animation.c   hal/video/loading_animation.c
         
 CORE_SRC        =       core/kernel.c   core/panic.c    sys/api.c       core/string.c   core/memory.c   core/task.c     core/cdl_loader.c       core/window_server.c    core/net.c      core/net_if.c   core/net_dhcp.c core/socket.c   core/tcp.c      core/http.c     core/tls.c      core/tls13.c    core/http2.c    core/tls_ca_store.c     core/app_switcher.c     core/dns.c      core/debug.c    core/arp.c      core/scheduler.c        core/firewall.c  core/sha256.c   core/objc_runtime.c    core/macho_loader.c    core/foundation_stub.c    core/app_bundle.c    core/dmg_mount.c      core/zlib_inflate.c    core/app_installer.c

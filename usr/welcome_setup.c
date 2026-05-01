@@ -12,11 +12,13 @@
 #include "../fs/pfs32.h"
 #include "../fs/disk.h"
 #include "../hal/drivers/serial.h"
+#include "../hal/drivers/keyboard.h"
 
 // External API
 extern kernel_api_t* sys;
 extern int screen_w;
 extern int screen_h;
+extern int mouse_scroll_delta;
 
 // Global setup state
 static WelcomeSetup g_setup;
@@ -168,16 +170,31 @@ static ThemeDef themes[THEME_COUNT] = {
     {"Forest",   0xFF34C759, 0xFF30B350, 0xFF34C759}   // Green
 };
 
+// Keyboard layout display names (matching keyboard.h KBD_LAYOUT_COUNT = 31)
+static const char* kbd_layout_display_names[] = {
+    "US QWERTY", "UK QWERTY", "German QWERTZ", "French AZERTY",
+    "Spanish QWERTY", "Italian QWERTY", "Portuguese BR", "Dvorak",
+    "Japanese", "Korean", "Chinese Pinyin", "Swiss",
+    "Swedish", "Norwegian", "Danish", "Finnish",
+    "Polish", "Czech QWERTZ", "Hungarian", "Romanian",
+    "Turkish Q", "Turkish F", "Russian", "Arabic",
+    "Hebrew", "Thai", "Vietnamese", "Greek",
+    "Croatian", "Portuguese PT", "Canadian"
+};
+#define KBD_LAYOUT_DISPLAY_COUNT (sizeof(kbd_layout_display_names) / sizeof(char*))
+
 // --- Initialization ---
 
 void welcome_setup_init(void) {
     memset(&g_setup, 0, sizeof(g_setup));
     g_setup.state = SETUP_STATE_WELCOME;
     g_setup.current_step = 0;
-    g_setup.total_steps = 5;  // 5 steps: Welcome, User, Password, Timezone, Theme
+    g_setup.total_steps = 6;  // 6 steps: Welcome, Keyboard, User, Password, Timezone, Theme
     g_setup.tz_scroll = 0;    // Timezone scroll offset
     g_setup.selected_tz_idx = 0;
     g_setup.selected_theme_idx = 0;
+    g_setup.selected_kbd_idx = 0;
+    g_setup.kbd_scroll = 0;
     g_setup.input_buffer[0] = 0;
     g_setup.input_cursor = 0;
     g_setup.anim_progress = 0.0f;
@@ -458,8 +475,9 @@ int welcome_setup_finish(void) {
     screenlock_set_inactivity_timeout(g_setup.config.lock_timeout);
     screenlock_set_inactivity_enabled(g_setup.config.auto_lock);
     
-    // Apply keyboard layout
+    // Apply keyboard layout from selected index
     extern void kbd_set_layout(int);
+    g_setup.config.kbd_layout = g_setup.selected_kbd_idx;
     kbd_set_layout(g_setup.config.kbd_layout);
     
     // Apply timezone offset to system clock
@@ -632,7 +650,7 @@ static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int cli
     // Feature list ends at feat_y + 4*22 = feat_y + 88
     int btn_y = feat_y + 88 + 30;  // 30px gap after last feature
     if (draw_button(cx - 80, btn_y, 160, 48, "Continue", 1, mx, my, click)) {
-        g_setup.state = SETUP_STATE_USER;
+        g_setup.state = SETUP_STATE_KEYBOARD;
         g_setup.current_step = 1;
         g_setup.input_buffer[0] = 0;
         g_setup.input_cursor = 0;
@@ -642,6 +660,129 @@ static void render_welcome(int cx, int cy, int w, int h, int mx, int my, int cli
     
     // Progress dots
     draw_progress_dots(cx, h - 80, 0, g_setup.total_steps);
+}
+
+static void render_keyboard_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
+    // Card
+    int card_w = 480;
+    int card_h = 400;
+    int card_x = cx - card_w / 2;
+    int card_y = cy - card_h / 2 - 20;
+
+    draw_card(card_x, card_y, card_w, card_h);
+
+    // Title
+    char* title = "Select Your Keyboard Layout";
+    gfx_draw_string_scaled(card_x + (card_w - strlen(title) * 16) / 2,
+                          card_y + 24, title, C_TEXT_DARK, 2);
+
+    // Subtitle
+    char* subtitle = "Choose the layout that matches your keyboard";
+    gfx_draw_string(card_x + (card_w - strlen(subtitle) * 8) / 2,
+                   card_y + 60, subtitle, C_TEXT_MUTED);
+
+    // Keyboard layout list (scrollable region)
+    int list_x = card_x + 30;
+    int list_y = card_y + 100;
+    int list_w = card_w - 60;
+    int item_h = 32;
+    int visible_items = 7;
+
+    // Handle mouse scroll wheel
+    if (mouse_scroll_delta != 0) {
+        if (mx >= list_x && mx <= list_x + list_w &&
+            my >= list_y && my < list_y + visible_items * item_h) {
+            g_setup.kbd_scroll -= mouse_scroll_delta;
+            int max_scroll = (int)KBD_LAYOUT_DISPLAY_COUNT - visible_items;
+            if (max_scroll < 0) max_scroll = 0;
+            if (g_setup.kbd_scroll > max_scroll) g_setup.kbd_scroll = max_scroll;
+            if (g_setup.kbd_scroll < 0) g_setup.kbd_scroll = 0;
+            // Adjust selected index if it's out of view
+            if (g_setup.selected_kbd_idx < g_setup.kbd_scroll) {
+                g_setup.selected_kbd_idx = g_setup.kbd_scroll;
+            }
+            if (g_setup.selected_kbd_idx >= g_setup.kbd_scroll + visible_items) {
+                g_setup.selected_kbd_idx = g_setup.kbd_scroll + visible_items - 1;
+            }
+        }
+        mouse_scroll_delta = 0;
+    }
+
+    // Clamp scroll so selected item is always visible
+    if (g_setup.selected_kbd_idx < g_setup.kbd_scroll) {
+        g_setup.kbd_scroll = g_setup.selected_kbd_idx;
+    }
+    if (g_setup.selected_kbd_idx >= g_setup.kbd_scroll + visible_items) {
+        g_setup.kbd_scroll = g_setup.selected_kbd_idx - visible_items + 1;
+    }
+    // Clamp scroll bounds
+    int max_scroll = (int)KBD_LAYOUT_DISPLAY_COUNT - visible_items;
+    if (max_scroll < 0) max_scroll = 0;
+    if (g_setup.kbd_scroll > max_scroll) g_setup.kbd_scroll = max_scroll;
+    if (g_setup.kbd_scroll < 0) g_setup.kbd_scroll = 0;
+
+    // List background
+    gfx_fill_rounded_rect(list_x, list_y, list_w, visible_items * item_h, C_INPUT_BG, 8);
+
+    for (int vi = 0; vi < visible_items; vi++) {
+        int i = g_setup.kbd_scroll + vi;
+        if (i >= (int)KBD_LAYOUT_DISPLAY_COUNT) break;
+
+        int item_y = list_y + vi * item_h;
+        int is_selected = (i == g_setup.selected_kbd_idx);
+        int hover = (mx >= list_x && mx <= list_x + list_w &&
+                    my >= item_y && my < item_y + item_h);
+
+        if (is_selected || hover) {
+            uint32_t bg = is_selected ? C_ACCENT : (hover ? C_BG_TOP : C_INPUT_BG);
+            gfx_fill_rounded_rect(list_x + 4, item_y + 2, list_w - 8, item_h - 4, bg, 6);
+        }
+
+        uint32_t text_color = is_selected ? C_TEXT_LIGHT : C_TEXT_DARK;
+        gfx_draw_string(list_x + 16, item_y + 8, kbd_layout_display_names[i], text_color);
+    }
+
+    // Scroll indicator (only when there are more items than visible)
+    if ((int)KBD_LAYOUT_DISPLAY_COUNT > visible_items) {
+        int total_h = visible_items * item_h;
+        int scroll_h = (visible_items * total_h) / (int)KBD_LAYOUT_DISPLAY_COUNT;
+        if (scroll_h < 20) scroll_h = 20;
+        int max_scroll_kbd = (int)KBD_LAYOUT_DISPLAY_COUNT - visible_items;
+        if (max_scroll_kbd < 0) max_scroll_kbd = 0;
+        int scroll_y = list_y;
+        if (max_scroll_kbd > 0) {
+            scroll_y = list_y + (g_setup.kbd_scroll * (total_h - scroll_h)) / max_scroll_kbd;
+        }
+        if (scroll_y < list_y) scroll_y = list_y;
+        if (scroll_y + scroll_h > list_y + total_h) scroll_y = list_y + total_h - scroll_h;
+        gfx_fill_rounded_rect(list_x + list_w - 12, scroll_y, 8, scroll_h, C_TEXT_MUTED, 4);
+    }
+
+    // Current selection preview
+    char preview[64];
+    strcpy(preview, "Selected: ");
+    strcat(preview, kbd_layout_display_names[g_setup.selected_kbd_idx]);
+
+    gfx_draw_string(card_x + (card_w - strlen(preview) * 8) / 2,
+                   card_y + card_h - 100, preview, C_TEXT_MUTED);
+
+    // Buttons
+    if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
+        g_setup.state = SETUP_STATE_WELCOME;
+        g_setup.current_step = 0;
+    }
+
+    if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Continue", 1, mx, my, click)) {
+        g_setup.config.kbd_layout = g_setup.selected_kbd_idx;
+        g_setup.state = SETUP_STATE_USER;
+        g_setup.current_step = 2;
+        g_setup.input_buffer[0] = 0;
+        g_setup.input_cursor = 0;
+        g_setup.input_active = 1;
+    }
+
+    // Progress dots
+    draw_progress_dots(cx, h - 80, 1, g_setup.total_steps);
 }
 
 static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
@@ -680,15 +821,15 @@ static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int 
     
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
-        g_setup.state = SETUP_STATE_WELCOME;
-        g_setup.current_step = 0;
+        g_setup.state = SETUP_STATE_KEYBOARD;
+        g_setup.current_step = 1;
     }
     
     if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Continue", 1, mx, my, click)) {
         if (g_setup.input_buffer[0]) {
             strcpy(g_setup.config.username, g_setup.input_buffer);
             g_setup.state = SETUP_STATE_PASSWORD;
-            g_setup.current_step = 2;
+            g_setup.current_step = 3;
             g_setup.password_buffer[0] = 0;
             g_setup.password_confirm[0] = 0;
             g_setup.password_cursor = 0;
@@ -700,7 +841,7 @@ static void render_user_setup(int cx, int cy, int w, int h, int mx, int my, int 
     }
     
     // Progress dots
-    draw_progress_dots(cx, h - 80, 1, g_setup.total_steps);
+    draw_progress_dots(cx, h - 80, 2, g_setup.total_steps);
 }
 
 static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
@@ -767,7 +908,7 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
         g_setup.state = SETUP_STATE_USER;
-        g_setup.current_step = 1;
+        g_setup.current_step = 2;
         g_setup.password_match_error = 0;
     }
     
@@ -776,7 +917,7 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
             if (g_setup.password_buffer[0] == 0) {
                 // No password - skip confirmation, go to timezone
                 g_setup.state = SETUP_STATE_TIMEZONE;
-                g_setup.current_step = 3;
+                g_setup.current_step = 4;
             } else {
                 // Move to confirm step
                 g_setup.password_step = 1;
@@ -791,7 +932,7 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
             // Verify passwords match
             if (strcmp(g_setup.password_buffer, g_setup.password_confirm) == 0) {
                 g_setup.state = SETUP_STATE_TIMEZONE;
-                g_setup.current_step = 3;
+                g_setup.current_step = 4;
                 g_setup.password_match_error = 0;
             } else {
                 g_setup.password_match_error = 1;
@@ -802,7 +943,7 @@ static void render_password_setup(int cx, int cy, int w, int h, int mx, int my, 
     }
     
     // Progress dots
-    draw_progress_dots(cx, h - 80, 2, g_setup.total_steps);
+    draw_progress_dots(cx, h - 80, 3, g_setup.total_steps);
 }
 
 static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
@@ -830,6 +971,26 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
     int list_w = card_w - 60;
     int item_h = 32;
     int visible_items = 7;
+    
+    // Handle mouse scroll wheel (inline like keyboard page)
+    if (mouse_scroll_delta != 0) {
+        if (mx >= list_x && mx <= list_x + list_w &&
+            my >= list_y && my < list_y + visible_items * item_h) {
+            g_setup.tz_scroll -= mouse_scroll_delta;
+            int max_scroll_tz = (int)TIMEZONE_COUNT - visible_items;
+            if (max_scroll_tz < 0) max_scroll_tz = 0;
+            if (g_setup.tz_scroll > max_scroll_tz) g_setup.tz_scroll = max_scroll_tz;
+            if (g_setup.tz_scroll < 0) g_setup.tz_scroll = 0;
+            // Adjust selected index if it's out of view
+            if (g_setup.selected_tz_idx < g_setup.tz_scroll) {
+                g_setup.selected_tz_idx = g_setup.tz_scroll;
+            }
+            if (g_setup.selected_tz_idx >= g_setup.tz_scroll + visible_items) {
+                g_setup.selected_tz_idx = g_setup.tz_scroll + visible_items - 1;
+            }
+        }
+        mouse_scroll_delta = 0;
+    }
     
     // Clamp scroll so selected item is always visible
     if (g_setup.selected_tz_idx < g_setup.tz_scroll) {
@@ -897,17 +1058,17 @@ static void render_timezone_setup(int cx, int cy, int w, int h, int mx, int my, 
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
         g_setup.state = SETUP_STATE_PASSWORD;
-        g_setup.current_step = 2;
+        g_setup.current_step = 3;
     }
     
     if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Continue", 1, mx, my, click)) {
         memcpy(&g_setup.config.timezone, &timezones[g_setup.selected_tz_idx], sizeof(TimeZone));
         g_setup.state = SETUP_STATE_THEME;
-        g_setup.current_step = 4;
+        g_setup.current_step = 5;
     }
     
     // Progress dots
-    draw_progress_dots(cx, h - 80, 3, g_setup.total_steps);
+    draw_progress_dots(cx, h - 80, 4, g_setup.total_steps);
 }
 
 static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int click) {
@@ -988,7 +1149,7 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
     // Buttons
     if (draw_button(card_x + 40, card_y + card_h - 60, 120, 40, "Back", 0, mx, my, click)) {
         g_setup.state = SETUP_STATE_TIMEZONE;
-        g_setup.current_step = 3;
+        g_setup.current_step = 4;
     }
     
     if (draw_button(card_x + card_w - 160, card_y + card_h - 60, 120, 40, "Get Started", 1, mx, my, click)) {
@@ -1005,7 +1166,7 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
     }
     
     // Progress dots
-    draw_progress_dots(cx, h - 80, 4, g_setup.total_steps);
+    draw_progress_dots(cx, h - 80, 5, g_setup.total_steps);
 }
 
 // --- Main Render ---
@@ -1031,6 +1192,9 @@ void welcome_setup_render(uint32_t* buffer, int w, int h, int mx, int my) {
     switch (g_setup.state) {
         case SETUP_STATE_WELCOME:
             render_welcome(cx, cy, w, h, mx, my, 0);
+            break;
+        case SETUP_STATE_KEYBOARD:
+            render_keyboard_setup(cx, cy, w, h, mx, my, 0);
             break;
         case SETUP_STATE_USER:
             render_user_setup(cx, cy, w, h, mx, my, 0);
@@ -1058,6 +1222,17 @@ int welcome_setup_handle_key(int key) {
         return 0;
     }
     
+    // Keyboard layout list navigation with arrow keys
+    if (g_setup.state == SETUP_STATE_KEYBOARD) {
+        if (key == 128 + 2) { // KEY_UP
+            if (g_setup.selected_kbd_idx > 0) g_setup.selected_kbd_idx--;
+            return 1;
+        } else if (key == 128 + 3) { // KEY_DOWN
+            if (g_setup.selected_kbd_idx < (int)KBD_LAYOUT_DISPLAY_COUNT - 1) g_setup.selected_kbd_idx++;
+            return 1;
+        }
+    }
+    
     // Timezone list navigation with arrow keys
     if (g_setup.state == SETUP_STATE_TIMEZONE) {
         if (key == 128 + 2) { // KEY_UP
@@ -1081,7 +1256,7 @@ int welcome_setup_handle_key(int key) {
             if (g_setup.input_buffer[0]) {
                 strcpy(g_setup.config.username, g_setup.input_buffer);
                 g_setup.state = SETUP_STATE_PASSWORD;
-                g_setup.current_step = 2;
+                g_setup.current_step = 3;
                 g_setup.password_active = 1;
                 g_setup.password_step = 0;
             }
@@ -1111,7 +1286,7 @@ int welcome_setup_handle_key(int key) {
                 if (g_setup.password_buffer[0] == 0) {
                     // No password - skip to timezone
                     g_setup.state = SETUP_STATE_TIMEZONE;
-                    g_setup.current_step = 3;
+                    g_setup.current_step = 4;
                 } else {
                     // Move to confirm
                     g_setup.password_step = 1;
@@ -1123,7 +1298,7 @@ int welcome_setup_handle_key(int key) {
                 // Verify passwords match
                 if (strcmp(g_setup.password_buffer, g_setup.password_confirm) == 0) {
                     g_setup.state = SETUP_STATE_TIMEZONE;
-                    g_setup.current_step = 3;
+                    g_setup.current_step = 4;
                     g_setup.password_match_error = 0;
                 } else {
                     g_setup.password_match_error = 1;
@@ -1163,6 +1338,9 @@ int welcome_setup_handle_click(int mx, int my, int click) {
         case SETUP_STATE_WELCOME:
             render_welcome(cx, cy, w, h, mx, my, click);
             break;
+        case SETUP_STATE_KEYBOARD:
+            render_keyboard_setup(cx, cy, w, h, mx, my, click);
+            break;
         case SETUP_STATE_USER:
             render_user_setup(cx, cy, w, h, mx, my, click);
             break;
@@ -1184,6 +1362,65 @@ int welcome_setup_handle_click(int mx, int my, int click) {
 
 int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     (void)pressed;
+    
+    // Handle keyboard layout list scrolling and selection
+    if (g_setup.state == SETUP_STATE_KEYBOARD && click) {
+        int w = screen_w ? screen_w : 1024;
+        int h = screen_h ? screen_h : 768;
+        int cx = w / 2;
+        int cy = h / 2;
+        
+        int card_w = 480;
+        int card_h = 400;
+        int card_x = cx - card_w / 2;
+        int card_y = cy - card_h / 2 - 20;
+        
+        int list_x = card_x + 30;
+        int list_y = card_y + 100;
+        int list_w = card_w - 60;
+        int item_h = 32;
+        int visible_items = 7;
+        
+        if (mx >= list_x && mx <= list_x + list_w) {
+            int rel_y = my - list_y;
+            if (rel_y >= 0 && rel_y < visible_items * item_h) {
+                int vi = rel_y / item_h;
+                int idx = g_setup.kbd_scroll + vi;
+                if (idx >= 0 && idx < (int)KBD_LAYOUT_DISPLAY_COUNT) {
+                    g_setup.selected_kbd_idx = idx;
+                }
+            }
+        }
+    }
+    
+    // Handle keyboard layout list scroll wheel
+    if (g_setup.state == SETUP_STATE_KEYBOARD && mouse_scroll_delta != 0) {
+        int w = screen_w ? screen_w : 1024;
+        int h = screen_h ? screen_h : 768;
+        int cx = w / 2;
+        int cy = h / 2;
+        
+        int card_w = 480;
+        int card_h = 400;
+        int card_x = cx - card_w / 2;
+        int card_y = cy - card_h / 2 - 20;
+        
+        int list_x = card_x + 30;
+        int list_y = card_y + 100;
+        int list_w = card_w - 60;
+        int item_h = 32;
+        int visible_items = 7;
+        
+        if (mx >= list_x && mx <= list_x + list_w &&
+            my >= list_y && my < list_y + visible_items * item_h) {
+            g_setup.kbd_scroll -= mouse_scroll_delta;
+            int max_scroll = (int)KBD_LAYOUT_DISPLAY_COUNT - visible_items;
+            if (max_scroll < 0) max_scroll = 0;
+            if (g_setup.kbd_scroll > max_scroll) g_setup.kbd_scroll = max_scroll;
+            if (g_setup.kbd_scroll < 0) g_setup.kbd_scroll = 0;
+        }
+        mouse_scroll_delta = 0;
+    }
     
     // Handle timezone list scrolling and selection
     if (g_setup.state == SETUP_STATE_TIMEZONE && click) {
@@ -1213,6 +1450,35 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
                 }
             }
         }
+    }
+    
+    // Handle timezone list scroll wheel
+    if (g_setup.state == SETUP_STATE_TIMEZONE && mouse_scroll_delta != 0) {
+        int w = screen_w ? screen_w : 1024;
+        int h = screen_h ? screen_h : 768;
+        int cx = w / 2;
+        int cy = h / 2;
+        
+        int card_w = 520;
+        int card_h = 400;
+        int card_x = cx - card_w / 2;
+        int card_y = cy - card_h / 2 - 20;
+        
+        int list_x = card_x + 30;
+        int list_y = card_y + 100;
+        int list_w = card_w - 60;
+        int item_h = 32;
+        int visible_items = 7;
+        
+        if (mx >= list_x && mx <= list_x + list_w &&
+            my >= list_y && my < list_y + visible_items * item_h) {
+            g_setup.tz_scroll -= mouse_scroll_delta;
+            int max_scroll = (int)TIMEZONE_COUNT - visible_items;
+            if (max_scroll < 0) max_scroll = 0;
+            if (g_setup.tz_scroll > max_scroll) g_setup.tz_scroll = max_scroll;
+            if (g_setup.tz_scroll < 0) g_setup.tz_scroll = 0;
+        }
+        mouse_scroll_delta = 0;
     }
     
     // Handle theme selection

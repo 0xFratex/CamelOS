@@ -262,8 +262,9 @@ void add_log(const char* msg) {
 #define PS2_STATUS_PORT  0x64
 
 void poll_input(void) {
-    static uint8_t packet[3];
+    static uint8_t packet[4];  // 4 bytes for Intellimouse scroll wheel
     static int cycle = 0;
+    static uint8_t mouse_id = 0;  // 0x03 = Intellimouse (has scroll wheel)
 
     mb_prev = mb_left;
     mb_clicked = 0;  // Reset click flag each poll
@@ -272,7 +273,9 @@ void poll_input(void) {
         uint8_t b = inb(PS2_MOUSE_PORT);
         if (cycle == 0 && !(b & 0x08)) { cycle = 0; continue; }
         packet[cycle++] = b;
-        if (cycle == 3) {
+        
+        uint8_t packet_len = (mouse_id == 0x03) ? 4 : 3;
+        if (cycle >= packet_len) {
             cycle = 0;
             if (packet[0] & 0xC0) continue;
             mx += (int8_t)packet[1];
@@ -285,6 +288,12 @@ void poll_input(void) {
             if (mx >= WIN_W) mx = WIN_W - 1;
             if (my < 0) my = 0;
             if (my >= WIN_H) my = WIN_H - 1;
+            
+            // Read scroll wheel data (byte 3) for Intellimouse
+            if (mouse_id == 0x03 && packet_len == 4) {
+                // Scroll data is available but not used in installer UI
+                // (no scrollable lists in installer screens)
+            }
         }
     }
 }
@@ -1641,18 +1650,9 @@ void install_tick(void) {
 
     // Smooth progress animation: gradually move install_pct toward install_target_pct
     if (install_pct < install_target_pct) {
-        install_pct += 2;
+        install_pct += 2;  // Slower, smoother animation
         if (install_pct > install_target_pct) install_pct = install_target_pct;
     }
-
-    // Progress is considered "caught up" when within 3% of target or when
-    // the watchdog timer fires. This prevents the installer from getting
-    // stuck at ~28-29% where animation hasn't reached the target yet.
-    #define PROGRESS_CLOSE(a, b) ((a) >= (b) - 3)
-
-    // Watchdog: if any step spends too long waiting for animation, force-advance
-    // (install_idle_ticks is a file-scope variable)
-    // Reduced from 60 to 30 ticks to prevent visible stalling
 
     if (install_step == 0) {
         if (install_step_tick == 0) {
@@ -1672,16 +1672,12 @@ void install_tick(void) {
                 strcpy(install_error_msg, "Failed to write MBR"); install_error=1; return;
             }
             install_step_tick = 1;
-            install_idle_ticks = 0;
+            install_target_pct = 10;
+            return;  // Wait one tick to show progress
         }
-        // Wait for progress bar to catch up before advancing
-        install_target_pct = 5;
-        if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
+        // Wait for progress animation to catch up before moving to next step
+        if (install_pct >= install_target_pct) {
             install_step++; install_step_tick = 0;
-            install_idle_ticks = 0;
-        } else {
-            install_idle_ticks++;
-            if (install_idle_ticks > 30) { install_step++; install_step_tick = 0; install_idle_ticks = 0; }
         }
         return;
     }
@@ -1708,16 +1704,11 @@ void install_tick(void) {
             }
             kernel_write_offset++; sectors_this++;
         }
-        install_target_pct = 5 + (kernel_write_offset * 25 / k_sectors);
+        // Progress: 10% to 30% for kernel copy
+        install_target_pct = 10 + (kernel_write_offset * 20 / k_sectors);
         if (kernel_write_offset >= k_sectors) {
             install_target_pct = 30;
-            if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
-                install_step++; add_log("Kernel copied");
-                install_idle_ticks = 0;
-            } else {
-                install_idle_ticks++;
-                if (install_idle_ticks > 30) { install_step++; add_log("Kernel copied"); install_step_tick = 0; install_idle_ticks = 0; }
-            }
+            install_step++; add_log("Kernel copied");
         }
         return;
     }
@@ -1738,15 +1729,12 @@ void install_tick(void) {
             }
             pfs32_sync(); disk_flush_cache();
             install_step_tick = 1;
-            install_idle_ticks = 0;
+            install_target_pct = 50;
+            return;  // Wait one tick to show progress
         }
-        install_target_pct = 45;
-        if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
+        // Wait for progress animation to catch up
+        if (install_pct >= install_target_pct) {
             install_step++; install_step_tick = 0; add_log("PFS32 formatted");
-            install_idle_ticks = 0;
-        } else {
-            install_idle_ticks++;
-            if (install_idle_ticks > 30) { install_step++; install_step_tick = 0; add_log("PFS32 formatted"); install_idle_ticks = 0; }
         }
         return;
     }
@@ -1763,15 +1751,12 @@ void install_tick(void) {
                 pfs32_create_directory("/Library"); pfs32_create_directory("/Library/Preferences");
                 pfs32_create_directory("/etc");
                 install_step_tick = 1;
-                install_idle_ticks = 0;
+                install_target_pct = 55;
+                return;  // Wait one tick to show progress
             }
-            install_target_pct = 47;
-            if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
+            // Wait for progress animation to catch up
+            if (install_pct >= install_target_pct) {
                 install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0;
-                install_idle_ticks = 0;
-            } else {
-                install_idle_ticks++;
-                if (install_idle_ticks > 30) { install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0; install_idle_ticks = 0; }
             }
             return;
         }
@@ -1785,7 +1770,8 @@ void install_tick(void) {
                 }
             }
             install_file_idx++;
-            install_target_pct = 47 + (install_file_idx * 43) / 9;
+            // Progress: 55% to 90% for file installs
+            install_target_pct = 55 + (install_file_idx * 35) / 9;
             return;
         }
         // Create proper .app bundle structures in /Applications/ for dock compatibility
@@ -1845,14 +1831,8 @@ void install_tick(void) {
         }
         pfs32_sync(); disk_flush_cache();
         install_target_pct = 90;
-        if (PROGRESS_CLOSE(install_pct, install_target_pct)) {
-            install_step++; install_sub_step=0; install_step_tick = 0;
-            add_log("System files installed");
-            install_idle_ticks = 0;
-        } else {
-            install_idle_ticks++;
-            if (install_idle_ticks > 30) { install_step++; install_sub_step=0; install_step_tick = 0; install_idle_ticks = 0; }
-        }
+        install_step++; install_sub_step=0; install_step_tick = 0;
+        add_log("System files installed");
         return;
     }
 

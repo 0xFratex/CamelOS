@@ -250,17 +250,38 @@ void files_draw_ctx(int win_x, int win_y) {
     gfx_fill_rounded_rect(mx, my, max_w, menu_h, 0xFFFFFFFF, 6);
     gfx_draw_rect(mx, my, max_w, menu_h, 0xFF888888);
     
+    // Get mouse position for hover detection (mouse coords are window-local)
+    extern int mouse_x, mouse_y;
+    // Convert screen mouse to window-local for hover detection
+    // Since files_draw_ctx receives win_x, win_y as the window's screen position,
+    // and mouse_x/mouse_y are screen coords, we can compare directly.
+    int hover_idx = -1;
     for (int i = 0; i < item_count; i++) {
         int iy = my + 2 + i * CTX_ITEM_H;
-        gfx_draw_string(mx + CTX_PAD_X, iy + 4, items[i].label, 0xFF333333);
+        if (mouse_x >= mx && mouse_x < mx + max_w &&
+            mouse_y >= iy && mouse_y < iy + CTX_ITEM_H) {
+            hover_idx = i;
+            break;
+        }
+    }
+    
+    for (int i = 0; i < item_count; i++) {
+        int iy = my + 2 + i * CTX_ITEM_H;
+        // Highlight hovered item
+        if (i == hover_idx) {
+            gfx_fill_rounded_rect(mx + 2, iy, max_w - 4, CTX_ITEM_H, 0xFF007AFF, 4);
+            gfx_draw_string(mx + CTX_PAD_X, iy + 4, items[i].label, 0xFFFFFFFF);
+        } else {
+            gfx_draw_string(mx + CTX_PAD_X, iy + 4, items[i].label, 0xFF333333);
+        }
     }
 }
 
 void files_ctx_click(int click_x, int click_y) {
     if (!ctx_active) return;
     
-    CtxItem bg_items[] = {{"",0},{"",1},{"",3},{"",6}};
-    CtxItem file_items[] = {{"",5},{"",2},{"",4}};
+    CtxItem bg_items[] = {{"New Folder",0},{"New File",1},{"Paste",3},{"Refresh",6}};
+    CtxItem file_items[] = {{"Open",5},{"Copy",2},{"Delete",4}};
     CtxItem* items;
     int item_count;
     if (ctx_type == 0) { items = bg_items; item_count = 4; }
@@ -273,7 +294,12 @@ void files_ctx_click(int click_x, int click_y) {
     }
     int menu_h = item_count * CTX_ITEM_H + 4;
     
+    // Apply same clamping as files_draw_ctx() so click detection matches drawn position
     int mx = ctx_x, my = ctx_y;
+    if (mx + max_w > 550) mx = 550 - max_w;
+    if (my + menu_h > 400) my = 400 - menu_h;
+    if (mx < 0) mx = 0;
+    if (my < 0) my = 0;
     
     if (click_x >= mx && click_x < mx + max_w && click_y >= my && click_y < my + menu_h) {
         int idx = (click_y - my - 2) / CTX_ITEM_H;
@@ -449,27 +475,52 @@ void files_on_paint(int x, int y, int w, int h) {
     
     // Prompt overlay (new folder/file name)
     if (prompt_active) {
-        int pw = 240, ph = 60;
+        int pw = 320, ph = 130;
         int px = x + (w - pw) / 2;
-        int py = y + h / 2 - 30;
+        int py = y + h / 2 - 65;
         
+        // Dim overlay
+        gfx_fill_rounded_rect(x, y, w, h, 0x40000000, 0);
+        
+        // Dialog card shadow
+        gfx_fill_rounded_rect(px + 3, py + 3, pw, ph, 0x40000000, 8);
+        // Dialog card
         gfx_fill_rounded_rect(px, py, pw, ph, 0xFFFFFFFF, 8);
         gfx_draw_rect(px, py, pw, ph, 0xFF007AFF);
         
-        const char* title = prompt_is_dir ? "New Folder:" : "New File:";
-        gfx_draw_string(px + 10, py + 6, title, 0xFF333333);
+        const char* title = prompt_is_dir ? "New Folder" : "New File";
+        gfx_draw_string(px + pw/2 - strlen(title)*4, py + 10, title, 0xFF333333);
+        
+        // Subtitle
+        const char* hint = "Enter name:";
+        gfx_draw_string(px + 16, py + 34, hint, 0xFF8E8E93);
         
         // Input field
-        gfx_fill_rect(px + 10, py + 26, pw - 20, 22, 0xFFF2F2F7);
-        gfx_draw_rect(px + 10, py + 26, pw - 20, 22, 0xFFC6C6C8);
-        gfx_draw_string(px + 14, py + 30, prompt_buffer, 0xFF333333);
+        int field_w = pw - 32;
+        gfx_fill_rect(px + 16, py + 52, field_w, 24, 0xFFF2F2F7);
+        gfx_draw_rect(px + 16, py + 52, field_w, 24, 0xFFC6C6C8);
+        gfx_draw_string(px + 20, py + 56, prompt_buffer, 0xFF333333);
         
         // Blinking cursor
         static int pb = 0; pb++;
         if (pb % 60 < 30) {
             int cw = prompt_len * 8;
-            gfx_fill_rect(px + 14 + cw, py + 30, 1, 14, 0xFF007AFF);
+            gfx_fill_rect(px + 20 + cw, py + 56, 1, 14, 0xFF007AFF);
         }
+        
+        // Cancel button
+        int cancel_x = px + 16, btn_y = py + 86;
+        gfx_fill_rounded_rect(cancel_x, btn_y, 100, 32, 0xFFE8E8ED, 6);
+        gfx_draw_rect(cancel_x, btn_y, 100, 32, 0xFFC6C6C8);
+        gfx_draw_string(cancel_x + 25, btn_y + 9, "Cancel", 0xFF333333);
+        
+        // Create button
+        int create_x = px + pw - 136;
+        gfx_fill_rounded_rect(create_x, btn_y, 120, 32, 0xFF007AFF, 6);
+        gfx_draw_string(create_x + 28, btn_y + 9, "Create", 0xFFFFFFFF);
+        
+        // Hint
+        gfx_draw_string(px + 16, py + ph - 16, "Enter=Create  Esc=Cancel", 0xFF8E8E93);
     }
     
     // Context menu
@@ -478,8 +529,40 @@ void files_on_paint(int x, int y, int w, int h) {
 
 // ===== Mouse Handling =====
 void files_on_mouse(int x, int y, int btn) {
-    // Handle prompt mode
-    if (prompt_active) return;
+    // Handle scroll wheel
+    extern int mouse_scroll_delta;
+    if (mouse_scroll_delta != 0) {
+        scroll_offset -= mouse_scroll_delta * CELL_H;
+        int cols = (550 - MARGIN_LEFT) / CELL_W;
+        if (cols < 1) cols = 1;
+        int max_scroll = ((last_count + cols - 1) / cols) * CELL_H - 400 + MARGIN_TOP;
+        if (max_scroll < 0) max_scroll = 0;
+        if (scroll_offset < 0) scroll_offset = 0;
+        if (scroll_offset > max_scroll) scroll_offset = max_scroll;
+        mouse_scroll_delta = 0;
+        return;
+    }
+    
+    // Handle prompt mode - check button clicks
+    if (prompt_active) {
+        if (btn == 1) {
+            int pw = 320, ph = 130;
+            int px_off = (550 - pw) / 2;  // 550 is window width
+            int py_off = 200 / 2 - 65;     // approximate center
+            
+            // Cancel button
+            if (x >= px_off + 16 && x <= px_off + 116 && y >= py_off + 86 && y <= py_off + 118) {
+                prompt_active = 0;
+                return;
+            }
+            // Create button
+            if (x >= px_off + pw - 136 && x <= px_off + pw - 16 && y >= py_off + 86 && y <= py_off + 118) {
+                op_commit_new_item();
+                return;
+            }
+        }
+        return;
+    }
     
     // Handle context menu click
     if (ctx_active) {
