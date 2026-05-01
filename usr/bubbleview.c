@@ -174,6 +174,7 @@ static int drag_off_y = 0;
 // repaint only the union of old+new rects instead of the whole screen.
 static int drag_prev_x = 0, drag_prev_y = 0;
 static int drag_was_active = 0;   // 1 when the previous frame was a drag frame
+static int drag_just_released = 0; // 1 when drag was released this frame (need final dirty region)
 
 #define DRAG_SHADOW_PAD 12       // extra pixels around the window for shadow
 
@@ -275,8 +276,10 @@ void ctx_menu_show(int x, int y, int type, void* target) {
     }
 
     if (g_ctx_menu.x + g_ctx_menu.w > 1024) g_ctx_menu.x = 1024 - g_ctx_menu.w;
+    if (g_ctx_menu.x < 0) g_ctx_menu.x = 0;
     g_ctx_menu.h = g_ctx_menu.item_count * 24 + 10;
     if (g_ctx_menu.y + g_ctx_menu.h > 768) g_ctx_menu.y = 768 - g_ctx_menu.h;
+    if (g_ctx_menu.y < 0) g_ctx_menu.y = 0;
     g_ctx_menu.active = 1;
 }
 
@@ -500,6 +503,10 @@ int process_global_bar(int mx, int my, int click) {
     int cur_x = 15;
     int target_menu = -3; 
 
+    // If context menu is active, don't draw menu bar dropdowns (they would
+    // overlap and cause visual corruption / flickering).
+    int suppress_dropdowns = g_ctx_menu.active;
+
     // 1. Apple/Camel Logo
     int w = measure_text_width("Camel") + 20;
     
@@ -510,7 +517,7 @@ int process_global_bar(int mx, int my, int click) {
         if(click) target_menu = -1;
     }
 
-    if (open_menu_id == -1) {
+    if (open_menu_id == -1 && !suppress_dropdowns) {
         sys_gfx_rect(cur_x, 0, w, HEADER_HEIGHT, 0xFF3D89D6); 
         sys_gfx_string(cur_x + 10, 8, "Camel", 0xFFFFFFFF);
         draw_dropdown(cur_x, HEADER_HEIGHT, sys_menu_items, sys_menu_count, 0, 0);
@@ -535,7 +542,7 @@ int process_global_bar(int mx, int my, int click) {
             if (click) target_menu = i;
         }
 
-        if (open_menu_id == i) {
+        if (open_menu_id == i && !suppress_dropdowns) {
             sys_gfx_rect(cur_x, 0, w, HEADER_HEIGHT, 0xFF3D89D6);
             sys_gfx_string(cur_x + 10, 8, m_name, 0xFFFFFFFF);
             if (active_win) draw_dropdown(cur_x, HEADER_HEIGHT, 0, active_win->menus[i].item_count, 1, active_win);
@@ -794,6 +801,9 @@ void handle_input(int mx, int my, int lb, int rb) {
             if (snap_preview_active) {
                 apply_snap(drag_win);
             }
+            // Mark drag just released so the render loop can do one final
+            // dirty-region repaint instead of a slower full-screen redraw.
+            drag_just_released = 1;
             drag_win = 0;
             snap_preview_active = 0;
         }
@@ -1121,28 +1131,47 @@ void start_bubble_view() {
         // well within the vsync interval.
         buffer = gfx_get_active_buffer();
 
-        if (drag_was_active && drag_win) {
+        if (drag_was_active && (drag_win || drag_just_released)) {
             // Compute dirty rect = union of old position + new position + shadow pad
             int ox = drag_prev_x, oy = drag_prev_y;
-            int nx = drag_win->x,   ny = drag_win->y;
-            int ww = drag_win->width, wh = drag_win->height;
+            int nx, ny, ww, wh;
+            if (drag_just_released && !drag_win) {
+                // Drag was released this frame — use the last known position
+                nx = drag_prev_x; ny = drag_prev_y;
+                // We need the window's size but it might be snapped.
+                // Use the saved prev size from the last drag frame.
+                // Since drag_win is now NULL, we can't get size from it.
+                // Fall through to full redraw for the release frame.
+                drag_just_released = 0;
+                drag_was_active = 0;
+                // Full redraw is safest on release
+                desktop_draw(buffer);
+                for(int i=0; i<MAX_WINDOWS; i++) {
+                    window_t* w = ws_get_window_at_index(i);
+                    if(!w || !w->is_visible) continue;
+                    draw_window_animated(w, mx, my);
+                }
+            } else {
+                nx = drag_win->x;   ny = drag_win->y;
+                ww = drag_win->width, wh = drag_win->height;
 
-            int dx1 = (ox < nx ? ox : nx) - DRAG_SHADOW_PAD;
-            int dy1 = (oy < ny ? oy : ny) - DRAG_SHADOW_PAD;
-            int dx2 = ((ox + ww > nx + ww ? ox : nx) + ww) + DRAG_SHADOW_PAD;
-            int dy2 = ((oy + wh > ny + wh ? oy : ny) + wh) + DRAG_SHADOW_PAD;
+                int dx1 = (ox < nx ? ox : nx) - DRAG_SHADOW_PAD;
+                int dy1 = (oy < ny ? oy : ny) - DRAG_SHADOW_PAD;
+                int dx2 = ((ox + ww > nx + ww ? ox : nx) + ww) + DRAG_SHADOW_PAD;
+                int dy2 = ((oy + wh > ny + wh ? oy : ny) + wh) + DRAG_SHADOW_PAD;
 
-            // Restore wallpaper in dirty region from cache (fast per-row memcpy)
-            desktop_fill_wallpaper_region(buffer, dx1, dy1, dx2 - dx1, dy2 - dy1);
-            // Redraw desktop icons (they may have been uncovered)
-            desktop_draw_icons(buffer);
+                // Restore wallpaper in dirty region from cache (fast per-row memcpy)
+                desktop_fill_wallpaper_region(buffer, dx1, dy1, dx2 - dx1, dy2 - dy1);
+                // Redraw desktop icons (they may have been uncovered)
+                desktop_draw_icons(buffer);
 
-            // Redraw all windows (those outside the dirty rect paint over
-            // unchanged pixels — harmless and cheaper than overlap testing)
-            for(int i=0; i<MAX_WINDOWS; i++) {
-                window_t* w = ws_get_window_at_index(i);
-                if(!w || !w->is_visible) continue;
-                draw_window_animated(w, mx, my);
+                // Redraw all windows (those outside the dirty rect paint over
+                // unchanged pixels — harmless and cheaper than overlap testing)
+                for(int i=0; i<MAX_WINDOWS; i++) {
+                    window_t* w = ws_get_window_at_index(i);
+                    if(!w || !w->is_visible) continue;
+                    draw_window_animated(w, mx, my);
+                }
             }
         } else {
             // Full redraw (wallpaper cache makes this a fast memcpy)
@@ -1157,6 +1186,7 @@ void start_bubble_view() {
 
         // Update drag state for next frame's dirty-region decision
         drag_was_active = (drag_win != 0) ? 1 : 0;
+        drag_just_released = 0;
 
         frame_counter++;
 

@@ -227,6 +227,11 @@ void desktop_draw_icons(uint32_t* buffer) {
     int y = GRID_START_Y;
 
     for(int i=0; i<desk_count; i++) {
+        // Always repaint the icon's background from the wallpaper cache first.
+        // This prevents stale highlights or ghost pixels from a previous frame
+        // when using the dirty-region optimisation during window dragging.
+        desktop_fill_wallpaper_region(buffer, x - 10, y - 5, 68, 80);
+
         // Selection Highlight
         if(desk_selected[i] && !(desktop_rename_active && desktop_rename_idx == i)) {
             sys_gfx_rect(x-10, y-5, 68, 80, 0x40FFFFFF);

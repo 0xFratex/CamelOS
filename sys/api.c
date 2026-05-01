@@ -138,11 +138,11 @@ int sys_mouse_read(int* x, int* y, int* left_click) {
     return (mouse_btn_left | (mouse_btn_right << 1));
 }
 
-extern int8_t mouse_scroll_delta;
+extern int mouse_scroll_delta;
 int sys_mouse_scroll() {
-    int8_t delta = mouse_scroll_delta;
+    int delta = mouse_scroll_delta;
     mouse_scroll_delta = 0;  // Consume the scroll event
-    return (int)delta;
+    return delta;
 }
 
 void sys_print(const char* str) { vga_print(str); }

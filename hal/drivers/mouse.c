@@ -19,7 +19,7 @@ int mouse_y = 100;
 int mouse_btn_left = 0;
 int mouse_btn_right = 0;
 int mouse_btn_middle = 0;
-int8_t mouse_scroll_delta = 0;  // Scroll wheel: positive = up, negative = down
+int mouse_scroll_delta = 0;  // Scroll wheel: positive = up, negative = down
 
 // Intellimouse support flag
 static uint8_t mouse_has_wheel = 0;
@@ -91,12 +91,10 @@ void mouse_handler() {
         mouse_y -= rel_y; // PS/2 Y is positive upwards, screen is positive downwards
 
         // Byte 3: Scroll wheel (Intellimouse)
+        // Accumulate scroll events so rapid scrolling between frames is not lost.
+        // mouse_scroll_delta is consumed and cleared each frame by sys_mouse_scroll().
         if (mouse_has_wheel) {
-            mouse_scroll_delta = (int8_t)mouse_byte[3];
-            // Some mice use 4-bit signed for scroll; sign-extend if needed
-            // Values are typically -1, 0, or +1 per notch
-        } else {
-            mouse_scroll_delta = 0;
+            mouse_scroll_delta += (int8_t)mouse_byte[3];
         }
 
         // === Use Dynamic Screen Size ===
