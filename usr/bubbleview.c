@@ -818,6 +818,34 @@ void ctx_menu_handle_click(int mx, int my) {
 void handle_input(int mx, int my, int lb, int rb) {
     int click = (lb && !prev_lb);
 
+    // Priority -1: If renaming and user clicks outside the rename area, commit the rename
+    if (renaming_mode && click) {
+        // Commit rename on click anywhere (treat like pressing Enter)
+        if (strlen(desktop_rename_buf) > 0 && desktop_rename_idx >= 0 && desktop_rename_idx < 32) {
+            extern int desk_count;
+            extern pfs32_direntry_t desk_entries[];
+            char old_path[256], new_path[256];
+            extern char g_desktop_path[128];
+            strcpy(old_path, g_desktop_path);
+            strcat(old_path, "/");
+            strcat(old_path, desk_entries[desktop_rename_idx].filename);
+            strcpy(new_path, g_desktop_path);
+            strcat(new_path, "/");
+            strcat(new_path, desktop_rename_buf);
+            if (strcmp(old_path, new_path) != 0) {
+                extern int sys_fs_rename(const char*, const char*);
+                sys_fs_rename(old_path, new_path);
+            }
+        }
+        renaming_mode = 0;
+        desktop_rename_active = 0;
+        desktop_rename_idx = -1;
+        desktop_refresh();
+        // Don't process the click further
+        prev_lb = lb;
+        return;
+    }
+
     // Priority 0: Unified Context Menu (Replaces previous modal check)
     if (g_ctx_menu.active && click) {
         ctx_menu_handle_click(mx, my);
@@ -1233,7 +1261,9 @@ void start_bubble_view() {
             if (app_switcher_is_active()) app_switcher_release();
         }
 
-        if (k != 0 && active_win && active_win->input_callback) {
+        // Dispatch key to active window's input callback
+        // Skip if rename mode is active (key goes to rename handler instead)
+        if (k != 0 && !renaming_mode && active_win && active_win->input_callback) {
              typedef void (*icb)(int);
              ((icb)active_win->input_callback)((int)k);
         }
@@ -1305,8 +1335,9 @@ void start_bubble_view() {
         frame_counter++;
 
         // Auto Refresh - check filesystem generation OR periodic fallback (every 2s)
+        // Skip refresh while renaming to avoid disrupting the inline editor
         uint32_t gen = sys_get_fs_generation();
-        if (gen != last_fs_gen || (frame_counter % 120 == 0)) {
+        if (!renaming_mode && (gen != last_fs_gen || (frame_counter % 120 == 0))) {
             desktop_refresh();
             last_fs_gen = gen;
         }

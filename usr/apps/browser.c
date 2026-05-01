@@ -184,12 +184,45 @@ static void browser_load_page(const char* url) {
         extern int tls_client_handshake(void* conn);
         int tls_result = tls_client_handshake(conn);
         if (tls_result != 0) {
-            strcpy(page_lines[0], "Error: TLS handshake failed");
-            strcpy(page_lines[1], "");
-            strcpy(page_lines[2], "Could not establish secure connection.");
-            page_line_count = 3;
-            strcpy(status_text, "TLS Error");
+            // TLS not yet supported - fall back to HTTP on port 80
+            // Close the HTTPS connection and try again with plain HTTP
+            strcpy(status_text, "HTTPS not available, trying HTTP...");
             is_loading = 0;
+            // Build HTTP URL
+            char http_url[256];
+            strcpy(http_url, "http://");
+            strcat(http_url, host);
+            if (port != 80 && port != 443) {
+                char port_str[8];
+                int p = port;
+                port_str[0] = 0;
+                // Simple int to str for port
+                char tmp[8]; int ti = 0;
+                if (p == 0) p = 80;
+                int pp = p;
+                while (pp > 0) { tmp[ti++] = '0' + (pp % 10); pp /= 10; }
+                tmp[ti] = 0;
+                // Reverse
+                for (int j = 0; j < ti; j++) port_str[j] = tmp[ti - 1 - j];
+                port_str[ti] = 0;
+                strcat(http_url, ":");
+                strcat(http_url, port_str);
+            }
+            strcat(http_url, path);
+            // Retry with HTTP (non-recursive: set flag to prevent re-entry)
+            static int tls_fallback_depth = 0;
+            if (tls_fallback_depth < 1) {
+                tls_fallback_depth++;
+                browser_load_page(http_url);
+                tls_fallback_depth--;
+                return;
+            }
+            // If already in fallback, just show error
+            strcpy(page_lines[0], "Error: Could not connect to server.");
+            strcpy(page_lines[1], "HTTPS is not yet supported.");
+            strcpy(page_lines[2], "HTTP fallback also failed.");
+            page_line_count = 3;
+            strcpy(status_text, "Connection Error");
             return;
         }
     }

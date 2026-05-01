@@ -89,10 +89,15 @@ void desktop_refresh() {
     memset(desk_entries, 0, sizeof(desk_entries));
     memset(desk_selected, 0, sizeof(desk_selected));
     
-    // Force reset rename state on refresh to avoid ghost inputs
-    if (desktop_rename_active) {
-        desktop_rename_active = 0;
-        desktop_rename_idx = -1;
+    // Preserve rename state during refresh if active
+    // (desktop_refresh is called periodically and would otherwise kill rename)
+    int saved_rename_active = desktop_rename_active;
+    int saved_rename_idx = desktop_rename_idx;
+    char saved_rename_buf[64];
+    if (desktop_rename_active && desktop_rename_idx >= 0) {
+        extern char desktop_rename_buf[];
+        strncpy(saved_rename_buf, desktop_rename_buf, 63);
+        saved_rename_buf[63] = 0;
     }
 
     if (blk != 0xFFFFFFFF) {
@@ -120,6 +125,23 @@ void desktop_refresh() {
                     desk_entries[desk_count++] = temp[i];
                 }
             }
+        }
+    }
+    
+    // Restore rename state after refresh (if it was active before)
+    if (saved_rename_active) {
+        desktop_rename_active = 1;
+        desktop_rename_idx = saved_rename_idx;
+        if (saved_rename_idx >= 0 && saved_rename_idx < desk_count) {
+            extern char desktop_rename_buf[];
+            extern int desktop_rename_cursor;
+            strncpy(desktop_rename_buf, saved_rename_buf, 63);
+            desktop_rename_buf[63] = 0;
+            desktop_rename_cursor = strlen(saved_rename_buf);
+        } else {
+            // The renamed item is no longer in the directory listing
+            desktop_rename_active = 0;
+            desktop_rename_idx = -1;
         }
     }
 }

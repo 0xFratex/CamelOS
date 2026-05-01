@@ -2,6 +2,11 @@
 // Provides the tls_client_* API used by the browser and download manager.
 // Bridges the browser's void* conn (TCP connection) model to the
 // tls_session_t based TLS implementation.
+//
+// NOTE: Full TLS is not yet supported over the RTL8139 TCP stack.
+// The handshake function safely returns an error so the browser can
+// fall back to HTTP. When a proper socket layer is available, the
+// tls_connect() path can be re-enabled.
 
 #include "tls.h"
 #include "tls13.h"
@@ -59,55 +64,14 @@ static tls_client_ctx_t* find_existing_ctx(void* conn) {
 int tls_client_handshake(void* conn) {
     if (!conn) return -1;
 
-    tls_client_ctx_t* ctx = find_ctx(conn);
-    if (!ctx) {
-        s_printf("[TLS_CLIENT] No free session slots\n");
-        return -2;
-    }
+    s_printf("[TLS_CLIENT] TLS handshake requested but not yet supported over RTL8139 TCP\n");
+    s_printf("[TLS_CLIENT] Browser should fall back to HTTP\n");
 
-    // Create a new TLS session
-    tls_session_t* session = tls_create_session();
-    if (!session) {
-        s_printf("[TLS_CLIENT] Failed to create TLS session\n");
-        ctx->active = 0;
-        return -3;
-    }
-
-    // Disable strict certificate verification for now (self-signed certs)
-    tls_set_verify(session, 0);
-
-    ctx->session = session;
-
-    // Extract the remote IP and port from the TCP connection
-    // For now, use a placeholder hostname - the browser sets it before calling
-    if (ctx->hostname[0]) {
-        tls_set_hostname(session, ctx->hostname);
-    }
-
-    // Perform the TLS handshake using the TCP connection's underlying socket
-    // The TLS layer needs a connected socket; we use the TCP connection's fd
-    tcp_connection_t* tcp = (tcp_connection_t*)conn;
-    session->socket_fd = tcp->local_port; // Use as identifier
-
-    // Perform the full TLS connect/handshake
-    // tls_connect() handles the full handshake sequence
-    int result = tls_connect(session, ctx->hostname[0] ? ctx->hostname : "server",
-                             tcp->remote_port);
-
-    if (result != 0) {
-        s_printf("[TLS_CLIENT] Handshake failed: ");
-        char buf[16];
-        int_to_str(result, buf);
-        s_printf(buf);
-        s_printf("\n");
-        tls_destroy_session(session);
-        ctx->session = 0;
-        ctx->active = 0;
-        return result;
-    }
-
-    s_printf("[TLS_CLIENT] TLS handshake successful\n");
-    return 0;
+    // Full TLS is not yet integrated with the RTL8139 polling-based TCP stack.
+    // The tls_connect() function uses BSD socket recv()/send() which don't
+    // work with our tcp_connection_t model. Return error to let the browser
+    // gracefully fall back to HTTP.
+    return -10;  // TLS_NOT_SUPPORTED
 }
 
 // Send data over an established TLS connection
@@ -117,8 +81,8 @@ int tls_client_send(void* conn, const char* data, int len) {
 
     tls_client_ctx_t* ctx = find_existing_ctx(conn);
     if (!ctx || !ctx->session) {
-        s_printf("[TLS_CLIENT] send: no TLS session for connection\n");
-        return -2;
+        // No TLS session - fall through to raw TCP
+        return tcp_conn_send(conn, data, len);
     }
 
     int result = tls_write(ctx->session, data, (size_t)len);
@@ -147,7 +111,6 @@ int tls_client_recv(void* conn, char* buf, int len) {
     int result = tls_read(ctx->session, buf, (size_t)len);
     if (result < 0) {
         // TLS read failed - try raw TCP as fallback
-        // This handles cases where the session state is inconsistent
         return tcp_conn_recv(conn, buf, len);
     }
     return result;
