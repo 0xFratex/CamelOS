@@ -58,10 +58,8 @@ void sys_reboot() {
     extern int pfs32_sync(void);
     pfs32_sync();
     disk_flush_cache();
-    // Wait for ATA write completion - poll status register until not busy
-    for (volatile int wait = 0; wait < 100000; wait++) {
-        if ((inb(0x1F7) & 0x80) == 0) break;
-    }
+    // Small delay to let the drive settle after flush
+    sys_delay(50);
 
     uint8_t good = 0x02;
     while (good & 0x02) good = inb(0x64);

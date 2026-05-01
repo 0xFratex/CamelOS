@@ -71,18 +71,6 @@ int ata_write_sector(int drive, uint32_t lba, const uint8_t* buffer) {
     uint16_t* b = (uint16_t*)buffer;
     for(int i=0; i<256; i++) outw(ATA_DATA, b[i]);
     
-    // Wait for the write to complete before issuing cache flush
-    // Poll BSY until the drive has finished writing the sector
-    {
-        int timeout = 100000;
-        while (timeout--) {
-            uint8_t status = inb(ATA_STATUS);
-            if (!(status & 0x80)) break;  // BSY clear
-            if (status & 0x01) return 1;  // ERR bit
-            ata_delay();
-        }
-    }
-    
     outb(ATA_CMD, 0xE7); // Cache Flush
     if(!ata_wait_bsy()) return 1;
     
