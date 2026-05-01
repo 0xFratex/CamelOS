@@ -6,6 +6,7 @@
 #include "sha256.h"
 #include "string.h"
 #include "memory.h"
+#include "macho_loader.h"
 #include "../sys/api.h"
 #include "../hal/drivers/serial.h"
 
@@ -222,7 +223,6 @@ int app_bundle_load(const char* path) {
     // Load the executable using the appropriate loader
     if (bundle->is_macho) {
         // Mach-O binary - use the Mach-O loader
-        extern loaded_macho_t* macho_load(const char* path);
         loaded_macho_t* macho_img = macho_load(resolved_path);
         if (!macho_img) {
             s_printf("[BUNDLE] Mach-O load failed: ");
