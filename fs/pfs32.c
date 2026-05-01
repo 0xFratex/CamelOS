@@ -1169,7 +1169,16 @@ int pfs32_stat(const char* path, pfs32_direntry_t* out) {
 
 int pfs32_create_file(const char* path) { return pfs32_create_node(path, 0); }
 int pfs32_create_directory(const char* path) { return pfs32_create_node(path, 1); }
-int pfs32_sync() { flush_fat(); return PFS_OK; }
+int pfs32_sync() {
+    flush_fat();
+    pfs32_flush_bitmap();
+    // Write back superblock if mounted
+    if (mounted && disk_start) {
+        sb.superblock_checksum = pfs32_compute_checksum(&sb, sizeof(sb) - sizeof(pfs32_checksum_t));
+        disk_rw(1, 0, &sb);
+    }
+    return PFS_OK;
+}
 
 // --- String Helpers ---
 void get_basename(const char* path, char* out_buf) {

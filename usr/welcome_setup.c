@@ -416,66 +416,50 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
     gfx_fill_rounded_rect(x, y, w, h, bg, 8);
     gfx_draw_rect(x, y, w, h, border);
     
-    // Calculate content dimensions for centering
+    // Text is left-aligned with padding for cursor accuracy
+    int pad = 16;  // Left padding
     int text_y = y + (h - 16) / 2;
+    int text_x = x + pad;
     
     if (is_password) {
-        // Use cursor_pos for accurate dot count (not strlen of hash)
         int len = cursor_pos;
-        int content_w = len * 14;
-        int text_x = x + (w - content_w) / 2;  // Center dots in field
+        // Use 10px spacing for password dots (more compact, matches count accurately)
+        int dot_spacing = 10;
+        int dot_size = 6;
         
         if (len > 0) {
             for (int i = 0; i < len; i++) {
-                gfx_fill_rounded_rect(text_x + i * 14 + 4, text_y + 4, 8, 8, C_TEXT_DARK, 4);
+                gfx_fill_rounded_rect(text_x + i * dot_spacing + 2, text_y + 5, dot_size, dot_size, C_TEXT_DARK, 3);
             }
         } else {
-            // Placeholder in grey, centered
+            // Placeholder
             const char* ph = "Enter password...";
-            int ph_w = strlen(ph) * 8;
-            gfx_draw_string(x + (w - ph_w) / 2, text_y, ph, C_TEXT_MUTED);
+            gfx_draw_string(text_x, text_y, ph, C_TEXT_MUTED);
         }
     } else {
         if (value && value[0]) {
-            int content_w = strlen(value) * 8;
-            int text_x = x + (w - content_w) / 2;  // Center text in field
             gfx_draw_string(text_x, text_y, value, C_TEXT_DARK);
         } else {
-            // Placeholder in grey, centered
+            // Placeholder
             const char* ph = "Enter name...";
-            int ph_w = strlen(ph) * 8;
-            gfx_draw_string(x + (w - ph_w) / 2, text_y, ph, C_TEXT_MUTED);
+            gfx_draw_string(text_x, text_y, ph, C_TEXT_MUTED);
         }
     }
     
-    // Cursor
+    // Cursor - positioned directly after last character/dot
     if (active) {
         static int blink = 0;
         blink++;
         if ((blink / 30) % 2 == 0) {
-            int cursor_x;
+            int cursor_x_pos;
             if (is_password) {
-                int len = cursor_pos;
-                if (len > 0) {
-                    int content_w = len * 14;
-                    int text_x = x + (w - content_w) / 2;
-                    cursor_x = text_x + len * 14 + 4;
-                } else {
-                    // Empty password: cursor in center
-                    cursor_x = x + w / 2;
-                }
+                int dot_spacing = 10;
+                cursor_x_pos = text_x + cursor_pos * dot_spacing + 2;
             } else {
                 int vlen = value ? strlen(value) : 0;
-                if (vlen > 0) {
-                    int content_w = vlen * 8;
-                    int text_x = x + (w - content_w) / 2;
-                    cursor_x = text_x + vlen * 8;
-                } else {
-                    // Empty field: cursor in center
-                    cursor_x = x + w / 2;
-                }
+                cursor_x_pos = text_x + vlen * 8;
             }
-            gfx_fill_rect(cursor_x, text_y, 1, 16, C_ACCENT);
+            gfx_fill_rect(cursor_x_pos, text_y, 1, 16, C_ACCENT);
         }
     }
 }

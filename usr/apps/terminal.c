@@ -2,36 +2,41 @@
 #include "../core/string.h"
 #include "../../sys/api.h"
 #include "../../hal/video/gfx_hal.h"
-// api.h includes pfs32.h, so pfs32_direntry_t and pfs32_listdir are known.
 
-#define TERM_COLS 33 
-#define TERM_ROWS 15
+#define TERM_COLS 80
+#define TERM_ROWS 24
+#define CHAR_W 6
+#define CHAR_H 10
+#define PAD 6
 
-char term_buffer[TERM_ROWS][50]; 
+char term_buffer[TERM_ROWS][TERM_COLS + 1];
 int terminal_row = 0;
 int terminal_col = 0;
 char current_term_path[64] = "/";
+int term_fg_color = 0xFF00FF00;  // Green on black
 
 void term_reset() {
     for(int y=0; y<TERM_ROWS; y++) {
-        for(int x=0; x<50; x++) term_buffer[y][x] = 0;
+        for(int x=0; x<TERM_COLS; x++) term_buffer[y][x] = 0;
+        term_buffer[y][TERM_COLS] = 0;
     }
     terminal_row = 0;
     terminal_col = 0;
     strcpy(current_term_path, "/");
     
     char prompt[] = "camel@pro: /$ ";
-    for(int i=0; i<strlen(prompt); i++) {
+    for(int i=0; prompt[i] && i < TERM_COLS; i++) {
         term_buffer[0][i] = prompt[i];
     }
     terminal_col = strlen(prompt);
+    if (terminal_col >= TERM_COLS) terminal_col = TERM_COLS - 1;
 }
 
 void term_scroll() {
     for(int r=0; r < TERM_ROWS-1; r++) {
-        strcpy(term_buffer[r], term_buffer[r+1]);
+        memcpy(term_buffer[r], term_buffer[r+1], TERM_COLS + 1);
     }
-    for(int i=0; i<50; i++) term_buffer[TERM_ROWS-1][i] = 0;
+    memset(term_buffer[TERM_ROWS-1], 0, TERM_COLS + 1);
     terminal_row = TERM_ROWS-1;
 }
 
@@ -52,13 +57,24 @@ void term_print(const char* str) {
             continue;
         }
         
+        if (str[i] == '\t') {
+            // Tab to next 8-char boundary
+            int spaces = 8 - (terminal_col % 8);
+            for (int s = 0; s < spaces && terminal_col < TERM_COLS; s++) {
+                term_buffer[terminal_row][terminal_col++] = ' ';
+            }
+            i++;
+            continue;
+        }
+        
         term_buffer[terminal_row][terminal_col++] = str[i++];
     }
+    term_buffer[terminal_row][terminal_col] = 0;
 }
 
 void term_clear() {
-    for(int y=0; y<15; y++)
-        for(int x=0; x<50; x++) term_buffer[y][x] = 0;
+    for(int y=0; y<TERM_ROWS; y++)
+        for(int x=0; x<=TERM_COLS; x++) term_buffer[y][x] = 0;
     terminal_row = 0;
     terminal_col = 0;
     term_print("camel@pro: "); 
@@ -67,23 +83,34 @@ void term_clear() {
 }
 
 void term_on_paint(int x, int y, int w, int h) {
-    // Draw black background for terminal
+    // Draw black background
     gfx_fill_rect(x, y, w, h, 0xFF000000);
 
+    // Calculate how many chars/rows fit in the window
+    int max_cols = (w - PAD*2) / CHAR_W;
+    int max_rows = (h - PAD*2) / CHAR_H;
+    if (max_cols > TERM_COLS) max_cols = TERM_COLS;
+    if (max_rows > TERM_ROWS) max_rows = TERM_ROWS;
+
+    // Blinking cursor
     static int blink = 0; blink++;
     if(blink % 60 < 30) {
-        // Blinking cursor - white block
-        gfx_fill_rect(x + 4 + (terminal_col * 6), y + 4 + (terminal_row * 10), 7, 9, 0xFFFFFFFF);
+        if (terminal_row < max_rows && terminal_col < max_cols) {
+            gfx_fill_rect(x + PAD + terminal_col * CHAR_W, 
+                          y + PAD + terminal_row * CHAR_H, 
+                          CHAR_W + 1, CHAR_H - 1, 0xFFFFFFFF);
+        }
     }
 
-    for(int r=0; r<TERM_ROWS; r++) {
+    // Draw text
+    for(int r=0; r<max_rows && r<TERM_ROWS; r++) {
         if(term_buffer[r][0] != 0) {
-            // Draw text line (green on black, like classic terminal)
-            int max_chars = (w - 8) / 6;
             int len = 0;
-            while(term_buffer[r][len] && len < max_chars) len++;
+            while(term_buffer[r][len] && len < max_cols) len++;
             for(int c = 0; c < len; c++) {
-                gfx_draw_char_scaled(x + 4 + c * 6, y + 4 + (r * 10), term_buffer[r][c], 0xFF00FF00, 1);
+                gfx_draw_char_scaled(x + PAD + c * CHAR_W, 
+                                     y + PAD + r * CHAR_H, 
+                                     term_buffer[r][c], term_fg_color, 1);
             }
         }
     }
@@ -95,34 +122,46 @@ void execute_term_cmd() {
     if (!cmd_ptr) { terminal_row++; return; }
     cmd_ptr += 2; 
 
-    char cmd[16]={0}, arg[32]={0};
+    char cmd[32]={0}, arg[64]={0};
     int i=0, j=0;
     
     while(cmd_ptr[i] && cmd_ptr[i] != ' ') {
-        if(j<15) cmd[j++] = cmd_ptr[i];
+        if(j<31) cmd[j++] = cmd_ptr[i];
         i++;
     }
     if(cmd_ptr[i] == ' ') i++;
     
     j=0;
     while(cmd_ptr[i]) {
-        if(j<31) arg[j++] = cmd_ptr[i];
+        if(j<63) arg[j++] = cmd_ptr[i];
         i++;
     }
 
     terminal_row++;
-    if (terminal_row >= 15) term_scroll();
+    if (terminal_row >= TERM_ROWS) term_scroll();
     terminal_col = 0;
 
     if (strcmp(cmd, "help") == 0) {
-        term_print("Available: ls, cd, clear, exit");
+        term_print("Available commands:\n");
+        term_print("  ls       - List directory contents\n");
+        term_print("  cd       - Change directory\n");
+        term_print("  pwd      - Print working directory\n");
+        term_print("  clear    - Clear screen\n");
+        term_print("  echo     - Print text\n");
+        term_print("  exit     - Close terminal\n");
     }
     else if (strcmp(cmd, "clear") == 0) {
         term_clear();
         return; 
     }
+    else if (strcmp(cmd, "pwd") == 0) {
+        term_print(current_term_path);
+    }
+    else if (strcmp(cmd, "echo") == 0) {
+        term_print(arg);
+    }
     else if (strcmp(cmd, "ls") == 0) {
-        char target_path[64];
+        char target_path[128];
         if (strlen(arg) > 0) {
             if(arg[0]=='/') strcpy(target_path, arg);
             else { 
@@ -139,18 +178,23 @@ void execute_term_cmd() {
         if(get_dir_block(target_path, &blk) != 0) {
             term_print("Dir not found.");
         } else {
-            // Use packed struct or local array, then CAST to expected pointer type.
-            // NOTE: This relies on 'struct { ... }' being binary compatible 
-            // with pfs32_direntry_t. Ideally, we would use pfs32_direntry_t directly.
-            // Since we included api.h, we HAVE pfs32_direntry_t!
-            
-            pfs32_direntry_t entries[8]; // Clean usage
+            pfs32_direntry_t entries[8];
             int c = pfs32_listdir(blk, entries, 8);
-            
+            int col = 0;
             for(int k=0; k<c; k++) {
+                int name_len = strlen(entries[k].filename);
+                if(entries[k].attributes & 0x10) name_len++; // for /
+                
+                // Wrap to next line if not enough space
+                if (col + name_len + 2 > TERM_COLS) {
+                    term_print("\n");
+                    col = 0;
+                }
+                
                 term_print(entries[k].filename);
                 if(entries[k].attributes & 0x10) term_print("/");
                 term_print("  ");
+                col += name_len + 2;
             }
         }
     }
@@ -158,7 +202,7 @@ void execute_term_cmd() {
         if (strlen(arg) == 0) {
             term_print("Usage: cd <path>");
         } else {
-            char new_path[64];
+            char new_path[128];
             if (strcmp(arg, "..") == 0) {
                 strcpy(new_path, current_term_path);
                 if (strcmp(new_path, "/") != 0) {
@@ -185,12 +229,14 @@ void execute_term_cmd() {
         }
     }
     else if (strlen(cmd) > 0) {
-        term_print("Unknown command.");
+        term_print("Unknown command: ");
+        term_print(cmd);
+        term_print("\nType 'help' for available commands.");
     }
 
     if(terminal_col != 0) {
         terminal_row++;
-        if (terminal_row >= 15) term_scroll();
+        if (terminal_row >= TERM_ROWS) term_scroll();
     }
     
     terminal_col = 0;
@@ -210,7 +256,7 @@ void term_on_input(int key) {
         }
     }
     else if (key >= 32 && key <= 126) {
-        if(terminal_col < TERM_COLS) {
+        if(terminal_col < TERM_COLS - 1) {
             term_buffer[terminal_row][terminal_col] = (char)key;
             term_buffer[terminal_row][terminal_col+1] = 0;
             terminal_col++;
@@ -220,9 +266,8 @@ void term_on_input(int key) {
 
 void init_terminal_app() {
     term_reset();
-    Window* w = fw_create_window("Terminal", 220, 150, term_on_paint, term_on_input, 0);
-    // w->is_resizable = 1; // Not supported in window_t
-    w->min_w = 150;
+    Window* w = fw_create_window("Terminal", 550, 320, term_on_paint, term_on_input, 0);
+    w->min_w = 300;
     
     w->menu_count = 2;
     strcpy(w->menus[0].name, "Shell");

@@ -331,18 +331,16 @@ static void draw_avatar(int cx, int cy, int size, int color_idx) {
 }
 
 static void draw_password_dots(int x, int y, int count, int show_error) {
-    int dot_size = 8;
-    int spacing = 12;
-    // Only show dots for actually typed characters
-    // No empty placeholder dots - they confuse the character count
+    int dot_size = 6;
+    int spacing = 10;
+    // Left-aligned dots starting from center - count matches cursor_pos exactly
     int total_w = count * spacing;
-    if (total_w == 0) total_w = 0;  // No dots when empty
     int start_x = x - total_w / 2;
     
     for (int i = 0; i < count; i++) {
-        int dot_x = start_x + i * spacing + spacing / 2;
+        int dot_x = start_x + i * spacing + 2;
         uint32_t color = show_error ? C_LOCK_ERROR : C_LOCK_TEXT;
-        gfx_fill_rounded_rect(dot_x - dot_size/2, y - dot_size/2, 
+        gfx_fill_rounded_rect(dot_x, y - dot_size/2, 
                               dot_size, dot_size, color, dot_size/2);
     }
 }
@@ -433,10 +431,11 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         static int blink_timer = 0;
         blink_timer++;
         if ((blink_timer / 30) % 2 == 0) {
-            // Calculate cursor position matching the dot layout (only typed chars)
-            int total_w = g_lock.cursor_pos * 12;
+            // Cursor position matches the dot layout exactly
+            int dot_spacing = 10;
+            int total_w = g_lock.cursor_pos * dot_spacing;
             int start_x = cx - total_w / 2;
-            int cursor_x = start_x + g_lock.cursor_pos * 12 + 6;
+            int cursor_x = start_x + g_lock.cursor_pos * dot_spacing + 2;
             gfx_fill_rect(cursor_x, input_y - 8, 2, 16, C_LOCK_TEXT);
         }
         

@@ -1639,7 +1639,7 @@ void install_tick(void) {
 
     // Smooth progress animation: gradually move install_pct toward install_target_pct
     if (install_pct < install_target_pct) {
-        install_pct += 2;
+        install_pct += 3;
         if (install_pct > install_target_pct) install_pct = install_target_pct;
     }
 
@@ -1773,11 +1773,15 @@ void install_tick(void) {
 
     if (install_step == 4) {
         strcpy(install_status, "Finalizing Installation...");
-        pfs32_sync(); install_target_pct=100;
-        if (!install_error) {
-            current_state = STATE_SUCCESS; add_log("Installation complete!");
-        } else {
-            current_state = STATE_FAILURE;
+        pfs32_sync(); disk_flush_cache();
+        install_target_pct = 100;
+        // Wait for progress bar animation to complete before showing success
+        if (install_pct >= 100) {
+            if (!install_error) {
+                current_state = STATE_SUCCESS; add_log("Installation complete!");
+            } else {
+                current_state = STATE_FAILURE;
+            }
         }
     }
 }
