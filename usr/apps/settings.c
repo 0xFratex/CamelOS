@@ -17,6 +17,7 @@
 #define TAB_COUNT    5
 
 static int current_tab = TAB_ABOUT;
+static int settings_scroll_y = 0;
 
 // Config data (loaded from system.conf)
 static char cfg_username[64] = "(not set)";
@@ -507,7 +508,6 @@ static void settings_on_paint(int x, int y, int w, int h) {
 
 // Current window dimensions (updated on resize)
 static int settings_win_w = 500;
-static int settings_scroll_y = 0;
 
 static void settings_on_mouse(int x, int y, int btn) {
     if (btn != 1) return;
