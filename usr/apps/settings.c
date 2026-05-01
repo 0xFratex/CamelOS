@@ -123,9 +123,11 @@ static void detect_cpu_info(void) {
         strcpy(hw_cpu_model, "(unknown)");
     }
     
-    // Get total memory info
-    extern uint32_t total_memory_kb;
-    uint32_t mem_mb = total_memory_kb / 1024;
+    // Get total memory info via kernel API
+    extern kernel_api_t g_kernel_api;
+    uint32_t mem_bytes = g_kernel_api.mem_total();
+    uint32_t mem_mb = mem_bytes / 1024 / 1024;
+    if (mem_mb == 0 && mem_bytes > 0) mem_mb = 1;  // At least 1 MB if any memory
     char num[16];
     strcpy(hw_mem_total_str, "");
     int_to_str(mem_mb, num);
