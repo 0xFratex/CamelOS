@@ -387,6 +387,35 @@ void tcp_init() {
     memset(tcp_connections, 0, sizeof(tcp_connections));
 }
 
+// Send data over a TCP connection (void* wrapper for app layer)
+int tcp_conn_send(void* conn_ptr, const void* data, int len) {
+    tcp_connection_t* conn = (tcp_connection_t*)conn_ptr;
+    if (!conn || conn->state != TCP_ESTABLISHED) return -1;
+    if (!data || len <= 0) return -1;
+    return tcp_send_data(conn, (uint8_t*)data, (uint16_t)len);
+}
+
+// Receive data from a TCP connection (void* wrapper for app layer)
+int tcp_conn_recv(void* conn_ptr, void* buf, int max_len) {
+    tcp_connection_t* conn = (tcp_connection_t*)conn_ptr;
+    if (!conn || !buf || max_len <= 0) return -1;
+
+    int available = (int)(conn->recv_tail - conn->recv_head);
+    if (available <= 0) return 0;
+
+    int to_read = (available < max_len) ? available : max_len;
+    memcpy(buf, conn->recv_buffer + conn->recv_head, to_read);
+    conn->recv_head += to_read;
+
+    // Reset buffer pointers when all data consumed to reclaim space
+    if (conn->recv_head == conn->recv_tail) {
+        conn->recv_head = 0;
+        conn->recv_tail = 0;
+    }
+
+    return to_read;
+}
+
 // Set data callback for a TCP connection
 void tcp_conn_set_data_callback(void* conn_ptr, void (*callback)(uint8_t*, uint16_t, void*), void* user_data) {
     tcp_connection_t* conn = (tcp_connection_t*)conn_ptr;

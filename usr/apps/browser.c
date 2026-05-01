@@ -5,6 +5,8 @@
 #include "../../sys/api.h"
 #include "../../core/string.h"
 #include "../../hal/video/gfx_hal.h"
+#include "../../hal/cpu/timer.h"
+#include "../../core/tcp.h"
 #include "../dock.h"
 
 // Layout
@@ -74,10 +76,6 @@ static void browser_load_page(const char* url) {
     // Try TCP connection
     extern uint32_t ip_parse(const char* str);
     uint32_t ip = ip_parse(ip_str);
-    extern void* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port);
-    extern int tcp_conn_is_established(void* conn);
-    extern int tcp_conn_send(void* conn, const void* data, int len);
-    extern int tcp_conn_recv(void* conn, void* buf, int max_len);
     
     void* conn = tcp_connect_with_ptr(ip, 80);
     if (!conn) {
@@ -91,10 +89,9 @@ static void browser_load_page(const char* url) {
     }
     
     // Wait for connection
-    extern uint32_t timer_get_ticks();
-    uint32_t start = timer_get_ticks();
+    uint32_t start = get_tick_count();
     int established = 0;
-    while (timer_get_ticks() - start < 5000) {
+    while (get_tick_count() - start < 5000) {
         extern void rtl8139_poll();
         rtl8139_poll();
         if (tcp_conn_is_established(conn)) {

@@ -83,6 +83,8 @@ uint16_t tcp_conn_get_local_port(void* conn);
 int tcp_conn_is_established(void* conn);
 void tcp_conn_set_data_callback(void* conn, void (*callback)(uint8_t*, uint16_t, void*), void* user_data);
 int tcp_send_data(tcp_connection_t* conn, uint8_t* data, uint16_t len);
+int tcp_conn_send(void* conn, const void* data, int len);
+int tcp_conn_recv(void* conn, void* buf, int max_len);
 uint16_t tcp_checksum(uint8_t* packet, uint16_t len, uint32_t src_ip, uint32_t dst_ip);
 void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip);
 
