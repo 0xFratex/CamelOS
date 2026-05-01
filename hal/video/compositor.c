@@ -5,21 +5,19 @@
 
 // Fast shadow drawing using alpha blending on edges
 void compositor_draw_shadow(int x, int y, int w, int h, int radius, int active) {
-    uint32_t shadow_col = 0x40000000; // 25% Black
-    if (active) shadow_col = 0x60000000; // Darker for active window
-
-    // Bottom-Right heavy shadow for depth perception
-    int offset_y = active ? 8 : 4;
-    int offset_x = active ? 0 : 0; // Centered horz, dropped vert
-
-    // Draw localized shadow rects (simulating blur via multiple rects would be too slow in software)
-    // We draw a simplified translucent box behind the window
-
-    // Main shadow body
-    gfx_fill_rounded_rect(x + offset_x, y + offset_y, w, h, shadow_col, radius + 2);
+    // Multi-layer shadow for depth (macOS-like soft shadow effect)
+    // Layer 1: Outer light shadow (larger offset, lighter)
+    uint32_t shadow_col1 = active ? 0x20000000 : 0x15000000;
+    int offset1 = active ? 6 : 3;
+    gfx_fill_rounded_rect(x - 2 + offset1, y - 2 + offset1, w + 4, h + 4, shadow_col1, radius + 4);
+    
+    // Layer 2: Inner darker shadow (smaller offset, darker)
+    uint32_t shadow_col2 = active ? 0x35000000 : 0x25000000;
+    int offset2 = active ? 3 : 1;
+    gfx_fill_rounded_rect(x - 1 + offset2, y - 1 + offset2, w + 2, h + 2, shadow_col2, radius + 2);
 }
 
-// Draw a window frame with support for focus state and opacity
+// Draw a window frame with support for focus state, opacity, and macOS-like styling
 void compositor_draw_window(window_t* win) {
     if (!win->is_visible) return;
 
@@ -28,38 +26,92 @@ void compositor_draw_window(window_t* win) {
         compositor_draw_shadow(win->x, win->y, win->width, win->height, 10, win->is_focused);
     }
 
-    // 2. Main Window Body
-    // Check if we need to draw transparently (ghosting during drag or animation)
+    // 2. Main Window Body with rounded corners (macOS-style)
     uint32_t bg_color = 0xFFF6F6F6; // Default macOS-like gray
+    int corner_radius = win->corner_radius > 0 ? win->corner_radius : 10;
 
     if (win->opacity < 1.0f) {
         // Software alpha blending for the whole window is expensive.
         // We implement a "screen door" transparency effect or simple alpha on background only.
-        // For this implementation, we assume opaque body for performance,
-        // but blend the border/header.
     }
 
-    gfx_fill_rounded_rect(win->x, win->y, win->width, win->height, bg_color, 10);
+    gfx_fill_rounded_rect(win->x, win->y, win->width, win->height, bg_color, corner_radius);
 
-    // 3. Header Separator
+    // 3. Header Bar with subtle gradient
+    // Draw a light gradient in the title bar area
+    for (int i = 0; i < 28; i++) {
+        // Top of header is slightly lighter, bottom is slightly darker
+        uint32_t header_col = (i < 14) ? 0xFFF0F0F0 : 0xFFE8E8E8;
+        // Only fill within the rounded top corners
+        if (i < corner_radius) {
+            // Use rounded rect clipping approximation for the top rows
+            int inset = corner_radius - i;
+            if (inset > 0) {
+                gfx_fill_rect(win->x + inset, win->y + i, win->width - 2 * inset, 1, header_col);
+            } else {
+                gfx_fill_rect(win->x, win->y + i, win->width, 1, header_col);
+            }
+        } else {
+            gfx_fill_rect(win->x, win->y + i, win->width, 1, header_col);
+        }
+    }
+
+    // Header separator line
     gfx_draw_line(win->x, win->y + 28, win->x + win->width, win->y + 28, 0xFFD4D4D4);
 
-    // 4. Traffic Lights
+    // 4. Traffic Lights (macOS-style circular buttons with hover states)
     int traffic_y = win->y + 10;
-    int traffic_size = 12;
     int traffic_spacing = 8;
+    int traffic_size = 12;
+    int traffic_center_x, traffic_center_y;
+    
+    // Get mouse for hover state
+    int mx, my, dummy;
+    sys_mouse_read(&mx, &my, &dummy);
+    int in_traffic_area = (mx >= win->x && mx < win->x + 70 &&
+                          my >= win->y + 6 && my < win->y + 22);
 
-    // Close button (red)
-    gfx_fill_rect(win->x + traffic_spacing, traffic_y, traffic_size, traffic_size, 0xFFFF3B30);
-    gfx_draw_rect(win->x + traffic_spacing, traffic_y, traffic_size, traffic_size, 0xFF000000);
+    // Close button (red) - slightly larger circle with inner highlight
+    traffic_center_x = win->x + traffic_spacing + traffic_size / 2;
+    traffic_center_y = traffic_y + traffic_size / 2;
+    uint32_t close_col = in_traffic_area ? 0xFFFF5F57 : 0xFFFF3B30;
+    gfx_fill_rounded_rect(win->x + traffic_spacing, traffic_y, traffic_size, traffic_size, close_col, 6);
+    gfx_draw_rect(win->x + traffic_spacing, traffic_y, traffic_size, traffic_size, 0xFFD4D4D4);
+    // Inner highlight
+    if (in_traffic_area) {
+        gfx_fill_rect(win->x + traffic_spacing + 3, traffic_y + 5, 6, 2, 0x80FFFFFF);
+    }
 
     // Minimize button (yellow)
-    gfx_fill_rect(win->x + traffic_spacing * 2 + traffic_size, traffic_y, traffic_size, traffic_size, 0xFFFFFFBD);
-    gfx_draw_rect(win->x + traffic_spacing * 2 + traffic_size, traffic_y, traffic_size, traffic_size, 0xFF000000);
+    int min_x = win->x + traffic_spacing * 2 + traffic_size;
+    traffic_center_x = min_x + traffic_size / 2;
+    uint32_t min_col = in_traffic_area ? 0xFFFFBD4E : 0xFFFFFFBD;
+    gfx_fill_rounded_rect(min_x, traffic_y, traffic_size, traffic_size, min_col, 6);
+    gfx_draw_rect(min_x, traffic_y, traffic_size, traffic_size, 0xFFD4D4D4);
+    if (in_traffic_area) {
+        gfx_fill_rect(min_x + 3, traffic_y + 5, 6, 2, 0x80FFFFFF);
+    }
 
     // Maximize button (green)
-    gfx_fill_rect(win->x + traffic_spacing * 3 + traffic_size * 2, traffic_y, traffic_size, traffic_size, 0xFF34C759);
-    gfx_draw_rect(win->x + traffic_spacing * 3 + traffic_size * 2, traffic_y, traffic_size, traffic_size, 0xFF000000);
+    int max_x = win->x + traffic_spacing * 3 + traffic_size * 2;
+    traffic_center_x = max_x + traffic_size / 2;
+    uint32_t max_col = in_traffic_area ? 0xFF28C840 : 0xFF34C759;
+    gfx_fill_rounded_rect(max_x, traffic_y, traffic_size, traffic_size, max_col, 6);
+    gfx_draw_rect(max_x, traffic_y, traffic_size, traffic_size, 0xFFD4D4D4);
+    if (in_traffic_area) {
+        gfx_fill_rect(max_x + 3, traffic_y + 5, 6, 2, 0x80FFFFFF);
+    }
+    
+    // 5. Title text (centered in header, semi-bold look via double-draw)
+    if (win->title[0]) {
+        int title_w = strlen(win->title) * 8;
+        int title_x = win->x + (win->width - title_w) / 2;
+        int title_y = win->y + 9;
+        // Shadow
+        gfx_draw_string(title_x + 1, title_y + 1, win->title, 0x40000000);
+        // Main text
+        gfx_draw_string(title_x, title_y, win->title, 0xFF333333);
+    }
 }
 
 void compositor_draw_blur_backdrop(int x, int y, int w, int h) {

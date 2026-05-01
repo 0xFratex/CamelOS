@@ -34,6 +34,13 @@ static int is_loading = 0;
 static int browser_win_w = 600;
 static int browser_win_h = 420;
 
+// Download/Install state
+static int download_progress = 0;     // 0-100
+static int download_active = 0;
+static char download_filename[64] = "";
+static char download_url[256] = "";
+static int download_is_app = 0;       // 1 if .app/.cdl/.dmg
+
 static void browser_load_page(const char* url) {
     page_line_count = 0;
     scroll_offset = 0;
@@ -230,7 +237,7 @@ static void browser_on_paint(int x, int y, int w, int h) {
     bx += 36;
     
     // URL input field
-    int url_w = w - (bx - x) - 60;
+    int url_w = w - (bx - x) - 88;  // Space for Go + DL buttons
     if (url_w < 40) url_w = 40;
     gfx_fill_rounded_rect(bx, y + 4, url_w, 24, 0xFFFFFFFF, 4);
     gfx_draw_rect(bx, y + 4, url_w, 24, url_active ? 0xFF007AFF : 0xFFC6C6C8);
@@ -248,8 +255,13 @@ static void browser_on_paint(int x, int y, int w, int h) {
     
     // Go button
     int go_x = bx + url_w + 4;
-    gfx_fill_rounded_rect(go_x, y + 4, 40, 24, 0xFF007AFF, 4);
-    gfx_draw_string(go_x + 8, y + 9, "Go", 0xFFFFFFFF);
+    gfx_fill_rounded_rect(go_x, y + 4, 28, 24, 0xFF007AFF, 4);
+    gfx_draw_string(go_x + 7, y + 9, "Go", 0xFFFFFFFF);
+    
+    // Download button (DL)
+    int dl_x = go_x + 32;
+    gfx_fill_rounded_rect(dl_x, y + 4, 24, 24, 0xFF34C759, 4);
+    gfx_draw_string(dl_x + 2, y + 9, "DL", 0xFFFFFFFF);
     
     // Page content
     int content_y = y + URL_BAR_H + 4;
@@ -286,6 +298,17 @@ static void browser_on_paint(int x, int y, int w, int h) {
         for (int d = 0; d < nd; d++) strcat(loading, ".");
         gfx_draw_string(x + w - 100, status_y + 4, loading, 0xFF007AFF);
     }
+    
+    // Download progress bar
+    if (download_active || download_progress == 100) {
+        int bar_x = x + 8;
+        int bar_y = status_y + 14;
+        int bar_w = w - 16;
+        gfx_fill_rect(bar_x, bar_y, bar_w, 3, 0xFFE0E0E0);
+        int fill_w = (bar_w * download_progress) / 100;
+        uint32_t bar_col = download_progress >= 100 ? 0xFF34C759 : 0xFF007AFF;
+        if (fill_w > 0) gfx_fill_rect(bar_x, bar_y, fill_w, 3, bar_col);
+    }
 }
 
 static void browser_on_scroll(int delta) {
@@ -296,6 +319,140 @@ static void browser_on_scroll(int delta) {
 static void browser_on_resize(int new_w, int new_h) {
     browser_win_w = new_w;
     browser_win_h = new_h;
+}
+
+static void browser_download_file(const char* url) {
+    // Parse URL
+    char host[128] = "";
+    char path[128] = "/";
+    
+    const char* url_start = url;
+    if (strncmp(url, "http://", 7) == 0) url_start = url + 7;
+    else if (strncmp(url, "https://", 8) == 0) url_start = url + 8;
+    
+    int hi = 0;
+    while (*url_start && *url_start != '/' && hi < 127) {
+        host[hi++] = *url_start++;
+    }
+    host[hi] = 0;
+    
+    if (*url_start == '/') {
+        strncpy(path, url_start, 127);
+        path[127] = 0;
+    }
+    
+    // Extract filename from path
+    const char* last_slash = strrchr(path, '/');
+    const char* fname = last_slash ? last_slash + 1 : path;
+    if (!fname[0]) fname = "download.dat";
+    strncpy(download_filename, fname, 63);
+    download_filename[63] = 0;
+    
+    // Check if it's an app file
+    int flen = strlen(download_filename);
+    download_is_app = (flen > 4 && (
+        strcmp(download_filename + flen - 4, ".app") == 0 ||
+        strcmp(download_filename + flen - 4, ".cdl") == 0 ||
+        strcmp(download_filename + flen - 4, ".dmg") == 0));
+    
+    // DNS resolution
+    char ip_str[16];
+    extern int dns_resolve(const char* name, char* ip_buf, int ip_buf_len);
+    int dns_ok = dns_resolve(host, ip_str, sizeof(ip_str));
+    if (dns_ok != 0) {
+        strcpy(status_text, "Download: DNS Error");
+        return;
+    }
+    
+    // TCP connect
+    extern uint32_t ip_parse(const char* str);
+    uint32_t ip = ip_parse(ip_str);
+    void* conn = tcp_connect_with_ptr(ip, 80);
+    if (!conn) {
+        strcpy(status_text, "Download: Connect Error");
+        return;
+    }
+    
+    // Wait for connection
+    uint32_t start = get_tick_count();
+    int established = 0;
+    while (get_tick_count() - start < 5000) {
+        extern void rtl8139_poll();
+        rtl8139_poll();
+        if (tcp_conn_is_established(conn)) { established = 1; break; }
+    }
+    if (!established) {
+        strcpy(status_text, "Download: Timeout");
+        return;
+    }
+    
+    // Send HTTP request
+    char request[512];
+    int rlen = 0;
+    rlen += sprintf(request + rlen, "GET %s HTTP/1.1\r\n", path);
+    rlen += sprintf(request + rlen, "Host: %s\r\n", host);
+    rlen += sprintf(request + rlen, "User-Agent: CamelOS/3.0\r\n");
+    rlen += sprintf(request + rlen, "Connection: close\r\n\r\n");
+    tcp_conn_send(conn, request, rlen);
+    
+    // Read response
+    download_active = 1;
+    download_progress = 10;
+    strcpy(status_text, "Downloading...");
+    
+    char response[8192];
+    int total_read = 0;
+    for (int retry = 0; retry < 100 && total_read < (int)sizeof(response) - 1; retry++) {
+        extern void rtl8139_poll();
+        rtl8139_poll();
+        int n = tcp_conn_recv(conn, response + total_read, sizeof(response) - total_read - 1);
+        if (n > 0) {
+            total_read += n;
+            download_progress = 10 + (total_read * 80) / sizeof(response);
+        }
+        else if (n == 0) break;
+        else {
+            for (volatile int d = 0; d < 50000; d++);
+        }
+    }
+    response[total_read] = 0;
+    
+    // Skip HTTP headers
+    char* body = strstr(response, "\r\n\r\n");
+    int body_len = 0;
+    if (body) { body += 4; body_len = total_read - (body - response); }
+    else { body = response; body_len = total_read; }
+    
+    // Save to Desktop or /tmp
+    char save_path[128];
+    if (download_is_app) {
+        strcpy(save_path, "/tmp/");
+        strcat(save_path, download_filename);
+    } else {
+        extern char g_desktop_path[128];
+        strcpy(save_path, g_desktop_path);
+        strcat(save_path, "/");
+        strcat(save_path, download_filename);
+    }
+    
+    int res = sys_fs_write(save_path, body, body_len);
+    download_progress = 100;
+    
+    if (res >= 0) {
+        strcpy(status_text, "Downloaded: ");
+        strcat(status_text, download_filename);
+        
+        // If it's an app, offer to install
+        if (download_is_app) {
+            extern void desktop_install_app(const char*);
+            desktop_install_app(save_path);
+            strcat(status_text, " (installed)");
+        }
+    } else {
+        strcpy(status_text, "Download: Save Error");
+    }
+    
+    download_active = 0;
 }
 
 static void browser_on_input(int key) {
@@ -334,13 +491,20 @@ static void browser_on_mouse(int x, int y, int btn) {
     if (y >= 0 && y < URL_BAR_H) {
         url_active = 1;
         
-        // Calculate Go button position dynamically (same as paint)
+        // Calculate button positions dynamically (same as paint)
         int bx = 6 + 32 + 32 + 36;
-        int url_w = browser_win_w - bx - 60;
+        int url_w = browser_win_w - bx - 88;
         if (url_w < 40) url_w = 40;
         int go_x = bx + url_w + 4;
-        if (x >= go_x && x <= go_x + 40) {
+        int dl_x = go_x + 32;
+        
+        // Go button
+        if (x >= go_x && x <= go_x + 28) {
             browser_load_page(url_buf);
+        }
+        // Download button
+        else if (x >= dl_x && x <= dl_x + 24) {
+            browser_download_file(url_buf);
         }
         return;
     }
