@@ -28,6 +28,12 @@ typedef struct task_control_block {
     uint32_t time_used;    /* Total CPU time used in ticks */
     uint32_t sleep_until;  /* Tick count to wake up (for sleeping tasks) */
     int block_reason;      /* Why task is blocked (0 = not blocked) */
+
+    /* Process resources (VMM, signals, pipes) */
+    void* address_space;   /* address_space_t* - per-process virtual memory (vmm.h) */
+    void* signal_state;    /* signal_state_t* - per-process signal handling (signal.h) */
+    int exit_code;         /* Exit code for zombie processes */
+    int parent_pid;        /* Parent process ID for waitpid */
 } task_t;
 
 /* Task function prototype */

@@ -8,6 +8,12 @@
 #include "../core/string.h"
 #include "../drivers/serial.h"
 #include "idt.h"
+#include "../../core/vmm.h"
+#include "../../core/signal.h"
+#include "../../core/pipe.h"
+#include "../../core/notification.h"
+#include "../../core/task.h"
+#include "../../core/scheduler.h"
 
 // Extern the kernel API table and wrappers from cdl_loader.c
 extern kernel_api_t g_kernel_api;
@@ -178,6 +184,121 @@ void syscall_handler(syscall_regs_t* regs) {
             
         case SYS_PROCESS_EVENTS:
             g_kernel_api.process_events();
+            result = 0;
+            break;
+            
+        // --- Process Management ---
+        case SYS_GETPID:
+            {
+                task_t* cur = scheduler_get_current();
+                result = cur ? cur->id : -1;
+            }
+            break;
+            
+        case SYS_FORK:
+            // Fork is complex - for now return -1 (ENOSYS)
+            // Full implementation requires COW + address space duplication
+            result = -1;
+            break;
+            
+        case SYS_WAITPID:
+            // Simplified waitpid - check if child is zombie
+            result = -1; // Not yet fully implemented
+            break;
+            
+        case SYS_KILL:
+            result = signal_send((int)arg1, (int)arg2, SI_USER, 0);
+            break;
+            
+        case SYS_SIGNAL:
+            result = (int32_t)signal_set_handler((int)arg1, (signal_handler_t)arg2);
+            break;
+            
+        case SYS_SIGACTION:
+            result = signal_sigaction((int)arg1, (const sigaction_t*)arg2, (sigaction_t*)arg3);
+            break;
+            
+        case SYS_SIGPROCMASK:
+            result = signal_sigprocmask((int)arg1, (uint32_t*)arg2, (uint32_t*)arg3);
+            break;
+            
+        // --- Virtual Memory ---
+        case SYS_MMAP:
+            {
+                address_space_t* space = current_task ? (address_space_t*)current_task->address_space : 0;
+                if (space) {
+                    void* addr = vmm_mmap(space, (uint32_t)arg1, (uint32_t)arg2,
+                                          (int)arg3, (int)arg4, (uint32_t)arg5);
+                    result = (int32_t)addr;
+                } else {
+                    result = -1;
+                }
+            }
+            break;
+            
+        case SYS_MUNMAP:
+            {
+                address_space_t* space = current_task ? (address_space_t*)current_task->address_space : 0;
+                if (space) {
+                    result = vmm_munmap(space, (uint32_t)arg1, (uint32_t)arg2);
+                } else {
+                    result = -1;
+                }
+            }
+            break;
+            
+        case SYS_BRK:
+            {
+                address_space_t* space = current_task ? (address_space_t*)current_task->address_space : 0;
+                if (space) {
+                    result = vmm_brk(space, (uint32_t)arg1);
+                } else {
+                    result = -1;
+                }
+            }
+            break;
+            
+        case SYS_MPROTECT:
+            result = 0; // Stub - mprotect not yet fully implemented
+            break;
+            
+        // --- Pipe IPC ---
+        case SYS_PIPE:
+            result = pipe_create((int*)arg1);
+            break;
+            
+        case SYS_MKFIFO:
+            result = pipe_mkfifo((const char*)arg1, (int)arg2);
+            break;
+            
+        case SYS_READ_PIPE:
+            result = pipe_read((int)arg1, (void*)arg2, (size_t)arg3);
+            break;
+            
+        case SYS_WRITE_PIPE:
+            result = pipe_write((int)arg1, (const void*)arg2, (size_t)arg3);
+            break;
+            
+        case SYS_IOCTL_PIPE:
+            result = pipe_ioctl((int)arg1, (int)arg2, (void*)arg3);
+            break;
+            
+        // --- Notification ---
+        case SYS_NOTIFY_POST:
+            result = notify_post((const char*)arg1, (const char*)arg2, (const char*)arg3,
+                                 (notify_priority_t)arg4, (notify_category_t)arg5);
+            break;
+            
+        case SYS_NOTIFY_DISMISS:
+            result = notify_dismiss((int)arg1);
+            break;
+            
+        case SYS_NOTIFY_CLICK:
+            result = notify_click((int)arg1, (int)arg2);
+            break;
+            
+        case SYS_NOTIFY_DND:
+            notify_set_dnd((int)arg1);
             result = 0;
             break;
             

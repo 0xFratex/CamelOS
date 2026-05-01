@@ -298,6 +298,9 @@ void CGContextAddRoundedRect(CGContextRef ctx, int x, int y, int w, int h, int r
 // Path Drawing (Fill / Stroke)
 // ============================================================================
 
+// Forward declaration for scanline fill
+static void _scanline_fill_path(CGContextRef ctx, int offset_x, int offset_y);
+
 // Evaluate a cubic bezier at parameter t
 static void bezier_point(float x0, float y0, float x1, float y1,
                           float x2, float y2, float x3, float y3,
@@ -316,25 +319,190 @@ static void bezier_point(float x0, float y0, float x1, float y1,
 void CGContextFillPath(CGContextRef ctx) {
     if (!ctx || ctx->path_point_count == 0) return;
     
-    // For simple paths (rectangles, rounded rects), use the fast gfx_hal functions
-    // For complex paths, we do a scanline fill
-    
-    // Simplified: For now, if the path is a single rounded rect, use the fast path
-    // Otherwise, fall back to a polygon scanline fill
-    
-    // Apply shadow if needed
+    // Apply shadow if needed (draw shadow before fill)
     if (ctx->shadow_color != 0x00000000 && ctx->shadow_radius > 0) {
-        // Draw shadow offset behind the fill
-        // Simple shadow: offset fill with shadow color
         uint32_t saved_fill = ctx->fill_color;
         ctx->fill_color = ctx->shadow_color;
-        // Draw shadow (simplified - just offset and blur)
-        // For a proper implementation we'd need a blur pass
+        // Scanline fill with shadow offset
+        int sx = ctx->origin_x + (int)ctx->shadow_offset_x;
+        int sy = ctx->origin_y + (int)ctx->shadow_offset_y;
+        _scanline_fill_path(ctx, sx, sy);
         ctx->fill_color = saved_fill;
     }
     
+    // Scanline fill the main path
+    _scanline_fill_path(ctx, ctx->origin_x, ctx->origin_y);
+    
     // Reset path after filling
     ctx->path_point_count = 0;
+}
+
+// Internal: scanline fill of the current path
+static void _scanline_fill_path(CGContextRef ctx, int offset_x, int offset_y) {
+    if (!ctx || ctx->path_point_count == 0) return;
+    
+    uint32_t color = ctx->fill_color;
+    if (ctx->alpha < 1.0f) {
+        uint8_t a = (uint8_t)(ctx->alpha * 255.0f);
+        color = (a << 24) | (color & 0x00FFFFFF);
+    }
+    
+    // Collect path vertices (flatten curves to line segments)
+    // We'll use an active-edge scanline algorithm
+    #define MAX_VERTICES 8192
+    int* vertex_x = (int*)kmalloc(MAX_VERTICES * sizeof(int));
+    int* vertex_y = (int*)kmalloc(MAX_VERTICES * sizeof(int));
+    if (!vertex_x || !vertex_y) {
+        if (vertex_x) kfree(vertex_x);
+        if (vertex_y) kfree(vertex_y);
+        return;
+    }
+    
+    int vertex_count = 0;
+    float cur_x = 0, cur_y = 0;
+    float start_x = 0, start_y = 0;
+    
+    for (int i = 0; i < ctx->path_point_count && vertex_count < MAX_VERTICES - 4; i++) {
+        CGPathPoint* p = &ctx->path_points[i];
+        switch (p->type) {
+            case CG_PATH_MOVE:
+                cur_x = p->x;
+                cur_y = p->y;
+                start_x = cur_x;
+                start_y = cur_y;
+                break;
+            case CG_PATH_LINE:
+                vertex_x[vertex_count] = offset_x + (int)cur_x;
+                vertex_y[vertex_count] = offset_y + (int)cur_y;
+                vertex_count++;
+                cur_x = p->x;
+                cur_y = p->y;
+                vertex_x[vertex_count] = offset_x + (int)cur_x;
+                vertex_y[vertex_count] = offset_y + (int)cur_y;
+                vertex_count++;
+                break;
+            case CG_PATH_CURVE_CP1:
+            case CG_PATH_CURVE_CP2:
+                // Skip - these are control points, handled by CURVE_END
+                break;
+            case CG_PATH_CURVE_END: {
+                // Find the two control points preceding this endpoint
+                float cp1x = cur_x, cp1y = cur_y;
+                float cp2x = cur_x, cp2y = cur_y;
+                if (i >= 2 && ctx->path_points[i-2].type == CG_PATH_CURVE_CP1)
+                    cp1x = ctx->path_points[i-2].x, cp1y = ctx->path_points[i-2].y;
+                if (i >= 1 && ctx->path_points[i-1].type == CG_PATH_CURVE_CP2)
+                    cp2x = ctx->path_points[i-1].x, cp2y = ctx->path_points[i-1].y;
+                
+                // Subdivide cubic bezier into line segments (20 steps)
+                float bx = cur_x, by = cur_y;
+                for (int step = 1; step <= 20 && vertex_count < MAX_VERTICES - 2; step++) {
+                    float t = (float)step / 20.0f;
+                    float mt = 1.0f - t;
+                    float nx = mt*mt*mt*cur_x + 3*mt*mt*t*cp1x + 3*mt*t*t*cp2x + t*t*t*p->x;
+                    float ny = mt*mt*mt*cur_y + 3*mt*mt*t*cp1y + 3*mt*t*t*cp2y + t*t*t*p->y;
+                    vertex_x[vertex_count] = offset_x + (int)bx;
+                    vertex_y[vertex_count] = offset_y + (int)by;
+                    vertex_count++;
+                    vertex_x[vertex_count] = offset_x + (int)nx;
+                    vertex_y[vertex_count] = offset_y + (int)ny;
+                    vertex_count++;
+                    bx = nx;
+                    by = ny;
+                }
+                cur_x = p->x;
+                cur_y = p->y;
+                break;
+            }
+            case CG_PATH_CLOSE: {
+                vertex_x[vertex_count] = offset_x + (int)cur_x;
+                vertex_y[vertex_count] = offset_y + (int)cur_y;
+                vertex_count++;
+                vertex_x[vertex_count] = offset_x + (int)start_x;
+                vertex_y[vertex_count] = offset_y + (int)start_y;
+                vertex_count++;
+                cur_x = start_x;
+                cur_y = start_y;
+                break;
+            }
+        }
+    }
+    
+    if (vertex_count < 3) {
+        kfree(vertex_x);
+        kfree(vertex_y);
+        return;
+    }
+    
+    // Find bounding box
+    int min_y = vertex_y[0], max_y = vertex_y[0];
+    for (int i = 1; i < vertex_count; i++) {
+        if (vertex_y[i] < min_y) min_y = vertex_y[i];
+        if (vertex_y[i] > max_y) max_y = vertex_y[i];
+    }
+    
+    // Clip to screen bounds
+    int screen_h = 768;
+    if (min_y < 0) min_y = 0;
+    if (max_y >= screen_h) max_y = screen_h - 1;
+    
+    // Scanline fill using even-odd rule
+    #define MAX_INTERSECTIONS 256
+    int* intersections = (int*)kmalloc(MAX_INTERSECTIONS * sizeof(int));
+    if (!intersections) {
+        kfree(vertex_x);
+        kfree(vertex_y);
+        return;
+    }
+    
+    for (int y = min_y; y <= max_y; y++) {
+        int num_intersections = 0;
+        
+        // Find all edge intersections at this scanline
+        // Edges are pairs of consecutive vertices
+        for (int i = 0; i < vertex_count; i += 2) {
+            if (i + 1 >= vertex_count) break;
+            int y0 = vertex_y[i], y1 = vertex_y[i + 1];
+            int x0 = vertex_x[i], x1 = vertex_x[i + 1];
+            
+            // Check if edge crosses this scanline
+            if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+                // Compute x intersection
+                if (y1 != y0) {
+                    int x_intersect = x0 + (y - y0) * (x1 - x0) / (y1 - y0);
+                    if (num_intersections < MAX_INTERSECTIONS) {
+                        intersections[num_intersections++] = x_intersect;
+                    }
+                }
+            }
+        }
+        
+        // Sort intersections
+        for (int i = 0; i < num_intersections - 1; i++) {
+            for (int j = i + 1; j < num_intersections; j++) {
+                if (intersections[i] > intersections[j]) {
+                    int tmp = intersections[i];
+                    intersections[i] = intersections[j];
+                    intersections[j] = tmp;
+                }
+            }
+        }
+        
+        // Fill between pairs (even-odd rule)
+        for (int i = 0; i + 1 < num_intersections; i += 2) {
+            int x_start = intersections[i];
+            int x_end = intersections[i + 1];
+            if (x_start < 0) x_start = 0;
+            if (x_end > 1024) x_end = 1024;
+            if (x_start < x_end) {
+                gfx_fill_rect(x_start, y, x_end - x_start, 1, color);
+            }
+        }
+    }
+    
+    kfree(intersections);
+    kfree(vertex_x);
+    kfree(vertex_y);
 }
 
 // Stroke the current path
@@ -534,10 +702,8 @@ void CGContextStrokeRoundedRect(CGContextRef ctx, int x, int y, int w, int h, in
     int ay = ctx->origin_y + y;
     int lw = (int)(ctx->line_width > 0 ? ctx->line_width : 1);
     
-    // Draw rounded rect outline
-    gfx_draw_rect(ax, ay, w, h, color);
-    // For proper rounded rect strokes, we'd need gfx_draw_rounded_rect
-    // For now, just draw a regular rect outline
+    // Use the gfx_hal stroke rounded rect for proper corner arcs
+    gfx_stroke_rounded_rect(ax, ay, w, h, color, radius, lw);
 }
 
 void CGContextDrawLine(CGContextRef ctx, int x0, int y0, int x1, int y1) {
@@ -827,6 +993,7 @@ CGImageRef CGImageCreate(int width, int height) {
         return NULL;
     }
     memset(image->pixel_data, 0, width * height * 4);
+    image->owns_data = 1;  // We allocated this buffer, so we must free it on destroy
     
     return image;
 }

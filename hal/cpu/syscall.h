@@ -60,6 +60,34 @@
 
 #define SYS_PROCESS_EVENTS 70 // void process_events()
 
+// --- Process Management (80-89) ---
+#define SYS_GETPID      80   // int getpid()
+#define SYS_FORK        81   // int fork()
+#define SYS_WAITPID     82   // int waitpid(int pid, int* status, int options)
+#define SYS_KILL        83   // int kill(int pid, int sig)
+#define SYS_SIGNAL      84   // void* signal(int sig, void* handler)
+#define SYS_SIGACTION   85   // int sigaction(int sig, const sigaction_t* act, sigaction_t* old)
+#define SYS_SIGPROCMASK 86   // int sigprocmask(int how, uint32_t* set, uint32_t* old)
+
+// --- Virtual Memory (90-99) ---
+#define SYS_MMAP        90   // void* mmap(void* addr, unsigned long len, int prot, int flags, int fd, unsigned long off)
+#define SYS_MUNMAP      91   // int munmap(void* addr, unsigned long len)
+#define SYS_BRK         92   // int brk(void* addr)
+#define SYS_MPROTECT    93   // int mprotect(void* addr, unsigned long len, int prot)
+
+// --- Pipe IPC (100-109) ---
+#define SYS_PIPE        100  // int pipe(int fd[2])
+#define SYS_MKFIFO      101  // int mkfifo(const char* path, int mode)
+#define SYS_READ_PIPE   102  // int read_pipe(int fd, void* buf, unsigned long count)
+#define SYS_WRITE_PIPE  103  // int write_pipe(int fd, const void* buf, unsigned long count)
+#define SYS_IOCTL_PIPE  104  // int ioctl_pipe(int fd, int cmd, void* arg)
+
+// --- Notification (110-119) ---
+#define SYS_NOTIFY_POST 110  // int notify_post(const char* title, const char* body, const char* source, int priority, int category)
+#define SYS_NOTIFY_DISMISS 111 // int notify_dismiss(int id)
+#define SYS_NOTIFY_CLICK 112  // int notify_click(int x, int y)
+#define SYS_NOTIFY_DND  113  // int notify_set_dnd(int enabled)
+
 // ============================================================================
 // Syscall Register State (pushed by assembly stub)
 // ============================================================================
