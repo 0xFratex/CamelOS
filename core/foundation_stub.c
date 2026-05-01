@@ -38,14 +38,14 @@ static uint32_t g_object_refcounts[MAX_TRACKED_OBJECTS];
 static void* g_object_ptrs[MAX_TRACKED_OBJECTS];
 static int g_object_tracking_count = 0;
 
-static int find_object_slot(id obj) {
+int find_object_slot(id obj) {
     for (int i = 0; i < g_object_tracking_count; i++) {
         if (g_object_ptrs[i] == obj) return i;
     }
     return -1;
 }
 
-static int track_object(id obj) {
+int track_object(id obj) {
     int slot = find_object_slot(obj);
     if (slot >= 0) return slot;
     if (g_object_tracking_count >= MAX_TRACKED_OBJECTS) return -1;

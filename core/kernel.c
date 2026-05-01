@@ -265,6 +265,31 @@ void kernel_main(void* mboot_ptr) {
     foundation_init();
     s_printf("[KERNEL] Foundation Framework Initialized.\n");
     
+    // Initialize extended Foundation classes (NSFileManager, NSData, etc.)
+    extern void foundation_extra_init(void);
+    foundation_extra_init();
+    s_printf("[KERNEL] Extended Foundation Initialized.\n");
+    
+    // Initialize AppKit compatibility layer (NSApplication, NSWindow, NSView, etc.)
+    extern void appkit_init(void);
+    appkit_init();
+    s_printf("[KERNEL] AppKit Compat Initialized.\n");
+    
+    // Initialize dynamic linker (dyld-lite) for LC_LOAD_DYLIB resolution
+    extern void dyld_init(void);
+    dyld_init();
+    s_printf("[KERNEL] Dynamic Linker (dyld) Initialized.\n");
+    
+    // Initialize BSD syscall translation layer
+    extern void bsd_syscall_init(void);
+    bsd_syscall_init();
+    s_printf("[KERNEL] BSD Syscall Layer Initialized.\n");
+    
+    // Initialize framework stubs (CoreGraphics, CoreText, CFNetwork, etc.)
+    extern void framework_stubs_init(void);
+    framework_stubs_init();
+    s_printf("[KERNEL] Framework Stubs Initialized.\n");
+    
     // Initialize DMG mounter subsystem for macOS disk image support
     extern void dmg_init_system(void);
     dmg_init_system();

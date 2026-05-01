@@ -4,6 +4,7 @@
 
 #include "macho_loader.h"
 #include "objc_runtime.h"
+#include "dyld.h"
 #include "string.h"
 #include "memory.h"
 #include "../sys/api.h"
@@ -374,6 +375,11 @@ loaded_macho_t* macho_load(const char* path) {
     }
     
     kfree(raw);
+    
+    // Register with dyld and load dependencies
+    dyld_register_image(image, path);
+    dyld_load_dependencies(image);
+    dyld_bind_image(image);
     
     s_printf("[MachO] Successfully loaded: ");
     s_printf(image->name);

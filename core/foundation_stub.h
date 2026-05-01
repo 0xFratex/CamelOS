@@ -137,4 +137,8 @@ void foundation_init(void);
 // Maps Foundation calls to CamelOS kernel API
 void foundation_set_kernel_api(void* api);
 
+// --- Object tracking (used by extended Foundation and AppKit) ---
+int track_object(id obj);
+int find_object_slot(id obj);
+
 #endif // FOUNDATION_STUB_H
