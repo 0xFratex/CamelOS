@@ -902,10 +902,10 @@ static void render_theme_setup(int cx, int cy, int w, int h, int mx, int my, int
         gfx_fill_rounded_rect(preview_x + 30, preview_y + 6, 8, 8, 0xFF28C940, 4);
         
         // Content area
-        gfx_fill_rect(preview_x, preview_y + 20, preview_w, 40, C_INPUT_BG);
+        gfx_fill_rect(preview_x, preview_y + 20, preview_w, preview_h - 20, C_INPUT_BG);
         
         // Sidebar
-        gfx_fill_rect(preview_x, preview_y + 20, 20, 40, themes[i].secondary);
+        gfx_fill_rect(preview_x, preview_y + 20, 20, preview_h - 20, themes[i].secondary);
         
         // Theme name
         gfx_draw_string(theme_x + (theme_w - strlen(themes[i].name) * 8) / 2, 
@@ -1126,10 +1126,9 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
         int cy = h / 2;
         
         int card_w = 520;
+        int card_h = 400;
         int card_x = cx - card_w / 2;
         int card_y = cy - card_h / 2 - 20;
-        // Recalculate card_y the same as render_timezone_setup
-        card_y = cy - 200 - 20;
         
         int list_x = card_x + 30;
         int list_y = card_y + 100;
@@ -1181,8 +1180,6 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
         int cy = h / 2;
         
         if (g_setup.state == SETUP_STATE_USER) {
-            int card_w = 480;
-            int card_x = cx - card_w / 2;
             int card_y = cy - 170;
             int field_x = cx - 150, field_y = card_y + 210;
             if (mx >= field_x && mx <= field_x + 300 && my >= field_y && my <= field_y + 44) {
@@ -1191,8 +1188,6 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
         }
         
         if (g_setup.state == SETUP_STATE_PASSWORD) {
-            int card_w = 480;
-            int card_x = cx - card_w / 2;
             int card_y = cy - 200;
             if (g_setup.password_step == 0) {
                 int field_x = cx - 150, field_y = card_y + 130;
