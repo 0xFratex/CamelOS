@@ -42,7 +42,6 @@ static int browser_win_h = 500;
 static int download_progress = 0;     // 0-100
 static int download_active = 0;
 static char download_filename[64] = "";
-static char download_url[256] = "";
 static int download_is_app = 0;       // 1 if .app/.cdl/.dmg
 
 // Navigation history
@@ -235,11 +234,11 @@ static void browser_load_page(const char* url) {
     }
     
     // Send HTTP request
-    char request[512];
+    char request[768];
     int rlen = 0;
     rlen += sprintf(request + rlen, "GET %s HTTP/1.1\r\n", path);
     rlen += sprintf(request + rlen, "Host: %s\r\n", host);
-    rlen += sprintf(request + rlen, "User-Agent: Mozilla/5.0 (CamelOS/3.0; compatible)\r\n");
+    rlen += sprintf(request + rlen, "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n");
     rlen += sprintf(request + rlen, "Accept: text/html,application/xhtml+xml,*/*\r\n");
     rlen += sprintf(request + rlen, "Accept-Language: en-US,en;q=0.9\r\n");
     rlen += sprintf(request + rlen, "Connection: close\r\n");
@@ -528,6 +527,20 @@ static void browser_download_file(const char* url) {
     int hi = 0;
     while (*url_start && *url_start != '/' && hi < 127) host[hi++] = *url_start++;
     host[hi] = 0;
+    
+    // Check for port in hostname
+    char* colon = strchr(host, ':');
+    if (colon) {
+        *colon = 0;
+        port = 0;
+        colon++;
+        while (*colon >= '0' && *colon <= '9') {
+            port = port * 10 + (*colon - '0');
+            colon++;
+        }
+        if (port == 0) port = use_tls ? 443 : 80;
+    }
+    
     if (*url_start == '/') { strncpy(path, url_start, 127); path[127] = 0; }
     
     // Extract filename
@@ -543,7 +556,7 @@ static void browser_download_file(const char* url) {
         strcmp(download_filename + flen - 4, ".cdl") == 0 ||
         strcmp(download_filename + flen - 4, ".dmg") == 0));
     
-    // DNS + TCP (simplified - reuse the same pattern as load_page)
+    // DNS resolution
     char ip_str[16];
     extern int dns_resolve(const char* name, char* ip_buf, int ip_buf_len);
     if (dns_resolve(host, ip_str, sizeof(ip_str)) != 0) {
@@ -551,37 +564,52 @@ static void browser_download_file(const char* url) {
         return;
     }
     
+    // --- Use BSD socket API (same pattern as browser_load_page) ---
+    // This ensures TLS works properly without duplicate connections
     extern uint32_t ip_parse(const char* str);
     uint32_t ip = ip_parse(ip_str);
-    void* conn = tcp_connect_with_ptr(ip, port);
-    if (!conn) { strcpy(status_text, "Download: Connect Error"); return; }
     
-    uint32_t start = get_tick_count();
-    while (get_tick_count() - start < 5000) {
-        extern void rtl8139_poll();
-        rtl8139_poll();
-        if (tcp_conn_is_established(conn)) goto connected;
+    int sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        strcpy(status_text, "Download: Socket Error");
+        return;
     }
-    strcpy(status_text, "Download: Timeout");
-    return;
     
-connected:
+    sockaddr_in_t server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr = ip;
+    
+    strcpy(status_text, "Download: Connecting...");
+    
+    if (k_connect(sockfd, &server_addr) < 0) {
+        k_close(sockfd);
+        strcpy(status_text, "Download: Connect Error");
+        return;
+    }
+    
+    // TLS handshake if HTTPS - using BSD socket-based TLS (no duplicate connection)
+    tls_session_t* tls_session = 0;
     if (use_tls) {
-        extern int tls_client_handshake(void* conn);
-        if (tls_client_handshake(conn) != 0) {
+        strcpy(status_text, "Download: Establishing TLS...");
+        extern tls_session_t* tls_client_handshake_fd(int sockfd, const char* hostname, uint16_t port);
+        tls_session = tls_client_handshake_fd(sockfd, host, port);
+        if (!tls_session) {
+            k_close(sockfd);
             strcpy(status_text, "Download: TLS Error");
             return;
         }
+        strcpy(status_text, "Download: Secure connection established");
     }
     
-    char request[512];
-    int rlen = sprintf(request, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: CamelOS/3.0\r\nConnection: close\r\n\r\n", path, host);
+    char request[768];
+    int rlen = sprintf(request, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nAccept: */*\r\nConnection: close\r\n\r\n", path, host);
     
-    if (use_tls) {
-        extern int tls_client_send(void* conn, const char* data, int len);
-        tls_client_send(conn, request, rlen);
+    if (use_tls && tls_session) {
+        tls_write(tls_session, request, rlen);
     } else {
-        tcp_conn_send(conn, request, rlen);
+        k_sendto(sockfd, request, rlen, 0, NULL);
     }
     
     download_active = 1;
@@ -593,24 +621,35 @@ connected:
     if (!response) {
         strcpy(status_text, "Download: Out of memory");
         download_active = 0;
+        if (tls_session) {
+            extern void tls_client_session_close(tls_session_t*);
+            tls_client_session_close(tls_session);
+        }
+        k_close(sockfd);
         return;
     }
     int total_read = 0;
-    for (int retry = 0; retry < 200 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
+    for (int retry = 0; retry < 300 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         extern void rtl8139_poll();
         rtl8139_poll();
         int n;
-        if (use_tls) {
-            extern int tls_client_recv(void* conn, char* buf, int len);
-            n = tls_client_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
+        if (use_tls && tls_session) {
+            n = tls_read(tls_session, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
         } else {
-            n = tcp_conn_recv(conn, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
+            n = k_recvfrom(sockfd, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1, 0, NULL);
         }
         if (n > 0) { total_read += n; download_progress = 10 + (total_read * 80) / BROWSER_RESPONSE_SIZE; }
         else if (n == 0) break;
         else { for (volatile int d = 0; d < 50000; d++); }
     }
     response[total_read] = 0;
+    
+    // Clean up TLS and socket
+    if (tls_session) {
+        extern void tls_client_session_close(tls_session_t*);
+        tls_client_session_close(tls_session);
+    }
+    k_close(sockfd);
     
     char* body = strstr(response, "\r\n\r\n");
     int body_len = 0;
@@ -692,7 +731,6 @@ static void browser_on_paint(int x, int y, int w, int h) {
     
     // URL text (clip to field width)
     int max_chars = (url_w - 12) / 8;
-    int url_len = strlen(url_buf);
     int scroll_chars = 0;
     if (url_cursor > max_chars) scroll_chars = url_cursor - max_chars + 5;
     char display_url[256];

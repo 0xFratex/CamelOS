@@ -95,6 +95,9 @@ static void get_tcp_conn_info(void* conn, uint32_t* ip, uint16_t* port) {
 
 // Perform TLS handshake over an existing TCP connection
 // conn is a tcp_connection_t* from tcp_connect_with_ptr()
+// DEPRECATED: This creates a duplicate BSD socket connection to the same host.
+// Prefer tls_client_handshake_fd() which takes an already-connected BSD socket
+// and avoids the duplicate connection problem.
 // Returns 0 on success, negative on error
 int tls_client_handshake(void* conn) {
     if (!conn) return -1;
