@@ -27,7 +27,10 @@ void gfx_draw_string_scaled(int x, int y, const char* str, uint32_t color, int s
 void gfx_draw_string(int x, int y, const char* str, uint32_t color);
 void gfx_draw_string_centered(int cx, int y, const char* str, uint32_t color, int scale);
 void gfx_fill_rounded_rect(int x, int y, int w, int h, uint32_t color, int r);
+void gfx_fill_rounded_rect_aa(int x, int y, int w, int h, uint32_t color, int r);
 uint32_t* gfx_get_active_buffer();
+int gfx_get_width();
+int gfx_get_height();
 void gfx_draw_asset_scaled(uint32_t* buffer, int x, int y, const uint32_t* data, int sw, int sh, int dw, int dh);
 void gfx_draw_icon(int x, int y, int w, int h, const uint32_t* data);
 

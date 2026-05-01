@@ -1199,14 +1199,18 @@ tls_session_t* tls_create_session(void) {
     session->state = TLS_STATE_INIT;
     session->version = TLS_VERSION_1_2;
     session->verify_cert = 1;  // Verify by default
+    session->socket_fd = -1;   // No socket yet (-1 means not connected)
     
     return session;
 }
 
 void tls_destroy_session(tls_session_t* session) {
     if (session) {
+        // Only close the socket if we created it ourselves
+        // (if tls_client_handshake_fd was used, the caller manages the socket)
         if (session->socket_fd >= 0) {
             k_close(session->socket_fd);
+            session->socket_fd = -1;
         }
         kfree(session);
     }
@@ -1709,45 +1713,51 @@ int tls_connect(tls_session_t* session, const char* hostname, uint16_t port) {
     tls_set_hostname(session, hostname);
     session->port = port;
     
-    // Create socket
-    session->socket_fd = k_socket(AF_INET, SOCK_STREAM, 0);
+    // Check if socket is already connected (e.g., via tls_client_handshake_fd)
+    // If so, skip socket creation and DNS resolution - reuse the existing connection
     if (session->socket_fd < 0) {
-        kfree(buffer);
-        return TLS_ERR_SOCKET;
-    }
-    
-    // Resolve hostname
-    char ip_str[32];
-    if (dns_resolve(hostname, ip_str, sizeof(ip_str)) < 0) {
-        k_close(session->socket_fd);
-        kfree(buffer);
-        return TLS_ERR_SOCKET;
-    }
-    
-    // Convert IP
-    uint32_t ip = 0;
-    char* p = ip_str;
-    for (int i = 0; i < 4; i++) {
-        uint8_t octet = 0;
-        while (*p >= '0' && *p <= '9') {
-            octet = octet * 10 + (*p - '0');
-            p++;
+        // No existing socket - create one and connect
+        session->socket_fd = k_socket(AF_INET, SOCK_STREAM, 0);
+        if (session->socket_fd < 0) {
+            kfree(buffer);
+            return TLS_ERR_SOCKET;
         }
-        if (*p == '.') p++;
-        ip = (ip << 8) | octet;
-    }
-    
-    // Connect
-    sockaddr_in_t server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    server_addr.sin_addr = ip;
-    
-    if (k_connect(session->socket_fd, &server_addr) < 0) {
-        k_close(session->socket_fd);
-        kfree(buffer);
-        return TLS_ERR_SOCKET;
+        
+        // Resolve hostname
+        char ip_str[32];
+        if (dns_resolve(hostname, ip_str, sizeof(ip_str)) < 0) {
+            k_close(session->socket_fd);
+            session->socket_fd = -1;
+            kfree(buffer);
+            return TLS_ERR_SOCKET;
+        }
+        
+        // Convert IP
+        uint32_t ip = 0;
+        char* p = ip_str;
+        for (int i = 0; i < 4; i++) {
+            uint8_t octet = 0;
+            while (*p >= '0' && *p <= '9') {
+                octet = octet * 10 + (*p - '0');
+                p++;
+            }
+            if (*p == '.') p++;
+            ip = (ip << 8) | octet;
+        }
+        
+        // Connect
+        sockaddr_in_t server_addr;
+        memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(port);
+        server_addr.sin_addr = ip;
+        
+        if (k_connect(session->socket_fd, &server_addr) < 0) {
+            k_close(session->socket_fd);
+            session->socket_fd = -1;
+            kfree(buffer);
+            return TLS_ERR_SOCKET;
+        }
     }
     
     session->state = TLS_STATE_CONNECTING;

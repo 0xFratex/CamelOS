@@ -58,6 +58,13 @@ static void compute_view_abs_coords(CamelOSView* view, int parent_abs_x, int par
     }
 }
 
+// Helper: recursively compute absolute coords for entire view tree from a window
+static void recompute_abs_coords(CamelOSWindow* app_win, int win_x, int win_y) {
+    if (app_win && app_win->content_view) {
+        compute_view_abs_coords((CamelOSView*)app_win->content_view, win_x, win_y);
+    }
+}
+
 // Helper: draw a single view (background + custom paint)
 static void draw_view(CamelOSView* view, int win_x, int win_y) {
     if (!view || view->is_hidden) return;
@@ -156,6 +163,9 @@ void appkit_window_paint(int x, int y, int w, int h) {
                 // Fill content area with the window's background
                 gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
                 
+                // Recompute absolute coordinates for the view tree
+                recompute_abs_coords(app_win, x, y);
+                
                 // Draw the view hierarchy starting from content_view
                 if (app_win->content_view) {
                     draw_view_tree(app_win->content_view, x, y);
@@ -197,8 +207,7 @@ static int hit_test_view_tree(id view_id, int lx, int ly, int btn) {
         CamelOSButton* btn = (CamelOSButton*)view;
         if (btn->target && btn->action && btn->is_bordered) {
             // Fire the action via objc_msgSend
-            typedef id (*msgSend_fn)(id, SEL);
-            ((msgSend_fn)objc_msgSend)(btn->target, btn->action);
+            objc_msgSend(btn->target, btn->action);
             return 1;
         }
     }

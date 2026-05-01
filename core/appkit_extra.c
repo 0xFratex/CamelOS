@@ -22,7 +22,8 @@ extern kernel_api_t g_kernel_api;
 // ============================================================================
 Class NSTableView_class = 0;
 Class NSOutlineView_class = 0;
-Class NSRunLoop_class = 0;
+// NSRunLoop_class is defined in foundation_extra.c
+extern Class NSRunLoop_class;
 Class NSWorkspace_class = 0;
 Class NSSearchField_class = 0;
 Class NSProgressIndicator_class = 0;
@@ -167,57 +168,8 @@ static void register_NSTableView_methods(Class cls) {
     class_addMethod(cls, sel, (void*)NSTableView_setUsesAlternatingRowBackgroundColors, "v@:i");
 }
 
-// ============================================================================
-// NSRunLoop Implementation
-// ============================================================================
-
-id NSRunLoop_currentRunLoop(void) {
-    static CamelOSRunLoop* loop = 0;
-    if (!loop) {
-        loop = (CamelOSRunLoop*)class_createInstance(NSRunLoop_class, 0);
-        if (loop) {
-            loop->running = 0;
-            loop->accepting_input = 1;
-            loop->timer_port = 0;
-            loop->event_port = 0;
-            track_object((id)loop);
-        }
-    }
-    return (id)loop;
-}
-
-void NSRunLoop_run(id self, SEL cmd) {
-    (void)cmd;
-    CamelOSRunLoop* loop = (CamelOSRunLoop*)self;
-    if (!loop) return;
-    
-    loop->running = 1;
-    
-    while (loop->running && loop->accepting_input) {
-        // Process window server events
-        g_kernel_api.process_events();
-        
-        // Process timers
-        // (TODO: implement timer processing)
-        
-        // Small delay to prevent CPU spinning
-        sys_delay(1);
-    }
-}
-
-void NSRunLoop_stop(id self, SEL cmd) {
-    (void)cmd;
-    CamelOSRunLoop* loop = (CamelOSRunLoop*)self;
-    if (loop) loop->running = 0;
-}
-
-static void register_NSRunLoop_methods(Class cls) {
-    SEL sel;
-    sel = sel_registerName("run");
-    class_addMethod(cls, sel, (void*)NSRunLoop_run, "v@:");
-    sel = sel_registerName("stop");
-    class_addMethod(cls, sel, (void*)NSRunLoop_stop, "v@:");
-}
+// NSRunLoop is implemented in foundation_extra.c (with timer support + accepting_input)
+// The class registration is also done in foundation_extra_init()
 
 // ============================================================================
 // NSWorkspace Implementation
@@ -585,13 +537,7 @@ void appkit_extra_init(void) {
         objc_registerClassPair(NSTableView_class);
     }
     
-    // NSRunLoop
-    NSRunLoop_class = objc_allocateClassPair(nsobj, "NSRunLoop",
-        sizeof(CamelOSRunLoop) - sizeof(struct objc_object));
-    if (NSRunLoop_class) {
-        register_NSRunLoop_methods(NSRunLoop_class);
-        objc_registerClassPair(NSRunLoop_class);
-    }
+    // NSRunLoop is registered in foundation_extra_init() — skip here to avoid duplicate
     
     // NSWorkspace
     NSWorkspace_class = objc_allocateClassPair(nsobj, "NSWorkspace",

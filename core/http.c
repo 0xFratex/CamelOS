@@ -483,6 +483,8 @@ static int http_get_internal(const char* url, char* response, int response_size,
         int tls_result = tls_connect(tls_session, host, port);
         if (tls_result != 0) {
             // TLS failed - try fallback to HTTP on port 80
+            // Clear socket_fd first so tls_destroy_session doesn't close our socket
+            tls_session->socket_fd = -1;
             tls_destroy_session(tls_session);
             k_close(sockfd);
 
@@ -529,7 +531,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     
     char* request = (char*)kmalloc(2048);
     if (!request) {
-        if (tls_session) tls_destroy_session(tls_session);
+        if (tls_session) { tls_session->socket_fd = -1; tls_destroy_session(tls_session); }
         k_close(sockfd);
         http_loading_state.is_loading = 0;
         http_loading_state.phase = HTTP_PHASE_ERROR;
@@ -568,7 +570,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     }
     
     if (send_result < 0) {
-        if (tls_session) tls_destroy_session(tls_session);
+        if (tls_session) { tls_session->socket_fd = -1; tls_destroy_session(tls_session); }
         k_close(sockfd);
         kfree(request);
         http_loading_state.is_loading = 0;
@@ -594,7 +596,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if (!headers_buffer) {
         headers_buffer = (char*)kmalloc(HTTP_MAX_HEADERS_SIZE);
         if (!headers_buffer) {
-            if (tls_session) tls_destroy_session(tls_session);
+            if (tls_session) { tls_session->socket_fd = -1; tls_destroy_session(tls_session); }
             if (sockfd >= 0) k_close(sockfd);
             kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
             if (buffer) kfree(buffer);
@@ -612,7 +614,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
         if (!buffer) {
             kfree(headers_buffer);
             headers_buffer = NULL;
-            if (tls_session) tls_destroy_session(tls_session);
+            if (tls_session) { tls_session->socket_fd = -1; tls_destroy_session(tls_session); }
             k_close(sockfd);
             kfree(current_url); kfree(host); kfree(path); kfree(redirect_url);
             return -1;
@@ -766,6 +768,9 @@ static int http_get_internal(const char* url, char* response, int response_size,
     
     // Cleanup Resources BEFORE potential recursion
     if (tls_session) {
+        // Clear socket_fd so tls_destroy_session doesn't double-close
+        // (we close the socket ourselves below)
+        tls_session->socket_fd = -1;
         tls_close(tls_session);
         tls_destroy_session(tls_session);
         current_tls_session = NULL;

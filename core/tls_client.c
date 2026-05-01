@@ -234,6 +234,9 @@ tls_session_t* tls_client_handshake_fd(int sockfd, const char* hostname, uint16_
         s_printf(err_buf);
         s_printf("\n");
         
+        // Clear socket_fd before destroying session so tls_destroy_session
+        // doesn't close the caller's socket (the caller manages it)
+        session->socket_fd = -1;
         tls_destroy_session(session);
         return NULL;
     }
@@ -349,6 +352,8 @@ void tls_client_close(void* conn) {
 }
 
 // Close and clean up a TLS client session by session pointer
+// Note: This does NOT close the underlying socket fd, as the caller
+// (browser/http.c) manages the socket lifecycle
 void tls_client_session_close(tls_session_t* session) {
     if (!session) return;
     
@@ -362,7 +367,9 @@ void tls_client_session_close(tls_session_t* session) {
         }
     }
     
-    tls_close(session);
+    // Clear socket_fd before destroying so tls_destroy_session doesn't close it
+    // The caller (browser/http client) is responsible for closing the socket
+    session->socket_fd = -1;
     tls_destroy_session(session);
 }
 

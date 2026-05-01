@@ -135,6 +135,9 @@ typedef struct {
     CamelOSTimer* timers[32];
     int timer_count;
     int running;
+    int accepting_input;
+    void* timer_port;       // Timer source (AppKit event loop)
+    void* event_port;       // Event source (AppKit event loop)
 } CamelOSRunLoop;
 extern Class NSRunLoop_class;
 

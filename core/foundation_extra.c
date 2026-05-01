@@ -630,6 +630,9 @@ id NSRunLoop_currentRunLoop(id self, SEL cmd) {
             memset(loop->timers, 0, sizeof(loop->timers));
             loop->timer_count = 0;
             loop->running = 0;
+            loop->accepting_input = 1;
+            loop->timer_port = 0;
+            loop->event_port = 0;
             track_object((id)loop);
         }
     }
@@ -648,7 +651,7 @@ void NSRunLoop_run(id self, SEL cmd) {
     loop->running = 1;
     extern kernel_api_t g_kernel_api;
 
-    while (loop->running) {
+    while (loop->running && loop->accepting_input) {
         // Check timers
         uint32_t now = g_kernel_api.get_ticks();
         for (int i = 0; i < loop->timer_count; i++) {

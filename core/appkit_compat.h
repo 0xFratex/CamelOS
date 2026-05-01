@@ -260,17 +260,8 @@ typedef struct {
 } CamelOSOutlineView;
 extern Class NSOutlineView_class;
 
-// ============================================================================
-// NSRunLoop - Event loop processing
-// ============================================================================
-typedef struct {
-    struct objc_object isa;
-    int running;
-    int accepting_input;
-    void* timer_port;       // Timer source
-    void* event_port;       // Event source
-} CamelOSRunLoop;
-extern Class NSRunLoop_class;
+// NSRunLoop is defined in foundation_extra.h (with timer support + AppKit ports)
+// CamelOSRunLoop and NSRunLoop_class are available from that header
 
 // ============================================================================
 // NSWorkspace - Application and file management

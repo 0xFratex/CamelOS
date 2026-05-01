@@ -125,7 +125,7 @@ static inline uint32_t fast_blend(uint32_t bg, uint32_t fg) {
 // Helper: Fast Fixed-Point Alpha Blend
 static inline uint32_t blend_fast(uint32_t bg, uint32_t fg, uint32_t alpha) {
     if (alpha == 0) return bg;
-    if (alpha >= 255) return fg;
+    if (alpha >= 255) return 0xFF000000 | (fg & 0x00FFFFFF);  // Force opaque result
     
     // We treat alpha as 0..256 for fast shifting
     uint32_t inv_a = 256 - alpha;
@@ -272,6 +272,8 @@ void gfx_draw_asset_scaled(uint32_t* buffer, int x, int y, const uint32_t* data,
 }
 
 uint32_t* gfx_get_active_buffer() { return use_backbuffer ? gfx_ctx.back_ptr : (uint32_t*)gfx_ctx.vram_ptr; }
+int gfx_get_width() { return gfx_ctx.width; }
+int gfx_get_height() { return gfx_ctx.height; }
 void gfx_draw_icon(int x, int y, int w, int h, const uint32_t* data) { gfx_draw_asset_scaled(0, x, y, data, w, h, w, h); }
 
 void gfx_draw_rect(int x, int y, int w, int h, uint32_t color) {

@@ -1,6 +1,7 @@
 // hal/video/compositor.c
 #include "compositor.h"
 #include "gfx_hal.h"
+#include "../../core/string.h"
 #include "../../core/window_server.h"
 
 // Fast shadow drawing using alpha blending on edges
@@ -9,12 +10,37 @@ void compositor_draw_shadow(int x, int y, int w, int h, int radius, int active) 
     // Layer 1: Outer light shadow (larger offset, lighter)
     uint32_t shadow_col1 = active ? 0x20000000 : 0x15000000;
     int offset1 = active ? 6 : 3;
-    gfx_fill_rounded_rect(x - 2 + offset1, y - 2 + offset1, w + 4, h + 4, shadow_col1, radius + 4);
+    gfx_fill_rounded_rect_aa(x - 2 + offset1, y - 2 + offset1, w + 4, h + 4, shadow_col1, radius + 4);
     
     // Layer 2: Inner darker shadow (smaller offset, darker)
     uint32_t shadow_col2 = active ? 0x35000000 : 0x25000000;
     int offset2 = active ? 3 : 1;
-    gfx_fill_rounded_rect(x - 1 + offset2, y - 1 + offset2, w + 2, h + 2, shadow_col2, radius + 2);
+    gfx_fill_rounded_rect_aa(x - 1 + offset2, y - 1 + offset2, w + 2, h + 2, shadow_col2, radius + 2);
+}
+
+// Apply per-pixel alpha blending for a rectangular region using a global opacity
+static void compositor_blend_region(int x, int y, int w, int h, float opacity) {
+    if (opacity >= 1.0f || opacity <= 0.0f) return;
+    
+    uint32_t* buf = gfx_get_active_buffer();
+    int sw = gfx_get_width();
+    uint8_t alpha = (uint8_t)(opacity * 255);
+    uint32_t inv_a = 256 - alpha;
+    
+    // Blend each pixel against the wallpaper/destination
+    for (int row = y; row < y + h && row < 768; row++) {
+        if (row < 0) continue;
+        for (int col = x; col < x + w && col < 1024; col++) {
+            if (col < 0) continue;
+            uint32_t* px = &buf[row * sw + col];
+            uint32_t c = *px;
+            // Reduce the pixel's alpha by the opacity factor
+            // This makes the window semi-transparent by blending toward the background
+            uint32_t rb = (c & 0xFF00FF) * inv_a >> 8;
+            uint32_t g  = (c & 0x00FF00) * inv_a >> 8;
+            *px = 0xFF000000 | (rb & 0xFF00FF) | (g & 0x00FF00);
+        }
+    }
 }
 
 // Draw a window frame with support for focus state, opacity, and macOS-like styling
@@ -30,9 +56,10 @@ void compositor_draw_window(window_t* win) {
     uint32_t bg_color = 0xFFF6F6F6; // Default macOS-like gray
     int corner_radius = win->corner_radius > 0 ? win->corner_radius : 10;
 
+    // Apply window opacity to the background color
     if (win->opacity < 1.0f) {
-        // Software alpha blending for the whole window is expensive.
-        // We implement a "screen door" transparency effect or simple alpha on background only.
+        uint8_t a = (uint8_t)(win->opacity * 255);
+        bg_color = (a << 24) | (bg_color & 0x00FFFFFF);
     }
 
     gfx_fill_rounded_rect(win->x, win->y, win->width, win->height, bg_color, corner_radius);
