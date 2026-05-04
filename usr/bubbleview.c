@@ -1251,6 +1251,10 @@ void start_bubble_view() {
         {
             int scroll_delta = sys_mouse_scroll();
             if (scroll_delta != 0) {
+                // Check if Shift is held for horizontal scrolling
+                int kbd_ctrl = 0, kbd_shift = 0, kbd_alt = 0;
+                sys_kbd_state(&kbd_ctrl, &kbd_shift, &kbd_alt);
+                
                 // Find the topmost visible window under the cursor
                 int scroll_handled = 0;
                 for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
@@ -1259,7 +1263,11 @@ void start_bubble_view() {
                         w->state != WIN_STATE_MINIMIZED) {
                         if (mx >= w->x && mx < w->x + w->width &&
                             my >= w->y && my < w->y + w->height) {
-                            if (w->scroll_callback) {
+                            if (kbd_shift && w->hscroll_callback) {
+                                // Shift+Scroll = horizontal scroll
+                                typedef void (*hscb)(int);
+                                ((hscb)w->hscroll_callback)(scroll_delta);
+                            } else if (w->scroll_callback) {
                                 typedef void (*scb)(int);
                                 ((scb)w->scroll_callback)(scroll_delta);
                             }
@@ -1269,9 +1277,14 @@ void start_bubble_view() {
                     }
                 }
                 // Fallback: if no window under cursor, try active_win
-                if (!scroll_handled && active_win && active_win->scroll_callback) {
-                    typedef void (*scb)(int);
-                    ((scb)active_win->scroll_callback)(scroll_delta);
+                if (!scroll_handled && active_win) {
+                    if (kbd_shift && active_win->hscroll_callback) {
+                        typedef void (*hscb)(int);
+                        ((hscb)active_win->hscroll_callback)(scroll_delta);
+                    } else if (active_win->scroll_callback) {
+                        typedef void (*scb)(int);
+                        ((scb)active_win->scroll_callback)(scroll_delta);
+                    }
                 }
             }
         }

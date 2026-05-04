@@ -286,7 +286,14 @@ static void browser_load_page(const char* url) {
     int total_read = 0;
     
     // Receive loop - use BSD socket recv or TLS read
+    // Added timeout to prevent permanent freeze
+    uint32_t browser_recv_start = get_tick_count();
+    #define BROWSER_RECV_TIMEOUT 1000  // ~20 seconds at 50Hz timer
     for (int retry = 0; retry < 300 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
+        // Check overall timeout
+        if (get_tick_count() - browser_recv_start > BROWSER_RECV_TIMEOUT) {
+            break;  // Timeout - stop waiting
+        }
         extern void rtl8139_poll();
         rtl8139_poll();
         int n;
@@ -295,7 +302,10 @@ static void browser_load_page(const char* url) {
         } else {
             n = k_recvfrom(sockfd, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1, 0, NULL);
         }
-        if (n > 0) total_read += n;
+        if (n > 0) {
+            total_read += n;
+            browser_recv_start = get_tick_count(); // Reset timeout on data
+        }
         else if (n == 0) break;
         else {
             // Short delay before retry

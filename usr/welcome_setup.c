@@ -1470,10 +1470,18 @@ int welcome_setup_handle_key(int key) {
     // Keyboard layout list navigation with arrow keys
     if (g_setup.state == SETUP_STATE_KEYBOARD) {
         if (key == 128 + 2) { // KEY_UP
-            if (g_setup.selected_kbd_idx > 0) g_setup.selected_kbd_idx--;
+            if (g_setup.selected_kbd_idx > 0) {
+                g_setup.selected_kbd_idx--;
+                extern void kbd_set_layout(int);
+                kbd_set_layout(g_setup.selected_kbd_idx);
+            }
             return 1;
         } else if (key == 128 + 3) { // KEY_DOWN
-            if (g_setup.selected_kbd_idx < (int)KBD_LAYOUT_DISPLAY_COUNT - 1) g_setup.selected_kbd_idx++;
+            if (g_setup.selected_kbd_idx < (int)KBD_LAYOUT_DISPLAY_COUNT - 1) {
+                g_setup.selected_kbd_idx++;
+                extern void kbd_set_layout(int);
+                kbd_set_layout(g_setup.selected_kbd_idx);
+            }
             return 1;
         }
     }
@@ -1633,6 +1641,9 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
                 int idx = g_setup.kbd_scroll + vi;
                 if (idx >= 0 && idx < (int)KBD_LAYOUT_DISPLAY_COUNT) {
                     g_setup.selected_kbd_idx = idx;
+                    // Apply keyboard layout immediately so user can test it
+                    extern void kbd_set_layout(int);
+                    kbd_set_layout(idx);
                 }
             }
         }

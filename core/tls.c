@@ -1252,16 +1252,33 @@ static int tls_send_record(tls_session_t* session, uint8_t content_type,
 }
 
 // Helper to receive exactly N bytes from a socket
+// Includes event processing to prevent GUI freeze during TLS operations
 static int tls_recv_all(int fd, uint8_t* buffer, size_t len) {
     size_t total = 0;
+    uint32_t start = get_tick_count();
+    // TLS per-read timeout: 3 seconds (500 ticks at ~50Hz = 10s, use 150 = ~3s)
+    uint32_t tls_timeout = 150;
+    
     while (total < len) {
         int r = k_recvfrom(fd, buffer + total, len - total, 0, NULL);
-        if (r <= 0) return (total > 0) ? (int)total : -1;
-        total += r;
+        if (r > 0) {
+            total += r;
+            start = get_tick_count(); // Reset timeout on successful data
+        } else if (r == 0) {
+            return (total > 0) ? (int)total : -1;
+        } else {
+            // r < 0: no data available or error
+            // Check overall timeout
+            if (get_tick_count() - start > tls_timeout) {
+                return (total > 0) ? (int)total : -1; // Timeout
+            }
+        }
         
-        // Poll to keep network alive and allow other tasks
+        // Poll network and process GUI events to prevent system freeze
         extern void rtl8139_poll(void);
         rtl8139_poll();
+        extern void http_process_events(void);
+        http_process_events();
     }
     return (int)total;
 }

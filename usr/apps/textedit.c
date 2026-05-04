@@ -13,6 +13,8 @@
 #define CHAR_W 8
 #define CHAR_H 16
 #define TOOLBAR_H 32
+#define LINE_NUM_W 40  // Width reserved for line numbers
+#define TEXT_LEFT_PAD (LINE_NUM_W + PAD)  // Left offset for text content
 
 // Text buffer
 #define MAX_LINES 200
@@ -164,13 +166,30 @@ static void textedit_on_paint(int x, int y, int w, int h) {
     int text_y_start = y + TOOLBAR_H + 4;
     int max_rows = (h - TOOLBAR_H - 4) / CHAR_H;
     
+    // Line number gutter background
+    gfx_fill_rect(x, text_y_start, LINE_NUM_W, h - TOOLBAR_H - 4, 0xFFF5F5F5);
+    // Gutter separator line
+    gfx_draw_line(x + LINE_NUM_W, text_y_start, x + LINE_NUM_W, text_y_start + max_rows * CHAR_H, 0xFFE0E0E0);
+    
+    // Line numbers (drawn first, in gutter area)
+    for (int r = 0; r < max_rows && (r + scroll_offset) < line_count; r++) {
+        char num[8];
+        int_to_str(r + scroll_offset + 1, num);
+        int num_w = strlen(num) * 8;
+        // Right-align line numbers in the gutter
+        gfx_draw_string(x + LINE_NUM_W - num_w - 6, text_y_start + r * CHAR_H, num, 0xFFAAAAAA);
+    }
+    
+    // Text content (offset by line number width)
     for (int r = 0; r < max_rows && (r + scroll_offset) < line_count; r++) {
         int line_idx = r + scroll_offset;
         int len = strlen(text_lines[line_idx]);
         if (len > 0) {
-            int max_chars = (w - PAD * 2) / CHAR_W;
-            int draw_len = (len < max_chars) ? len : max_chars;
-            gfx_draw_string(x + PAD, text_y_start + r * CHAR_H, text_lines[line_idx], 0xFF333333);
+            int max_chars = (w - TEXT_LEFT_PAD - PAD) / CHAR_W;
+            if (max_chars > 0) {
+                int draw_len = (len < max_chars) ? len : max_chars;
+                gfx_draw_string(x + TEXT_LEFT_PAD, text_y_start + r * CHAR_H, text_lines[line_idx], 0xFF333333);
+            }
         }
     }
     
@@ -179,17 +198,9 @@ static void textedit_on_paint(int x, int y, int w, int h) {
         static int blink = 0; blink++;
         if (blink % 60 < 30) {
             int cy = text_y_start + (cursor_line - scroll_offset) * CHAR_H;
-            int cx = x + PAD + cursor_col * CHAR_W;
+            int cx = x + TEXT_LEFT_PAD + cursor_col * CHAR_W;
             gfx_fill_rect(cx, cy, 2, CHAR_H, 0xFF007AFF);
         }
-    }
-    
-    // Line numbers (simple)
-    for (int r = 0; r < max_rows && (r + scroll_offset) < line_count; r++) {
-        char num[8];
-        num[0] = ' ';
-        int_to_str(r + scroll_offset + 1, num + 1);
-        gfx_draw_string(x + 2, text_y_start + r * CHAR_H, num, 0xFF999999);
     }
     
     // Prompt overlay
@@ -291,6 +302,37 @@ static void textedit_on_input(int key) {
             }
             file_modified = 1;
         }
+    } else if (key == 128) { // KEY_UP
+        if (cursor_line > 0) {
+            cursor_line--;
+            int len = strlen(text_lines[cursor_line]);
+            if (cursor_col > len) cursor_col = len;
+        }
+    } else if (key == 129) { // KEY_DOWN
+        if (cursor_line < line_count - 1) {
+            cursor_line++;
+            int len = strlen(text_lines[cursor_line]);
+            if (cursor_col > len) cursor_col = len;
+        }
+    } else if (key == 130) { // KEY_LEFT
+        if (cursor_col > 0) {
+            cursor_col--;
+        } else if (cursor_line > 0) {
+            cursor_line--;
+            cursor_col = strlen(text_lines[cursor_line]);
+        }
+    } else if (key == 131) { // KEY_RIGHT
+        int len = strlen(text_lines[cursor_line]);
+        if (cursor_col < len) {
+            cursor_col++;
+        } else if (cursor_line < line_count - 1) {
+            cursor_line++;
+            cursor_col = 0;
+        }
+    } else if (key == 132) { // KEY_HOME
+        cursor_col = 0;
+    } else if (key == 133) { // KEY_END
+        cursor_col = strlen(text_lines[cursor_line]);
     } else if (key >= 32 && key != 127 && (key <= 126 || key >= 160)) {
         // Insert character (ASCII printable + Latin-1 Supplement)
         int len = strlen(text_lines[cursor_line]);
@@ -348,7 +390,7 @@ static void textedit_on_mouse(int x, int y, int btn) {
         int clicked_line = (y - TOOLBAR_H - 4) / CHAR_H + scroll_offset;
         if (clicked_line >= 0 && clicked_line < line_count) {
             cursor_line = clicked_line;
-            int col = (x - PAD) / CHAR_W;
+            int col = (x - TEXT_LEFT_PAD) / CHAR_W;
             int len = strlen(text_lines[cursor_line]);
             if (col < 0) col = 0;
             if (col > len) col = len;

@@ -29,12 +29,61 @@ extern void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int 
 #define SCROLLBAR_MIN_H 20    // Minimum thumb height
 #define SCROLLBAR_PAD   2     // Padding inside scrollbar track
 
-// ===== Globals =====
+// ===== Per-Instance Data =====
+// Each Finder window gets its own directory path so they don't share navigation
+#define MAX_FM_INSTANCES 8
+typedef struct {
+    int active;
+    int window_id;
+    char path[128];
+    char history[16][128];
+    int hist_count;
+    int hist_pos;
+} FMInstance;
+
+static FMInstance fm_instances[MAX_FM_INSTANCES];
+static FMInstance* fm_cur = 0;
+
+static FMInstance* fm_find_instance(int window_id) {
+    for (int i = 0; i < MAX_FM_INSTANCES; i++) {
+        if (fm_instances[i].active && fm_instances[i].window_id == window_id)
+            return &fm_instances[i];
+    }
+    return 0;
+}
+
+static FMInstance* fm_alloc_instance(int window_id) {
+    for (int i = 0; i < MAX_FM_INSTANCES; i++) {
+        if (!fm_instances[i].active) {
+            memset(&fm_instances[i], 0, sizeof(FMInstance));
+            fm_instances[i].active = 1;
+            fm_instances[i].window_id = window_id;
+            strcpy(fm_instances[i].path, "/");
+            return &fm_instances[i];
+        }
+    }
+    return 0;
+}
+
+// Set the current instance from the active window
+static void fm_set_current(void) {
+    extern window_t* active_win;
+    if (active_win) {
+        FMInstance* inst = fm_find_instance(active_win->id);
+        if (inst) { fm_cur = inst; return; }
+    }
+    for (int i = 0; i < MAX_FM_INSTANCES; i++) {
+        if (fm_instances[i].active) { fm_cur = &fm_instances[i]; return; }
+    }
+}
+
+// ===== Globals (shared across instances for scroll, selection, etc.) =====
 char fm_path[128] = "/";
 pfs32_direntry_t last_entries[64];
 int is_selected[64];
 int last_count = 0;
-int scroll_offset = 0;  // Vertical scroll offset in pixels
+int scroll_offset = 0;
+int hscroll_offset = 0;
 
 // Context Menu State
 int ctx_active = 0;
@@ -102,8 +151,19 @@ static void files_on_resize(int new_w, int new_h) {
 
 // Scroll callback — called from the main loop via window->scroll_callback
 void files_on_scroll(int delta) {
+    fm_set_current();
+    if (fm_cur) strcpy(fm_path, fm_cur->path);
     scroll_offset -= delta * CELL_H;
     files_clamp_scroll(files_win_w, files_win_h - 30);
+}
+
+void files_on_hscroll(int delta) {
+    fm_set_current();
+    hscroll_offset -= delta * CELL_W;
+    int max_hscroll = (last_count * CELL_W) - files_win_w + SCROLLBAR_W;
+    if (max_hscroll < 0) max_hscroll = 0;
+    if (hscroll_offset < 0) hscroll_offset = 0;
+    if (hscroll_offset > max_hscroll) hscroll_offset = max_hscroll;
 }
 extern void sys_fs_copy_recursive(const char* src, const char* dest);
 extern int sys_fs_delete_recursive(const char* path);
@@ -122,6 +182,7 @@ void nav_back() {
     if (nav_history_pos > 0) {
         nav_history_pos--;
         strcpy(fm_path, nav_history[nav_history_pos]);
+        if (fm_cur) strcpy(fm_cur->path, fm_path);
         files_refresh();
     }
 }
@@ -130,6 +191,7 @@ void nav_forward() {
     if (nav_history_pos < nav_history_count - 1) {
         nav_history_pos++;
         strcpy(fm_path, nav_history[nav_history_pos]);
+        if (fm_cur) strcpy(fm_cur->path, fm_path);
         files_refresh();
     }
 }
@@ -144,6 +206,7 @@ void op_up_dir() {
     if (last && last != new_path) *last = 0;
     else strcpy(new_path, "/");
     strcpy(fm_path, new_path);
+    if (fm_cur) strcpy(fm_cur->path, fm_path);
     nav_push(fm_path);
     files_refresh();
 }
@@ -153,13 +216,20 @@ void files_refresh() {
     ctx_active = 0;
     prompt_active = 0;
     scroll_offset = 0;
-    sb_dragging = 0;  // Reset scrollbar drag on refresh
+    hscroll_offset = 0;
+    sb_dragging = 0;
+    
+    // Sync from instance path to global
+    if (fm_cur) strcpy(fm_path, fm_cur->path);
     
     uint32_t blk = 0;
     extern int get_dir_block(const char*, uint32_t*);
     if(get_dir_block(fm_path, &blk) != 0) {
         strcpy(fm_path, "/");
     }
+    
+    // Sync back to instance
+    if (fm_cur) strcpy(fm_cur->path, fm_path);
 
     memset(last_entries, 0, sizeof(last_entries));
     memset(is_selected, 0, sizeof(is_selected));
@@ -410,6 +480,8 @@ void files_ctx_click(int click_x, int click_y) {
 
 // ===== Input Handling =====
 void files_on_input(int key) {
+    fm_set_current();
+    if (fm_cur) strcpy(fm_path, fm_cur->path);
     if (prompt_active) {
         // Accept both LF (10) and CR (13) as Enter/Return
         if (key == '\n' || key == '\r' || key == 13) {
@@ -503,6 +575,8 @@ int handle_toolbar_click(int x, int y, int btn, int win_x, int win_y) {
 
 // ===== Main Paint =====
 void files_on_paint(int x, int y, int w, int h) {
+    fm_set_current();
+    if (fm_cur) strcpy(fm_path, fm_cur->path);
     // Background
     gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
     
@@ -521,7 +595,7 @@ void files_on_paint(int x, int y, int w, int h) {
         int col = i % cols;
         int row = i / cols;
         
-        int ix = x + MARGIN_LEFT + col * CELL_W + ICON_PAD_X;
+        int ix = x + MARGIN_LEFT + col * CELL_W + ICON_PAD_X - hscroll_offset;
         int iy = content_y + row * CELL_H + ICON_PAD_Y - scroll_offset;
         
         // Skip if outside visible area
@@ -546,12 +620,20 @@ void files_on_paint(int x, int y, int w, int h) {
         char display_name[42];
         strncpy(display_name, last_entries[i].filename, 40);
         display_name[40] = 0;
+        // Truncate with ellipsis if too wide for the cell
+        int max_label_w = CELL_W - 4;  // Max width for text
+        int max_label_chars = max_label_w / CHAR_W;
+        int name_len = strlen(display_name);
+        if (name_len > max_label_chars && max_label_chars > 3) {
+            display_name[max_label_chars - 1] = '~';
+            display_name[max_label_chars] = 0;
+        }
         int text_w = strlen(display_name) * 8;
         int lx = label_x - text_w / 2;
         
         // Shadow for readability
         sys_gfx_string(lx + 1, label_y + 1, display_name, 0xFF000000);
-        sys_gfx_string(lx, label_y, display_name, 0xFF333333);
+        sys_gfx_string(lx, label_y, display_name, is_selected[i] ? 0xFFFFFFFF : 0xFF333333);
     }
     
     // ===== Scrollbar =====
@@ -635,6 +717,8 @@ void files_on_paint(int x, int y, int w, int h) {
 
 // ===== Mouse Handling =====
 void files_on_mouse(int x, int y, int btn) {
+    fm_set_current();
+    if (fm_cur) strcpy(fm_path, fm_cur->path);
     // Content area dimensions — use tracked window dimensions
     int win_w = files_win_w, win_h = files_win_h - 30;
     int content_y_offset = MARGIN_TOP;
@@ -801,8 +885,16 @@ void init_files_app() {
     nav_push(fm_path);
     window_t* w = ws_create_window("Finder", 550, 400, files_on_paint, files_on_input, files_on_mouse);
     
+    // Allocate a per-window instance for independent navigation
+    FMInstance* inst = fm_alloc_instance(w->id);
+    if (inst) {
+        fm_cur = inst;
+        strcpy(inst->path, fm_path);
+    }
+    
     // Set scroll callback so the main loop can dispatch scroll wheel events
     w->scroll_callback = (void*)files_on_scroll;
+    w->hscroll_callback = (void*)files_on_hscroll;
     w->resize_callback = (void*)files_on_resize;
     
     w->menu_count = 3;

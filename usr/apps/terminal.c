@@ -99,14 +99,18 @@ void term_on_paint(int x, int y, int w, int h) {
             int len = 0;
             while(term_buffer[r][len] && len < max_cols) len++;
             for(int c = 0; c < len; c++) {
-                // Color prompt differently from command output
-                uint32_t ch_color = term_fg_color;
-                // Check if this is the prompt line (contains "$ ")
-                char* dollar = strchr(term_buffer[r], '$');
-                if (dollar && r == terminal_row) {
-                    // Characters before and including $ are accent colored
-                    int prompt_end = (int)(dollar - term_buffer[r]) + 1;
-                    if (c < prompt_end) ch_color = 0xFF89B4FA; // Purple for prompt
+                // Color: prompt is accent colored, command input is bright white
+                uint32_t ch_color = term_fg_color; // default gray for output
+                if (r == terminal_row) {
+                    // Current input line - find where prompt ends
+                    // Format: "camelos: /path $ command"
+                    // Everything up to and including "$ " is prompt
+                    char* dollar = strchr(term_buffer[r], '$');
+                    if (dollar) {
+                        int prompt_end = (int)(dollar - term_buffer[r]) + 2; // Include "$ "
+                        if (c < prompt_end) ch_color = 0xFF89B4FA;  // Purple for prompt
+                        else ch_color = 0xFFFFFFFF;  // Bright white for command input
+                    }
                 }
                 gfx_draw_char_scaled(x + PAD + c * CHAR_W, 
                                      y + PAD + r * CHAR_H, 
@@ -491,10 +495,29 @@ void term_on_input(int key) {
             term_buffer[terminal_row][terminal_col] = 0;
         }
     }
-    else if (key >= 32 && key != 127) {
-        // Accept ASCII printable chars (32-126) and Latin-1 Supplement (160-255)
-        // 127=DEL is excluded, 128-159 are special keys/control chars
-        if ((key <= 126 || key >= 160) && terminal_col < TERM_COLS - 1) {
+    // Arrow keys for terminal
+    else if (key == 128) { /* KEY_UP - future: command history */ }
+    else if (key == 129) { /* KEY_DOWN - future: command history */ }
+    else if (key == 130) { /* KEY_LEFT */
+        int prompt_len = 11 + strlen(current_term_path);
+        if(terminal_col > prompt_len) terminal_col--;
+    }
+    else if (key == 131) { /* KEY_RIGHT */
+        if(terminal_col < TERM_COLS - 1 && term_buffer[terminal_row][terminal_col] != 0) terminal_col++;
+    }
+    // Ignore other special keys (128-159 range includes arrow keys, F-keys, etc.)
+    else if (key >= 32 && key != 127 && key < 128) {
+        // Accept only ASCII printable chars (32-126)
+        if (terminal_col < TERM_COLS - 1) {
+            term_buffer[terminal_row][terminal_col] = (char)key;
+            term_buffer[terminal_row][terminal_col+1] = 0;
+            terminal_col++;
+        }
+    }
+    else if (key >= 160) {
+        // Accept Latin-1 Supplement chars (accented chars like á,é,ç etc.)
+        // These are produced by dead key composition
+        if (terminal_col < TERM_COLS - 1) {
             term_buffer[terminal_row][terminal_col] = (char)key;
             term_buffer[terminal_row][terminal_col+1] = 0;
             terminal_col++;
