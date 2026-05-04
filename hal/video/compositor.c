@@ -159,7 +159,7 @@ void compositor_draw_window(window_t* win) {
     if (win->state != WIN_STATE_MAXIMIZED) {
         if (win->is_focused) {
             // Focused: subtle border with slight shadow effect
-            gfx_draw_rect_aa(win->x, win->y, win->width, win->height, 0xFFB8B8B8);
+            gfx_draw_rect(win->x, win->y, win->width, win->height, 0xFFB8B8B8);
         } else {
             // Unfocused: lighter border
             gfx_draw_rect(win->x, win->y, win->width, win->height, 0xFFD0D0D0);
