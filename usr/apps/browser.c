@@ -68,6 +68,7 @@ static int download_is_app = 0;       // 1 if .app/.cdl/.dmg
 static char history[HISTORY_MAX][256];
 static int history_pos = -1;
 static int history_count = 0;
+static int redirect_depth = 0;  // Redirect loop protection counter
 
 // Bookmarks
 #define BOOKMARK_MAX 8
@@ -116,6 +117,8 @@ static void browser_load_page(const char* url) {
     link_count = 0;
     page_title[0] = 0;
     strcpy(status_text, "Loading...");
+
+    // Note: redirect_depth is reset in browser_navigate() for user-initiated nav
 
     // Clean up previous DOM document if any
     if (dom_doc) { dom_document_destroy(dom_doc); dom_doc = 0; }
@@ -383,11 +386,35 @@ static void browser_load_page(const char* url) {
         }
     }
     
-    // Handle redirects (301, 302, 307)
-    if (http_status == 301 || http_status == 302 || http_status == 307) {
-        char* location = strstr(response, "Location: ");
+    // Handle redirects (301, 302, 303, 307, 308)
+    if (http_status == 301 || http_status == 302 || http_status == 303 ||
+        http_status == 307 || http_status == 308) {
+        // Case-insensitive search for "Location:" header
+        // HTTP headers are line-based, so we scan each line
+        char* location = NULL;
+        char* h = response;
+        while (*h) {
+            // Find start of a line
+            if (h == response || *(h-1) == '\n') {
+                // Check if this line starts with "Location:" (case-insensitive)
+                if ((h[0] == 'L' || h[0] == 'l') &&
+                    (h[1] == 'o' || h[1] == 'O') &&
+                    (h[2] == 'c' || h[2] == 'C') &&
+                    (h[3] == 'a' || h[3] == 'A') &&
+                    (h[4] == 't' || h[4] == 'T') &&
+                    (h[5] == 'i' || h[5] == 'I') &&
+                    (h[6] == 'o' || h[6] == 'O') &&
+                    (h[7] == 'n' || h[7] == 'N') &&
+                    h[8] == ':') {
+                    location = h + 9;
+                    // Skip optional whitespace after colon
+                    while (*location == ' ' || *location == '\t') location++;
+                    break;
+                }
+            }
+            h++;
+        }
         if (location) {
-            location += 10;
             char redirect_url[256];
             int ri = 0;
             while (location[ri] && location[ri] != '\r' && location[ri] != '\n' && ri < 255) {
@@ -395,13 +422,73 @@ static void browser_load_page(const char* url) {
                 ri++;
             }
             redirect_url[ri] = 0;
+
+            // Resolve relative URLs against current base
+            if (redirect_url[0] == '/' && redirect_url[1] == '/') {
+                // Protocol-relative URL: //host/path -> https://host/path
+                char resolved[256];
+                strcpy(resolved, use_tls ? "https:" : "http:");
+                strcat(resolved, redirect_url);
+                strncpy(redirect_url, resolved, 255);
+                redirect_url[255] = 0;
+            } else if (redirect_url[0] == '/') {
+                // Root-relative URL: /path -> scheme://host/path
+                char resolved[256];
+                strcpy(resolved, use_tls ? "https://" : "http://");
+                strcat(resolved, host);
+                strcat(resolved, redirect_url);
+                strncpy(redirect_url, resolved, 255);
+                redirect_url[255] = 0;
+            } else if (redirect_url[0] != 'h' || strncmp(redirect_url, "http", 4) != 0) {
+                // Path-relative URL: relative/path -> scheme://host/current_dir/path
+                char resolved[256];
+                strcpy(resolved, use_tls ? "https://" : "http://");
+                strcat(resolved, host);
+                // Find the directory portion of the current path
+                char last_path[128];
+                strncpy(last_path, path, 127);
+                last_path[127] = 0;
+                char* last_slash = strrchr(last_path, '/');
+                if (last_slash) {
+                    *(last_slash + 1) = 0;
+                    strcat(resolved, last_path);
+                } else {
+                    strcat(resolved, "/");
+                }
+                strcat(resolved, redirect_url);
+                strncpy(redirect_url, resolved, 255);
+                redirect_url[255] = 0;
+            }
+
+            // Redirect loop protection
+            redirect_depth++;
+            if (redirect_depth > 5) {
+                strcpy(page_lines[0], "Error: Too many redirects");
+                strcpy(page_lines[1], "");
+                strcpy(page_lines[2], "The server is redirecting in a loop.");
+                page_line_count = 3;
+                strcpy(status_text, "Redirect Loop");
+                is_loading = 0;
+                redirect_depth = 0;
+                return;
+            }
+
+            // Update URL bar with redirect target
+            strncpy(url_buf, redirect_url, 255);
+            url_buf[255] = 0;
+            url_cursor = strlen(url_buf);
+
             strcpy(status_text, "Redirecting...");
-            browser_navigate(redirect_url);
+            // Call browser_load_page directly (not browser_navigate)
+            // to preserve redirect_depth counter across redirects
+            browser_load_page(redirect_url);
             return;
         }
     }
     
     // Parse response - skip HTTP headers
+    // We got a non-redirect response, so reset redirect depth
+    redirect_depth = 0;
     char* body = strstr(response, "\r\n\r\n");
     if (body) body += 4;
     else {
@@ -704,6 +791,10 @@ static void browser_load_page(const char* url) {
 }
 
 static void browser_navigate(const char* url) {
+    // Reset redirect counter for user-initiated navigation
+    // (redirects call browser_load_page directly to preserve the counter)
+    redirect_depth = 0;
+
     // Push to history
     if (history_pos < HISTORY_MAX - 1) {
         history_pos++;

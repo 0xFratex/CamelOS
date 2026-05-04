@@ -374,8 +374,22 @@ void dom_style_init_defaults(dom_style_t *style) {
     style->background_color   = DOM_COLOR_TRANSPARENT;
     style->font_size          = 16;
     style->font_weight        = DOM_FONT_WEIGHT_NORMAL;
+    style->font_style         = DOM_FONT_STYLE_NORMAL;
     style->text_align         = DOM_TEXT_ALIGN_LEFT;
+    style->text_decoration    = DOM_TEXT_DECOR_NONE;
+    style->line_height        = 0;  // 0 = auto (1.2x font_size)
+    style->letter_spacing     = 0;
+    style->word_spacing       = 0;
+    style->text_transform     = DOM_TEXT_TRANSFORM_NONE;
+    style->font_family_monospace = 0;
     style->display            = DOM_DISPLAY_BLOCK;
+    style->position           = DOM_POSITION_STATIC;
+    style->overflow           = DOM_OVERFLOW_VISIBLE;
+    style->vertical_align     = DOM_VALIGN_BASELINE;
+    style->white_space        = DOM_WHITESPACE_NORMAL;
+    style->list_style_type    = DOM_LIST_STYLE_DISC;
+    style->opacity            = 255;  // Fully opaque
+    style->visible            = 1;    // Visible
 
     // Margins and padding default to 0
     style->margin[0]  = 0; style->margin[1]  = 0;
@@ -389,12 +403,28 @@ void dom_style_init_defaults(dom_style_t *style) {
     style->width_pct  = -1;
     style->height_pct = -1;
 
+    // Min/max sizing (unset)
+    style->min_width   = -1;
+    style->max_width   = -1;
+    style->min_height  = -1;
+    style->max_height  = -1;
+
     // No borders
     for (int i = 0; i < 4; i++) {
         style->border[i].width = 0;
         style->border[i].style = DOM_BORDER_STYLE_NONE;
         style->border[i].color = DOM_COLOR_BLACK;
     }
+
+    // Border radius
+    style->border_radius = 0;
+
+    // Position offsets
+    style->top    = 0;
+    style->left   = 0;
+    style->right  = -1;
+    style->bottom = -1;
+    style->z_index = 0;
 
     // Layout positions (unset)
     style->layout_x  = 0;
@@ -508,10 +538,17 @@ static void apply_default_element_styles(dom_node_t *node) {
         node->computed_style.margin[2] = 8;
     }
     // Lists get margin and padding
-    else if (str_casecmp(tag, "ul") == 0 || str_casecmp(tag, "ol") == 0) {
+    else if (str_casecmp(tag, "ul") == 0) {
         node->computed_style.margin[0] = 8;
         node->computed_style.margin[2] = 8;
         node->computed_style.padding[3] = 24; // left padding for bullets
+        node->computed_style.list_style_type = DOM_LIST_STYLE_DISC;
+    }
+    else if (str_casecmp(tag, "ol") == 0) {
+        node->computed_style.margin[0] = 8;
+        node->computed_style.margin[2] = 8;
+        node->computed_style.padding[3] = 24; // left padding for bullets
+        node->computed_style.list_style_type = DOM_LIST_STYLE_DECIMAL;
     }
     // Body has default margin
     else if (str_casecmp(tag, "body") == 0) {
@@ -520,9 +557,10 @@ static void apply_default_element_styles(dom_node_t *node) {
         node->computed_style.margin[2] = 8;
         node->computed_style.margin[3] = 8;
     }
-    // Links get blue color by default
+    // Links get blue color and underline by default
     else if (str_casecmp(tag, "a") == 0) {
         node->computed_style.color = 0xFF0000FF; // blue
+        node->computed_style.text_decoration = DOM_TEXT_DECOR_UNDERLINE;
     }
     // HR gets top/bottom margin
     else if (str_casecmp(tag, "hr") == 0) {
@@ -531,6 +569,42 @@ static void apply_default_element_styles(dom_node_t *node) {
         node->computed_style.border[0].width = 1;
         node->computed_style.border[0].style = DOM_BORDER_STYLE_SOLID;
         node->computed_style.border[0].color = DOM_COLOR_GRAY;
+    }
+    // Italic elements
+    else if (str_casecmp(tag, "i") == 0 || str_casecmp(tag, "em") == 0) {
+        node->computed_style.font_style = DOM_FONT_STYLE_ITALIC;
+    }
+    // Strikethrough elements
+    else if (str_casecmp(tag, "s") == 0 || str_casecmp(tag, "del") == 0 ||
+             str_casecmp(tag, "strike") == 0) {
+        node->computed_style.text_decoration = DOM_TEXT_DECOR_LINE_THROUGH;
+    }
+    // Underline element
+    else if (str_casecmp(tag, "u") == 0 || str_casecmp(tag, "ins") == 0) {
+        node->computed_style.text_decoration = DOM_TEXT_DECOR_UNDERLINE;
+    }
+    // Monospace elements
+    else if (str_casecmp(tag, "code") == 0 || str_casecmp(tag, "pre") == 0 ||
+             str_casecmp(tag, "tt") == 0 || str_casecmp(tag, "kbd") == 0 ||
+             str_casecmp(tag, "samp") == 0) {
+        node->computed_style.font_family_monospace = 1;
+    }
+    // Pre preserves whitespace
+    else if (str_casecmp(tag, "pre") == 0) {
+        node->computed_style.white_space = DOM_WHITESPACE_PRE;
+    }
+    // Superscript/subscript
+    else if (str_casecmp(tag, "sup") == 0) {
+        node->computed_style.font_size = 12;
+        node->computed_style.vertical_align = DOM_VALIGN_TOP;
+    }
+    else if (str_casecmp(tag, "sub") == 0) {
+        node->computed_style.font_size = 12;
+        node->computed_style.vertical_align = DOM_VALIGN_BOTTOM;
+    }
+    // Small text
+    else if (str_casecmp(tag, "small") == 0) {
+        node->computed_style.font_size = 13;
     }
 }
 
@@ -1259,14 +1333,6 @@ static void apply_css_property(dom_style_t *style, const char *prop_name, const 
         else if (strcmp(prop_value, "right") == 0)    style->text_align = DOM_TEXT_ALIGN_RIGHT;
         else                                           style->text_align = DOM_TEXT_ALIGN_LEFT;
     }
-    // Display
-    else if (strcmp(prop_name, "display") == 0) {
-        if (strcmp(prop_value, "none") == 0)          style->display = DOM_DISPLAY_NONE;
-        else if (strcmp(prop_value, "inline") == 0)   style->display = DOM_DISPLAY_INLINE;
-        else if (strcmp(prop_value, "block") == 0)    style->display = DOM_DISPLAY_BLOCK;
-        // Treat inline-block, flex, grid as block for our simple engine
-        else                                            style->display = DOM_DISPLAY_BLOCK;
-    }
     // Width
     else if (strcmp(prop_name, "width") == 0) {
         const char *vp = prop_value;
@@ -1434,6 +1500,199 @@ static void apply_css_property(dom_style_t *style, const char *prop_name, const 
         style->border[0].style = style->border[1].style =
         style->border[2].style = style->border[3].style = bs;
     }
+    // Border radius
+    else if (strcmp(prop_name, "border-radius") == 0) {
+        int val = 0;
+        const char *vp = prop_value;
+        while (*vp && *vp >= '0' && *vp <= '9') {
+            val = val * 10 + (*vp - '0');
+            vp++;
+        }
+        style->border_radius = val;
+    }
+    // Font style
+    else if (strcmp(prop_name, "font-style") == 0) {
+        if (strcmp(prop_value, "italic") == 0 || strcmp(prop_value, "oblique") == 0) {
+            style->font_style = DOM_FONT_STYLE_ITALIC;
+        } else {
+            style->font_style = DOM_FONT_STYLE_NORMAL;
+        }
+    }
+    // Font family (simplified - detect monospace)
+    else if (strcmp(prop_name, "font-family") == 0) {
+        if (str_casestr(prop_value, "monospace") ||
+            str_casestr(prop_value, "courier") ||
+            str_casestr(prop_value, "consolas") ||
+            str_casestr(prop_value, "menlo")) {
+            style->font_family_monospace = 1;
+        } else {
+            style->font_family_monospace = 0;
+        }
+    }
+    // Text decoration
+    else if (strcmp(prop_name, "text-decoration") == 0) {
+        if (str_casestr(prop_value, "underline")) {
+            style->text_decoration = DOM_TEXT_DECOR_UNDERLINE;
+        } else if (str_casestr(prop_value, "line-through") || str_casestr(prop_value, "strikethrough")) {
+            style->text_decoration = DOM_TEXT_DECOR_LINE_THROUGH;
+        } else if (str_casestr(prop_value, "overline")) {
+            style->text_decoration = DOM_TEXT_DECOR_OVERLINE;
+        } else if (strcmp(prop_value, "none") == 0) {
+            style->text_decoration = DOM_TEXT_DECOR_NONE;
+        }
+    }
+    // Line height
+    else if (strcmp(prop_name, "line-height") == 0) {
+        int val = 0;
+        const char *vp = prop_value;
+        while (*vp && *vp >= '0' && *vp <= '9') {
+            val = val * 10 + (*vp - '0');
+            vp++;
+        }
+        if (*vp == '.' || *vp == ',') {
+            // Decimal value like "1.5" means multiplier
+            vp++;
+            int frac = 0;
+            int divisor = 1;
+            while (*vp && *vp >= '0' && *vp <= '9') {
+                frac = frac * 10 + (*vp - '0');
+                divisor *= 10;
+                vp++;
+            }
+            // Convert to px: multiplier * font_size
+            if (val == 0) val = 1;
+            style->line_height = (val * style->font_size) +
+                                  (frac * style->font_size) / divisor;
+        } else if (val > 0) {
+            // Absolute value in px (skip unit)
+            style->line_height = val;
+        } else {
+            style->line_height = 0; // auto
+        }
+    }
+    // Letter spacing
+    else if (strcmp(prop_name, "letter-spacing") == 0) {
+        if (strcmp(prop_value, "normal") == 0) {
+            style->letter_spacing = 0;
+        } else {
+            int val = 0;
+            const char *vp = prop_value;
+            while (*vp && *vp >= '0' && *vp <= '9') {
+                val = val * 10 + (*vp - '0');
+                vp++;
+            }
+            style->letter_spacing = val;
+        }
+    }
+    // Word spacing
+    else if (strcmp(prop_name, "word-spacing") == 0) {
+        if (strcmp(prop_value, "normal") == 0) {
+            style->word_spacing = 0;
+        } else {
+            int val = 0;
+            const char *vp = prop_value;
+            while (*vp && *vp >= '0' && *vp <= '9') {
+                val = val * 10 + (*vp - '0');
+                vp++;
+            }
+            style->word_spacing = val;
+        }
+    }
+    // Text transform
+    else if (strcmp(prop_name, "text-transform") == 0) {
+        if (strcmp(prop_value, "uppercase") == 0)        style->text_transform = DOM_TEXT_TRANSFORM_UPPERCASE;
+        else if (strcmp(prop_value, "lowercase") == 0)    style->text_transform = DOM_TEXT_TRANSFORM_LOWERCASE;
+        else if (strcmp(prop_value, "capitalize") == 0)   style->text_transform = DOM_TEXT_TRANSFORM_CAPITALIZE;
+        else                                               style->text_transform = DOM_TEXT_TRANSFORM_NONE;
+    }
+    // Display - expanded with inline-block
+    else if (strcmp(prop_name, "display") == 0) {
+        if (strcmp(prop_value, "none") == 0)              style->display = DOM_DISPLAY_NONE;
+        else if (strcmp(prop_value, "inline") == 0)       style->display = DOM_DISPLAY_INLINE;
+        else if (strcmp(prop_value, "inline-block") == 0) style->display = DOM_DISPLAY_INLINE_BLOCK;
+        else if (strcmp(prop_value, "block") == 0)        style->display = DOM_DISPLAY_BLOCK;
+        // Treat flex, grid, table as block for our simple engine
+        else                                               style->display = DOM_DISPLAY_BLOCK;
+    }
+    // Position
+    else if (strcmp(prop_name, "position") == 0) {
+        if (strcmp(prop_value, "static") == 0)            style->position = DOM_POSITION_STATIC;
+        else if (strcmp(prop_value, "relative") == 0)     style->position = DOM_POSITION_RELATIVE;
+        else if (strcmp(prop_value, "absolute") == 0)     style->position = DOM_POSITION_ABSOLUTE;
+        else if (strcmp(prop_value, "fixed") == 0)        style->position = DOM_POSITION_FIXED;
+    }
+    // Position offsets
+    else if (strcmp(prop_name, "top") == 0)              { parse_int(prop_value, &style->top); }
+    else if (strcmp(prop_name, "left") == 0)             { parse_int(prop_value, &style->left); }
+    else if (strcmp(prop_name, "right") == 0)            { parse_int(prop_value, &style->right); }
+    else if (strcmp(prop_name, "bottom") == 0)           { parse_int(prop_value, &style->bottom); }
+    else if (strcmp(prop_name, "z-index") == 0)          { parse_int(prop_value, &style->z_index); }
+    // Overflow
+    else if (strcmp(prop_name, "overflow") == 0) {
+        if (strcmp(prop_value, "hidden") == 0)            style->overflow = DOM_OVERFLOW_HIDDEN;
+        else if (strcmp(prop_value, "scroll") == 0)       style->overflow = DOM_OVERFLOW_SCROLL;
+        else if (strcmp(prop_value, "auto") == 0)         style->overflow = DOM_OVERFLOW_AUTO;
+        else                                               style->overflow = DOM_OVERFLOW_VISIBLE;
+    }
+    else if (strcmp(prop_name, "overflow-x") == 0 ||
+             strcmp(prop_name, "overflow-y") == 0) {
+        // Simplified: apply same overflow to both axes
+        if (strcmp(prop_value, "hidden") == 0)            style->overflow = DOM_OVERFLOW_HIDDEN;
+        else if (strcmp(prop_value, "scroll") == 0)       style->overflow = DOM_OVERFLOW_SCROLL;
+        else if (strcmp(prop_value, "auto") == 0)         style->overflow = DOM_OVERFLOW_AUTO;
+    }
+    // Vertical alignment
+    else if (strcmp(prop_name, "vertical-align") == 0) {
+        if (strcmp(prop_value, "top") == 0)               style->vertical_align = DOM_VALIGN_TOP;
+        else if (strcmp(prop_value, "middle") == 0)       style->vertical_align = DOM_VALIGN_MIDDLE;
+        else if (strcmp(prop_value, "bottom") == 0)       style->vertical_align = DOM_VALIGN_BOTTOM;
+        else                                               style->vertical_align = DOM_VALIGN_BASELINE;
+    }
+    // White space
+    else if (strcmp(prop_name, "white-space") == 0) {
+        if (strcmp(prop_value, "pre") == 0)               style->white_space = DOM_WHITESPACE_PRE;
+        else if (strcmp(prop_value, "nowrap") == 0)       style->white_space = DOM_WHITESPACE_NOWRAP;
+        else                                               style->white_space = DOM_WHITESPACE_NORMAL;
+    }
+    // List style type
+    else if (strcmp(prop_name, "list-style-type") == 0 ||
+             strcmp(prop_name, "list-style") == 0) {
+        if (strcmp(prop_value, "disc") == 0)              style->list_style_type = DOM_LIST_STYLE_DISC;
+        else if (strcmp(prop_value, "circle") == 0)       style->list_style_type = DOM_LIST_STYLE_CIRCLE;
+        else if (strcmp(prop_value, "square") == 0)       style->list_style_type = DOM_LIST_STYLE_SQUARE;
+        else if (strcmp(prop_value, "decimal") == 0)      style->list_style_type = DOM_LIST_STYLE_DECIMAL;
+        else if (strcmp(prop_value, "none") == 0)         style->list_style_type = DOM_LIST_STYLE_NONE;
+    }
+    // Opacity (0.0-1.0 -> 0-255)
+    else if (strcmp(prop_name, "opacity") == 0) {
+        int whole = 0, frac = 0;
+        const char *vp = prop_value;
+        while (*vp && *vp >= '0' && *vp <= '9') {
+            whole = whole * 10 + (*vp - '0');
+            vp++;
+        }
+        if (*vp == '.' || *vp == ',') {
+            vp++;
+            if (*vp >= '0' && *vp <= '9') { frac = *vp - '0'; vp++; }
+        }
+        // Convert to 0-255 range
+        style->opacity = (whole * 255) + (frac * 25);
+        if (style->opacity < 0) style->opacity = 0;
+        if (style->opacity > 255) style->opacity = 255;
+    }
+    // Visibility
+    else if (strcmp(prop_name, "visibility") == 0) {
+        if (strcmp(prop_value, "hidden") == 0)   style->visible = 0;
+        else if (strcmp(prop_value, "collapse") == 0) style->visible = 0;
+        else                                       style->visible = 1;
+    }
+    // Min/max sizing
+    else if (strcmp(prop_name, "min-width") == 0)       { parse_int(prop_value, &style->min_width); }
+    else if (strcmp(prop_name, "max-width") == 0)       { parse_int(prop_value, &style->max_width); }
+    else if (strcmp(prop_name, "min-height") == 0)      { parse_int(prop_value, &style->min_height); }
+    else if (strcmp(prop_name, "max-height") == 0)      { parse_int(prop_value, &style->max_height); }
+    // Text indent
+    else if (strcmp(prop_name, "text-indent") == 0)     { parse_int(prop_value, &style->padding[3]); }
 }
 
 // Apply inline style attribute to a node
@@ -1995,6 +2254,7 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
 
     // Skip hidden nodes
     if (s->display == DOM_DISPLAY_NONE) return;
+    if (!s->visible) return;  // visibility: hidden
 
     // Compute absolute screen position
     // parent_y already includes the scroll offset (applied once at top level)
@@ -2053,6 +2313,23 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
                 if (clip_x > bx + bw) return;
 
                 gfx_draw_string_scaled(draw_x, text_y, node->text, s->color, font_scale);
+
+                // Draw text decoration (underline, line-through, overline)
+                if (s->text_decoration != DOM_TEXT_DECOR_NONE) {
+                    int tw = estimate_text_width(node->text, s->font_size);
+                    int deco_y = text_y;
+                    if (s->text_decoration == DOM_TEXT_DECOR_UNDERLINE) {
+                        deco_y = text_y + s->font_size + 1;
+                    } else if (s->text_decoration == DOM_TEXT_DECOR_LINE_THROUGH) {
+                        deco_y = text_y + s->font_size / 2;
+                    } else if (s->text_decoration == DOM_TEXT_DECOR_OVERLINE) {
+                        deco_y = text_y - 1;
+                    }
+                    // Draw a thin line (1px) for the decoration
+                    if (deco_y >= by && deco_y < by + bh) {
+                        gfx_fill_rect(draw_x, deco_y, tw, 1, s->color);
+                    }
+                }
             }
         }
         return;

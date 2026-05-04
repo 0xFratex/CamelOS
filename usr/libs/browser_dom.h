@@ -59,6 +59,7 @@ typedef enum {
 typedef enum {
     DOM_DISPLAY_BLOCK = 0,
     DOM_DISPLAY_INLINE,
+    DOM_DISPLAY_INLINE_BLOCK,
     DOM_DISPLAY_NONE
 } dom_display_t;
 
@@ -67,6 +68,68 @@ typedef enum {
     DOM_FONT_WEIGHT_NORMAL = 0,
     DOM_FONT_WEIGHT_BOLD
 } dom_font_weight_t;
+
+// CSS font style
+typedef enum {
+    DOM_FONT_STYLE_NORMAL = 0,
+    DOM_FONT_STYLE_ITALIC
+} dom_font_style_t;
+
+// CSS text decoration
+typedef enum {
+    DOM_TEXT_DECOR_NONE = 0,
+    DOM_TEXT_DECOR_UNDERLINE,
+    DOM_TEXT_DECOR_LINE_THROUGH,
+    DOM_TEXT_DECOR_OVERLINE
+} dom_text_decoration_t;
+
+// CSS vertical align
+typedef enum {
+    DOM_VALIGN_BASELINE = 0,
+    DOM_VALIGN_TOP,
+    DOM_VALIGN_MIDDLE,
+    DOM_VALIGN_BOTTOM
+} dom_vertical_align_t;
+
+// CSS white space
+typedef enum {
+    DOM_WHITESPACE_NORMAL = 0,
+    DOM_WHITESPACE_PRE,
+    DOM_WHITESPACE_NOWRAP
+} dom_whitespace_t;
+
+// CSS text transform
+typedef enum {
+    DOM_TEXT_TRANSFORM_NONE = 0,
+    DOM_TEXT_TRANSFORM_UPPERCASE,
+    DOM_TEXT_TRANSFORM_LOWERCASE,
+    DOM_TEXT_TRANSFORM_CAPITALIZE
+} dom_text_transform_t;
+
+// CSS overflow
+typedef enum {
+    DOM_OVERFLOW_VISIBLE = 0,
+    DOM_OVERFLOW_HIDDEN,
+    DOM_OVERFLOW_SCROLL,
+    DOM_OVERFLOW_AUTO
+} dom_overflow_t;
+
+// CSS list style type
+typedef enum {
+    DOM_LIST_STYLE_DISC = 0,
+    DOM_LIST_STYLE_CIRCLE,
+    DOM_LIST_STYLE_SQUARE,
+    DOM_LIST_STYLE_DECIMAL,
+    DOM_LIST_STYLE_NONE
+} dom_list_style_t;
+
+// CSS position
+typedef enum {
+    DOM_POSITION_STATIC = 0,
+    DOM_POSITION_RELATIVE,
+    DOM_POSITION_ABSOLUTE,
+    DOM_POSITION_FIXED
+} dom_position_t;
 
 // CSS text alignment
 typedef enum {
@@ -116,15 +179,24 @@ typedef struct {
     // Typography
     int font_size;                      // px (default 16)
     dom_font_weight_t font_weight;
+    dom_font_style_t font_style;        // normal/italic
     dom_text_align_t text_align;
+    dom_text_decoration_t text_decoration; // underline/line-through/overline/none
+    int line_height;                    // px (0 = auto, use 1.2x font_size)
+    int letter_spacing;                 // px (0 = normal)
+    int word_spacing;                   // px (0 = normal)
+    dom_text_transform_t text_transform; // uppercase/lowercase/capitalize/none
+
+    // Font family (simplified - just stores preference)
+    int font_family_monospace;          // 1 = monospace, 0 = proportional
+
+    // Display
+    dom_display_t display;
 
     // Box model - margins (top, right, bottom, left)
     int margin[4];
     // Box model - padding (top, right, bottom, left)
     int padding[4];
-
-    // Display
-    dom_display_t display;
 
     // Sizing
     int width;                          // px, -1 = auto
@@ -132,8 +204,43 @@ typedef struct {
     int width_pct;                      // percentage, -1 = not set
     int height_pct;                     // percentage, -1 = not set
 
+    // Min/max sizing
+    int min_width;                      // px, -1 = not set
+    int max_width;                      // px, -1 = not set
+    int min_height;                     // px, -1 = not set
+    int max_height;                     // px, -1 = not set
+
     // Borders (top, right, bottom, left)
     dom_border_side_t border[4];
+
+    // Border radius
+    int border_radius;                  // px, 0 = sharp corners
+
+    // Position
+    dom_position_t position;            // static/relative/absolute/fixed
+    int top;                            // px offset, 0 = not set
+    int left;                           // px offset, 0 = not set
+    int right;                          // px offset, -1 = not set
+    int bottom;                         // px offset, -1 = not set
+    int z_index;                        // stacking order, 0 = auto
+
+    // Overflow
+    dom_overflow_t overflow;            // visible/hidden/scroll/auto
+
+    // Vertical alignment
+    dom_vertical_align_t vertical_align;
+
+    // White space
+    dom_whitespace_t white_space;       // normal/pre/nowrap
+
+    // List style
+    dom_list_style_t list_style_type;   // disc/circle/square/decimal/none
+
+    // Opacity (0-255, where 255 = fully opaque)
+    int opacity;                        // 0-255
+
+    // Visibility (1 = visible, 0 = hidden)
+    int visible;                        // 1=visible, 0=hidden (occupies space)
 
     // Computed layout positions (filled by dom_compute_styles)
     int layout_x;                       // Absolute x position
