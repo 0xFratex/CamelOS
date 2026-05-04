@@ -1,5 +1,5 @@
 // usr/apps/textedit.c - CamelOS TextEdit App
-// Basic text editor with file open/save support
+// Text editor with horizontal scrolling, arrow keys, file open/save support
 #include "../lib/camel_framework.h"
 #include "../framework.h"
 #include "../../sys/api.h"
@@ -23,12 +23,16 @@ static char text_lines[MAX_LINES][MAX_LINE_LEN];
 static int line_count = 1;
 static int cursor_line = 0;
 static int cursor_col = 0;
-static int scroll_offset = 0;
+static int scroll_offset = 0;    // Vertical scroll (in lines)
+static int hscroll_offset = 0;   // Horizontal scroll (in characters)
 
 // File state
 static char current_file[128] = "";
 static int file_modified = 0;
 static char status_msg[64] = "New File";
+
+// Window reference for title updates
+static Window* te_window = 0;
 
 // Prompt state (for file open/save path input)
 static int prompt_active = 0;  // 0=none, 1=save, 2=open
@@ -36,9 +40,13 @@ static char prompt_buf[128];
 static int prompt_len = 0;
 
 static void te_update_title() {
-    // Update window title with filename
-    extern window_t* active_win;
-    // Status message is shown in the toolbar instead
+    if (!te_window) return;
+    char title[80];
+    const char* fname = current_file[0] ? strrchr(current_file, '/') : 0;
+    if (fname) fname++; else fname = current_file[0] ? current_file : "Untitled";
+    strcpy(title, fname);
+    if (file_modified) strcat(title, " *");
+    ws_set_title((window_t*)te_window, title);
 }
 
 static void te_new() {
@@ -47,9 +55,11 @@ static void te_new() {
     cursor_line = 0;
     cursor_col = 0;
     scroll_offset = 0;
+    hscroll_offset = 0;
     current_file[0] = 0;
     file_modified = 0;
     strcpy(status_msg, "New File");
+    te_update_title();
 }
 
 static void te_open_file(const char* path) {
@@ -99,6 +109,7 @@ static void te_open_file(const char* path) {
     status_msg[sizeof(status_msg) - 1] = 0;
     
     file_modified = 0;
+    te_update_title();
     kfree(buf);
 }
 
@@ -128,10 +139,27 @@ static void te_save_file(const char* path) {
         if (fname) fname++; else fname = path;
         strncpy(status_msg, fname, sizeof(status_msg) - 1);
         status_msg[sizeof(status_msg) - 1] = 0;
+        te_update_title();
     } else {
         strcpy(status_msg, "Error: Save failed!");
     }
     kfree(buf);
+}
+
+// Auto-scroll horizontally to keep cursor visible
+static void te_ensure_cursor_visible(int w) {
+    int max_visible_chars = (w - TEXT_LEFT_PAD - PAD) / CHAR_W;
+    if (max_visible_chars < 1) max_visible_chars = 1;
+    
+    // If cursor is left of the visible area
+    if (cursor_col < hscroll_offset) {
+        hscroll_offset = cursor_col;
+    }
+    // If cursor is right of the visible area (with 2 char margin)
+    if (cursor_col >= hscroll_offset + max_visible_chars - 2) {
+        hscroll_offset = cursor_col - max_visible_chars + 3;
+        if (hscroll_offset < 0) hscroll_offset = 0;
+    }
 }
 
 static void textedit_on_paint(int x, int y, int w, int h) {
@@ -165,6 +193,8 @@ static void textedit_on_paint(int x, int y, int w, int h) {
     // Text area
     int text_y_start = y + TOOLBAR_H + 4;
     int max_rows = (h - TOOLBAR_H - 4) / CHAR_H;
+    int max_visible_chars = (w - TEXT_LEFT_PAD - PAD) / CHAR_W;
+    if (max_visible_chars < 1) max_visible_chars = 1;
     
     // Line number gutter background
     gfx_fill_rect(x, text_y_start, LINE_NUM_W, h - TOOLBAR_H - 4, 0xFFF5F5F5);
@@ -180,15 +210,20 @@ static void textedit_on_paint(int x, int y, int w, int h) {
         gfx_draw_string(x + LINE_NUM_W - num_w - 6, text_y_start + r * CHAR_H, num, 0xFFAAAAAA);
     }
     
-    // Text content (offset by line number width)
+    // Text content (with horizontal scroll offset)
     for (int r = 0; r < max_rows && (r + scroll_offset) < line_count; r++) {
         int line_idx = r + scroll_offset;
         int len = strlen(text_lines[line_idx]);
-        if (len > 0) {
-            int max_chars = (w - TEXT_LEFT_PAD - PAD) / CHAR_W;
-            if (max_chars > 0) {
-                int draw_len = (len < max_chars) ? len : max_chars;
-                gfx_draw_string(x + TEXT_LEFT_PAD, text_y_start + r * CHAR_H, text_lines[line_idx], 0xFF333333);
+        if (len > 0 && len > hscroll_offset) {
+            // Draw only the visible portion of the line
+            int draw_start = hscroll_offset;
+            int draw_len = len - hscroll_offset;
+            if (draw_len > max_visible_chars) draw_len = max_visible_chars;
+            if (draw_len > 0) {
+                char tmp[257];
+                strncpy(tmp, text_lines[line_idx] + draw_start, draw_len);
+                tmp[draw_len] = 0;
+                gfx_draw_string(x + TEXT_LEFT_PAD, text_y_start + r * CHAR_H, tmp, 0xFF333333);
             }
         }
     }
@@ -198,9 +233,18 @@ static void textedit_on_paint(int x, int y, int w, int h) {
         static int blink = 0; blink++;
         if (blink % 60 < 30) {
             int cy = text_y_start + (cursor_line - scroll_offset) * CHAR_H;
-            int cx = x + TEXT_LEFT_PAD + cursor_col * CHAR_W;
-            gfx_fill_rect(cx, cy, 2, CHAR_H, 0xFF007AFF);
+            int cx = x + TEXT_LEFT_PAD + (cursor_col - hscroll_offset) * CHAR_W;
+            // Only draw cursor if it's in the visible horizontal range
+            if (cursor_col >= hscroll_offset && cursor_col < hscroll_offset + max_visible_chars) {
+                gfx_fill_rect(cx, cy, 2, CHAR_H, 0xFF007AFF);
+            }
         }
+    }
+    
+    // Horizontal scroll indicator
+    if (hscroll_offset > 0) {
+        // Show left arrow indicator
+        gfx_draw_string(x + TEXT_LEFT_PAD - 8, text_y_start, "<", 0xFF007AFF);
     }
     
     // Prompt overlay
@@ -347,11 +391,17 @@ static void textedit_on_input(int key) {
         }
     }
     
-    // Adjust scroll
-    int visible_lines = 20; // approximate
+    // Adjust vertical scroll to keep cursor visible
+    int win_h = te_window ? ((window_t*)te_window)->height : 380;
+    int visible_lines = (win_h - TOOLBAR_H - 4) / CHAR_H;
+    if (visible_lines < 1) visible_lines = 1;
     if (cursor_line < scroll_offset) scroll_offset = cursor_line;
     if (cursor_line >= scroll_offset + visible_lines) scroll_offset = cursor_line - visible_lines + 1;
     if (scroll_offset < 0) scroll_offset = 0;
+    
+    // Adjust horizontal scroll to keep cursor visible
+    int win_w = te_window ? ((window_t*)te_window)->width : 500;
+    te_ensure_cursor_visible(win_w);
 }
 
 static void textedit_on_mouse(int x, int y, int btn) {
@@ -390,7 +440,7 @@ static void textedit_on_mouse(int x, int y, int btn) {
         int clicked_line = (y - TOOLBAR_H - 4) / CHAR_H + scroll_offset;
         if (clicked_line >= 0 && clicked_line < line_count) {
             cursor_line = clicked_line;
-            int col = (x - TEXT_LEFT_PAD) / CHAR_W;
+            int col = (x - TEXT_LEFT_PAD) / CHAR_W + hscroll_offset;
             int len = strlen(text_lines[cursor_line]);
             if (col < 0) col = 0;
             if (col > len) col = len;
@@ -406,9 +456,24 @@ static void textedit_on_scroll(int delta) {
     if (scroll_offset < 0) scroll_offset = 0;
 }
 
+static void textedit_on_hscroll(int delta) {
+    hscroll_offset -= delta * 5;  // Scroll 5 characters at a time
+    if (hscroll_offset < 0) hscroll_offset = 0;
+    // Don't scroll past the longest line
+    int max_len = 0;
+    for (int i = 0; i < line_count; i++) {
+        int len = strlen(text_lines[i]);
+        if (len > max_len) max_len = len;
+    }
+    int max_visible = (te_window ? ((window_t*)te_window)->width : 500) - TEXT_LEFT_PAD - PAD;
+    int max_hscroll = max_len - max_visible / CHAR_W + 2;
+    if (max_hscroll < 0) max_hscroll = 0;
+    if (hscroll_offset > max_hscroll) hscroll_offset = max_hscroll;
+}
+
 static void textedit_on_resize(int new_w, int new_h) {
-    // TextEdit adapts to whatever size is passed via paint callback
-    // No extra state to update since paint uses relative coordinates
+    // Re-clamp horizontal scroll on resize
+    te_ensure_cursor_visible(new_w);
 }
 
 void init_textedit_app() {
@@ -423,29 +488,32 @@ void init_textedit_app() {
         te_open_file(launch_path);
     }
 
-    Window* w = fw_create_window("TextEdit", 500, 380, textedit_on_paint, textedit_on_input, textedit_on_mouse);
-    w->min_w = 300;
+    te_window = fw_create_window("TextEdit", 500, 380, textedit_on_paint, textedit_on_input, textedit_on_mouse);
+    ((window_t*)te_window)->min_w = 300;
     
-    // Wire up scroll and resize callbacks
-    w->scroll_callback = (void*)textedit_on_scroll;
-    w->resize_callback = (void*)textedit_on_resize;
+    // Wire up scroll, hscroll, and resize callbacks
+    ((window_t*)te_window)->scroll_callback = (void*)textedit_on_scroll;
+    ((window_t*)te_window)->hscroll_callback = (void*)textedit_on_hscroll;
+    ((window_t*)te_window)->resize_callback = (void*)textedit_on_resize;
     
-    w->menu_count = 3;
-    strcpy(w->menus[0].name, "File");
-    strcpy(w->menus[0].items[0].label, "New");
-    strcpy(w->menus[0].items[1].label, "Open");
-    strcpy(w->menus[0].items[2].label, "Save");
-    w->menus[0].item_count = 3;
+    te_update_title();
     
-    strcpy(w->menus[1].name, "Edit");
-    strcpy(w->menus[1].items[0].label, "Cut");
-    strcpy(w->menus[1].items[1].label, "Copy");
-    strcpy(w->menus[1].items[2].label, "Paste");
-    w->menus[1].item_count = 3;
+    ((window_t*)te_window)->menu_count = 3;
+    strcpy(((window_t*)te_window)->menus[0].name, "File");
+    strcpy(((window_t*)te_window)->menus[0].items[0].label, "New");
+    strcpy(((window_t*)te_window)->menus[0].items[1].label, "Open");
+    strcpy(((window_t*)te_window)->menus[0].items[2].label, "Save");
+    ((window_t*)te_window)->menus[0].item_count = 3;
     
-    strcpy(w->menus[2].name, "View");
-    strcpy(w->menus[2].items[0].label, "Word Wrap");
-    w->menus[2].item_count = 1;
+    strcpy(((window_t*)te_window)->menus[1].name, "Edit");
+    strcpy(((window_t*)te_window)->menus[1].items[0].label, "Cut");
+    strcpy(((window_t*)te_window)->menus[1].items[1].label, "Copy");
+    strcpy(((window_t*)te_window)->menus[1].items[2].label, "Paste");
+    ((window_t*)te_window)->menus[1].item_count = 3;
     
-    fw_register_dock("TextEdit", 3, w);
+    strcpy(((window_t*)te_window)->menus[2].name, "View");
+    strcpy(((window_t*)te_window)->menus[2].items[0].label, "Word Wrap");
+    ((window_t*)te_window)->menus[2].item_count = 1;
+    
+    fw_register_dock("TextEdit", 3, te_window);
 }

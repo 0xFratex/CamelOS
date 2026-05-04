@@ -32,6 +32,20 @@ static int page_line_count = 0;
 static int scroll_offset = 0;
 static char status_text[64] = "Ready";
 
+// Line types for CSS-like visual formatting
+#define LINE_NORMAL   0
+#define LINE_H1       1
+#define LINE_H2       2
+#define LINE_H3       3
+#define LINE_H4       4
+#define LINE_H5       5
+#define LINE_H6       6
+#define LINE_LI       7   // List item
+#define LINE_HR       8   // Horizontal rule
+#define LINE_QUOTE    9   // Blockquote
+#define LINE_PRE      10  // Preformatted
+static int line_types[PAGE_LINES];
+
 // Loading state
 static int is_loading = 0;
 
@@ -67,6 +81,9 @@ static int show_bookmarks = 0;
 
 // Page title (extracted from HTML <title>)
 static char page_title[64] = "";
+
+// Window reference for title updates
+static Window* browser_window = 0;
 
 // Link detection for clickable links
 #define MAX_LINKS 32
@@ -359,13 +376,35 @@ static void browser_load_page(const char* url) {
     // Parse response - skip HTTP headers
     char* body = strstr(response, "\r\n\r\n");
     if (body) body += 4;
-    else body = response;
+    else {
+        body = strstr(response, "\n\n");
+        if (body) body += 2;
+        else body = response;
+    }
     
-    // Extract <title> from HTML
+    // Extra safety: if body still starts with "HTTP/", the header stripping
+    // failed. Scan forward until we find a blank line.
+    if (body == response && strncmp(body, "HTTP/", 5) == 0) {
+        char* scan = body;
+        while (*scan) {
+            if ((*scan == '\r' && *(scan+1) == '\n' && *(scan+2) == '\r' && *(scan+3) == '\n')) {
+                body = scan + 4; break;
+            }
+            if ((*scan == '\n' && *(scan+1) == '\n')) {
+                body = scan + 2; break;
+            }
+            scan++;
+        }
+    }
+    
+    // Extract <title> from HTML (case-insensitive)
     char* title_start = strstr(body, "<title>");
+    if (!title_start) title_start = strstr(body, "<TITLE>");
+    if (!title_start) title_start = strstr(body, "<Title>");
     if (title_start) {
         title_start += 7;
         char* title_end = strstr(title_start, "</title>");
+        if (!title_end) title_end = strstr(title_start, "</TITLE>");
         if (title_end) {
             int tlen = title_end - title_start;
             if (tlen > 63) tlen = 63;
@@ -374,27 +413,68 @@ static void browser_load_page(const char* url) {
         }
     }
     
-    // Enhanced HTML to text conversion
+    // Update window title with page title
+    if (browser_window && page_title[0]) {
+        char win_title[80];
+        strcpy(win_title, page_title);
+        strcat(win_title, " - Browser");
+        ws_set_title((window_t*)browser_window, win_title);
+    } else if (browser_window) {
+        ws_set_title((window_t*)browser_window, "Browser");
+    }
+    
+    // Enhanced HTML to text conversion with CSS-like formatting
+    // Clear line types for this page load
+    memset(line_types, 0, sizeof(line_types));
+    
     int line = 0;
     int col = 0;
     int in_tag = 0;
     int in_script = 0;
     int in_style = 0;
+    int in_head = 0;      // Skip <head> content from rendering
+    int in_title = 0;     // Skip <title> content from rendering (always, not just in <head>)
     int in_link = 0;
+    int in_pre = 0;       // Preserve whitespace in <pre> blocks
+    int in_quote = 0;     // Inside <blockquote>
+    int current_heading = 0; // Current heading level (0=none)
     char link_url[256];
     int link_start_line = 0;
     int link_start_col = 0;
+    
+    // Helper macro: finalize current line and advance
+    #define FLUSH_LINE() do { \
+        if (col > 0 || in_pre) { \
+            page_lines[line][col] = 0; \
+            if (current_heading > 0) line_types[line] = current_heading; \
+            else if (in_quote) line_types[line] = LINE_QUOTE; \
+            line++; \
+            col = 0; \
+        } \
+    } while(0)
     
     for (int i = 0; body[i] && line < PAGE_LINES; i++) {
         char c = body[i];
         
         if (c == '<') {
             in_tag = 1;
-            // Check for script/style tags to skip
+            // Check for script/style/head/title tags to skip
             if (strncmp(body + i, "<script", 7) == 0) in_script = 1;
             if (strncmp(body + i, "<style", 6) == 0) in_style = 1;
+            if (strncmp(body + i, "<head", 5) == 0) in_head = 1;
+            if (strncmp(body + i, "<title", 6) == 0) in_title = 1;  // Always skip title content
             if (strncmp(body + i, "</script>", 9) == 0) in_script = 0;
             if (strncmp(body + i, "</style>", 8) == 0) in_style = 0;
+            if (strncmp(body + i, "</head>", 7) == 0) { in_head = 0; continue; }
+            if (strncmp(body + i, "</title>", 8) == 0) { in_title = 0; continue; }
+            
+            // <pre> block: preserve whitespace
+            if (strncmp(body + i, "<pre", 4) == 0) { in_pre = 1; FLUSH_LINE(); continue; }
+            if (strncmp(body + i, "</pre>", 6) == 0) { in_pre = 0; FLUSH_LINE(); continue; }
+            
+            // <blockquote>
+            if (strncmp(body + i, "<blockquote", 11) == 0) { in_quote = 1; FLUSH_LINE(); continue; }
+            if (strncmp(body + i, "</blockquote>", 12) == 0) { in_quote = 0; FLUSH_LINE(); continue; }
             
             // Handle <a href="..."> links
             if (strncmp(body + i, "<a ", 3) == 0 || strncmp(body + i, "<A ", 3) == 0) {
@@ -425,24 +505,76 @@ static void browser_load_page(const char* url) {
                 in_link = 0;
             }
             
-            // Handle block-level tags (add line breaks)
+            // Headings: h1-h6 — add blank line before, set heading type
+            if (strncmp(body + i, "<h1", 3) == 0) { current_heading = LINE_H1; FLUSH_LINE(); if (line < PAGE_LINES) { page_lines[line][0] = 0; line_types[line] = 0; line++; } continue; }
+            if (strncmp(body + i, "<h2", 3) == 0) { current_heading = LINE_H2; FLUSH_LINE(); if (line < PAGE_LINES) { page_lines[line][0] = 0; line_types[line] = 0; line++; } continue; }
+            if (strncmp(body + i, "<h3", 3) == 0) { current_heading = LINE_H3; FLUSH_LINE(); continue; }
+            if (strncmp(body + i, "<h4", 3) == 0) { current_heading = LINE_H4; FLUSH_LINE(); continue; }
+            if (strncmp(body + i, "<h5", 3) == 0) { current_heading = LINE_H5; FLUSH_LINE(); continue; }
+            if (strncmp(body + i, "<h6", 3) == 0) { current_heading = LINE_H6; FLUSH_LINE(); continue; }
+            if (strncmp(body + i, "</h1", 4) == 0 || strncmp(body + i, "</h2", 4) == 0 ||
+                strncmp(body + i, "</h3", 4) == 0 || strncmp(body + i, "</h4", 4) == 0 ||
+                strncmp(body + i, "</h5", 4) == 0 || strncmp(body + i, "</h6", 4) == 0) {
+                current_heading = 0;
+                FLUSH_LINE();
+                // Add blank line after heading
+                if (line < PAGE_LINES) { page_lines[line][0] = 0; line_types[line] = 0; line++; }
+                continue;
+            }
+            
+            // <hr> horizontal rule
+            if (strncmp(body + i, "<hr", 3) == 0 || strncmp(body + i, "<HR", 3) == 0) {
+                FLUSH_LINE();
+                if (line < PAGE_LINES) { line_types[line] = LINE_HR; page_lines[line][0] = 0; line++; }
+                continue;
+            }
+            
+            // List items: prefix with bullet
+            if (strncmp(body + i, "<li", 3) == 0 || strncmp(body + i, "<LI", 3) == 0) {
+                FLUSH_LINE();
+                if (line < PAGE_LINES) {
+                    page_lines[line][0] = ' ';
+                    page_lines[line][1] = '\x1e';  // Bullet placeholder (will render as \u2022)
+                    page_lines[line][2] = ' ';
+                    col = 3;
+                    line_types[line] = LINE_LI;
+                }
+                continue;
+            }
+            
+            // Block-level tags: add line break before
             if (strncmp(body + i, "<br", 3) == 0 || strncmp(body + i, "<BR", 3) == 0 ||
                 strncmp(body + i, "<p", 2) == 0 || strncmp(body + i, "<P", 2) == 0 ||
                 strncmp(body + i, "<div", 4) == 0 || strncmp(body + i, "<DIV", 4) == 0 ||
-                strncmp(body + i, "<h1", 3) == 0 || strncmp(body + i, "<h2", 3) == 0 ||
-                strncmp(body + i, "<h3", 3) == 0 || strncmp(body + i, "<h4", 3) == 0 ||
-                strncmp(body + i, "<li", 3) == 0 || strncmp(body + i, "<LI", 3) == 0 ||
+                strncmp(body + i, "<section", 8) == 0 || strncmp(body + i, "<article", 8) == 0 ||
+                strncmp(body + i, "<header", 7) == 0 || strncmp(body + i, "<footer", 7) == 0 ||
+                strncmp(body + i, "<nav", 4) == 0 || strncmp(body + i, "<main", 5) == 0 ||
+                strncmp(body + i, "<ul", 3) == 0 || strncmp(body + i, "<ol", 3) == 0 ||
+                strncmp(body + i, "<table", 6) == 0 ||
                 strncmp(body + i, "<tr", 3) == 0 || strncmp(body + i, "<TR", 3) == 0) {
-                if (col > 0) {
-                    page_lines[line][col] = 0;
-                    line++;
-                    col = 0;
+                FLUSH_LINE();
+                // For <p>, add extra blank line for paragraph spacing
+                if (strncmp(body + i, "<p", 2) == 0 || strncmp(body + i, "<P", 2) == 0) {
+                    if (line < PAGE_LINES) { page_lines[line][0] = 0; line_types[line] = 0; line++; }
                 }
+                continue;
+            }
+            // Closing block tags: add line break after
+            if (strncmp(body + i, "</p", 3) == 0 || strncmp(body + i, "</div", 5) == 0 ||
+                strncmp(body + i, "</section", 9) == 0 || strncmp(body + i, "</article", 9) == 0 ||
+                strncmp(body + i, "</ul", 4) == 0 || strncmp(body + i, "</ol", 4) == 0 ||
+                strncmp(body + i, "</table", 7) == 0) {
+                FLUSH_LINE();
+                // Add blank line for paragraph spacing after </p>
+                if (strncmp(body + i, "</p", 3) == 0) {
+                    if (line < PAGE_LINES) { page_lines[line][0] = 0; line_types[line] = 0; line++; }
+                }
+                continue;
             }
             continue;
         }
         if (c == '>') { in_tag = 0; continue; }
-        if (in_tag || in_script || in_style) continue;
+        if (in_tag || in_script || in_style || in_head || in_title) continue;
         
         // Handle HTML entities
         if (c == '&') {
@@ -455,16 +587,24 @@ static void browser_load_page(const char* url) {
         }
         
         if (c == '\n' || c == '\r') {
-            if (col > 0) {
+            if (in_pre) {
+                // In <pre> blocks, newlines create actual line breaks
                 page_lines[line][col] = 0;
+                line_types[line] = LINE_PRE;
+                line++;
+                col = 0;
+            } else if (col > 0) {
+                page_lines[line][col] = 0;
+                if (current_heading > 0) line_types[line] = current_heading;
+                else if (in_quote) line_types[line] = LINE_QUOTE;
                 line++;
                 col = 0;
             }
             continue;
         }
         
-        // Skip multiple spaces
-        if (c == ' ' && col > 0 && page_lines[line][col-1] == ' ') continue;
+        // Skip multiple spaces (except in <pre> blocks)
+        if (!in_pre && c == ' ' && col > 0 && page_lines[line][col-1] == ' ') continue;
         
         if (col < PAGE_LINE_LEN - 1) {
             page_lines[line][col++] = c;
@@ -818,6 +958,7 @@ static void browser_on_paint(int x, int y, int w, int h) {
     for (int i = 0; i < visible_lines && (i + scroll_offset) < page_line_count; i++) {
         int ly = content_y_start + i * 16;
         int line_idx = i + scroll_offset;
+        int lt = line_types[line_idx];
         
         // Check if this line has a link - draw in blue/underline
         int is_link_line = 0;
@@ -828,13 +969,80 @@ static void browser_on_paint(int x, int y, int w, int h) {
             }
         }
         
+        // Horizontal rule
+        if (lt == LINE_HR) {
+            int rule_y = ly + 8;
+            gfx_fill_rect(x + PAD, rule_y, w - PAD * 2 - 12, 1, 0xFFC0C0C0);
+            continue;
+        }
+        
+        // Determine text offset and color based on line type
+        int text_x = x + PAD;
+        uint32_t text_color = 0xFF333333;
+        
+        switch (lt) {
+            case LINE_H1:
+                text_x += 0;  // No indent
+                text_color = 0xFF1A1A1A;  // Very dark
+                break;
+            case LINE_H2:
+                text_x += 0;
+                text_color = 0xFF222222;
+                break;
+            case LINE_H3:
+                text_x += 8;  // Slight indent
+                text_color = 0xFF333333;
+                break;
+            case LINE_H4:
+                text_x += 16;
+                text_color = 0xFF444444;
+                break;
+            case LINE_H5:
+            case LINE_H6:
+                text_x += 24;
+                text_color = 0xFF555555;
+                break;
+            case LINE_LI:
+                text_x = x + PAD;  // Bullet already in text
+                // Replace bullet placeholder with actual bullet char
+                {
+                    char* bp = page_lines[line_idx];
+                    while (*bp) {
+                        if (*bp == '\x1e') *bp = 0x2B;  // Use '+' as bullet
+                        bp++;
+                    }
+                }
+                text_color = 0xFF333333;
+                break;
+            case LINE_QUOTE:
+                text_x += 20;  // Indent for blockquote
+                text_color = 0xFF666666;  // Slightly muted
+                // Draw left border for blockquote
+                gfx_fill_rect(x + PAD + 8, ly, 3, 16, 0xFFDDDDDD);
+                break;
+            case LINE_PRE:
+                // Preformatted: use monospace-style rendering with background
+                gfx_fill_rect(x + PAD, ly - 1, w - PAD * 2 - 12, 18, 0xFFF5F5F5);
+                text_color = 0xFF222222;
+                break;
+            default:
+                break;
+        }
+        
         if (is_link_line) {
-            gfx_draw_string(x + PAD, ly, page_lines[line_idx], 0xFF007AFF);
+            gfx_draw_string(text_x, ly, page_lines[line_idx], 0xFF007AFF);
             // Underline
             int tw = strlen(page_lines[line_idx]) * 8;
-            gfx_fill_rect(x + PAD, ly + 14, tw, 1, 0xFF007AFF);
+            gfx_fill_rect(text_x, ly + 14, tw, 1, 0xFF007AFF);
         } else {
-            gfx_draw_string(x + PAD, ly, page_lines[line_idx], 0xFF333333);
+            gfx_draw_string(text_x, ly, page_lines[line_idx], text_color);
+        }
+        
+        // Heading underline for h1 and h2
+        if (lt == LINE_H1 || lt == LINE_H2) {
+            int tw = strlen(page_lines[line_idx]) * 8;
+            uint32_t ul_color = (lt == LINE_H1) ? 0xFF333333 : 0xFF888888;
+            gfx_fill_rect(text_x, ly + 15, tw, 1, ul_color);
         }
     }
     
@@ -1010,8 +1218,8 @@ void init_browser_app() {
     history_pos = -1;
     history_count = 0;
     
-    Window* w = fw_create_window("Browser", 700, 500, browser_on_paint, browser_on_input, browser_on_mouse);
-    w->min_w = 400;
+    browser_window = fw_create_window("Browser", 700, 500, browser_on_paint, browser_on_input, browser_on_mouse);
+    browser_window->min_w = 400;
     
     // Wire up scroll and resize callbacks
     w->scroll_callback = (void*)browser_on_scroll;

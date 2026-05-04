@@ -64,7 +64,26 @@ void desktop_execute_item(const char* path, int is_dir) {
     } else {
         int len = strlen(path);
         if (len > 4 && strcmp(path + len - 4, ".app") == 0) {
-            wrap_exec(path);
+            // .app bundle - check if it's already installed in /Applications
+            // If the .app is NOT in /Applications, install it first (macOS-like behavior)
+            if (strncmp(path, "/Applications/", 14) != 0) {
+                // This .app is not installed yet - install it to /Applications
+                // then launch from there (like macOS drag-to-Applications)
+                extern void desktop_install_app(const char*);
+                desktop_install_app(path);
+                
+                // Build the /Applications path and launch from there
+                const char* name_start = path;
+                const char* p = path;
+                while (*p) { if (*p == '/') name_start = p + 1; p++; }
+                char installed_path[256];
+                strcpy(installed_path, "/Applications/");
+                strcat(installed_path, name_start);
+                wrap_exec(installed_path);
+            } else {
+                // Already installed - just launch
+                wrap_exec(path);
+            }
         } else if (len > 4 && strcmp(path + len - 4, ".dmg") == 0) {
             // DMG file - use the app installer for drag-to-Applications
             extern int app_installer_open_dmg(const char*);
@@ -1051,7 +1070,13 @@ void handle_input(int mx, int my, int lb, int rb) {
                     strcpy(path, g_desktop_path);
                     strcat(path, "/");
                     strcat(path, desk_entries[hit_idx].filename);
-                    desktop_execute_item(path, (desk_entries[hit_idx].attributes & 0x10));
+                    // .app directories should be launched, not opened as folders
+                    int is_dir = (desk_entries[hit_idx].attributes & 0x10);
+                    int elen = strlen(desk_entries[hit_idx].filename);
+                    if (is_dir && elen > 4 && strcmp(desk_entries[hit_idx].filename + elen - 4, ".app") == 0) {
+                        is_dir = 0;  // Treat .app bundles as files, not directories
+                    }
+                    desktop_execute_item(path, is_dir);
                     last_select_idx = -1; // Reset
                     return;
                 }

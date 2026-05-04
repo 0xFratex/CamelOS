@@ -502,14 +502,18 @@ void files_ctx_click(int click_x, int click_y) {
                 case 4: op_delete(); break;     // Delete
                 case 5: { // Open
                     if (ctx_target_idx >= 0 && ctx_target_idx < last_count) {
-                        if (last_entries[ctx_target_idx].attributes & 0x10) {
+                        int elen = strlen(last_entries[ctx_target_idx].filename);
+                        int is_app_dir = (last_entries[ctx_target_idx].attributes & 0x10) &&
+                            (elen > 4 && strcmp(last_entries[ctx_target_idx].filename + elen - 4, ".app") == 0);
+                        
+                        if ((last_entries[ctx_target_idx].attributes & 0x10) && !is_app_dir) {
                             fm_navigate_into(last_entries[ctx_target_idx].filename);
                         } else {
-                            // Open file with default app (TextEdit for text files)
+                            // Open file or .app bundle with default handler
                             char full_path[256];
                             if (fm_build_path(full_path, sizeof(full_path), fm_path, last_entries[ctx_target_idx].filename)) {
                                 extern void desktop_execute_item(const char*, int);
-                                desktop_execute_item(full_path, 0);
+                                desktop_execute_item(full_path, is_app_dir ? 0 : 0);
                             }
                         }
                     }
@@ -654,7 +658,9 @@ void files_on_paint(int x, int y, int w, int h) {
         // Icon
         const char* icon = (last_entries[i].attributes & 0x10) ? "folder" : "file";
         int len = strlen(last_entries[i].filename);
-        if(len > 4 && strcmp(last_entries[i].filename + len - 4, ".app") == 0) icon = "terminal";
+        if(len > 4 && strcmp(last_entries[i].filename + len - 4, ".app") == 0) icon = "installing";
+        if(len > 4 && strcmp(last_entries[i].filename + len - 4, ".dmg") == 0) icon = "hdd_icon";
+        if(len > 4 && strcmp(last_entries[i].filename + len - 4, ".cdl") == 0) icon = "terminal";
         
         cm_draw_image(0, icon, ix, iy, ICON_SIZE, ICON_SIZE);
         
@@ -876,9 +882,20 @@ void files_on_mouse(int x, int y, int btn) {
             // Left click
             if (is_selected[i]) {
                 // Double click - open
-                if (last_entries[i].attributes & 0x10) {
-                    // Open folder: navigate into it
+                int elen = strlen(last_entries[i].filename);
+                int is_app_dir = (last_entries[i].attributes & 0x10) &&
+                    (elen > 4 && strcmp(last_entries[i].filename + elen - 4, ".app") == 0);
+                
+                if ((last_entries[i].attributes & 0x10) && !is_app_dir) {
+                    // Open folder: navigate into it (but not .app bundles)
                     fm_navigate_into(last_entries[i].filename);
+                } else if (is_app_dir) {
+                    // .app bundle directory: install and launch instead of navigating
+                    char full_path[256];
+                    if (fm_build_path(full_path, sizeof(full_path), fm_path, last_entries[i].filename)) {
+                        extern void desktop_execute_item(const char*, int);
+                        desktop_execute_item(full_path, 0);
+                    }
                 } else {
                     // Open file with default app
                     char full_path[256];
