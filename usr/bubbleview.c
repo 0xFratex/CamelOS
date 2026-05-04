@@ -64,15 +64,15 @@ void desktop_execute_item(const char* path, int is_dir) {
     } else {
         int len = strlen(path);
         if (len > 4 && strcmp(path + len - 4, ".app") == 0) {
-            // .app bundle - check if it's already installed in /Applications
-            // If the .app is NOT in /Applications, install it first (macOS-like behavior)
+            // .app bundle — always launch directly.
+            // If it's already in /Applications, just run it.
+            // If it's elsewhere (e.g. on Desktop), install to /Applications first,
+            // then launch from there (macOS drag-to-Applications behavior).
             if (strncmp(path, "/Applications/", 14) != 0) {
-                // This .app is not installed yet - install it to /Applications
-                // then launch from there (like macOS drag-to-Applications)
+                // Not yet installed — install it, then launch
                 extern void desktop_install_app(const char*);
                 desktop_install_app(path);
                 
-                // Build the /Applications path and launch from there
                 const char* name_start = path;
                 const char* p = path;
                 while (*p) { if (*p == '/') name_start = p + 1; p++; }
@@ -81,11 +81,11 @@ void desktop_execute_item(const char* path, int is_dir) {
                 strcat(installed_path, name_start);
                 wrap_exec(installed_path);
             } else {
-                // Already installed - just launch
+                // Already installed — just launch the app
                 wrap_exec(path);
             }
         } else if (len > 4 && strcmp(path + len - 4, ".dmg") == 0) {
-            // DMG file - use the app installer for drag-to-Applications
+            // DMG file — mount and install the app from it
             extern int app_installer_open_dmg(const char*);
             app_installer_open_dmg(path);
         } else {
@@ -334,30 +334,9 @@ void ctx_menu_show(int x, int y, int type, void* target) {
     g_ctx_menu.active = 1;
 }
 
-// --- CLOCK WIDGET ---
-void draw_system_clock() {
-    int h, m, s;
-    sys_get_time(&h, &m, &s);
-
-    char time_str[16];
-    char buf[4];
-
-    // Format HH:MM
-    // Simple logic for AM/PM if desired, keeping 24h for simplicity code
-    int_to_str(h, buf);
-    strcpy(time_str, (h<10) ? "0" : "");
-    strcat(time_str, buf);
-    strcat(time_str, ":");
-
-    int_to_str(m, buf);
-    strcat(time_str, (m<10) ? "0" : "");
-    strcat(time_str, buf);
-
-    int w = measure_text_width(time_str);
-    int x = 1024 - w - 15; // Right align
-
-    sys_gfx_string(x, 8, time_str, 0xFF000000);
-}
+// --- CLOCK WIDGET (now part of draw_status_indicators) ---
+// draw_system_clock is replaced by draw_status_indicators which includes
+// the clock, network status, memory indicator, and window count.
 
 // --- Logic Helpers ---
 
@@ -547,7 +526,68 @@ void draw_dropdown(int x, int y, char** items, int count, int is_app_menu, windo
     }
 }
 
-// Global Menu Bar (Aqua White Gradient)
+// --- STATUS INDICATORS (Right side of header bar) ---
+void draw_status_indicators() {
+    int right_x = 1024 - 15;
+    
+    // System Clock
+    int h, m, s;
+    sys_get_time(&h, &m, &s);
+    char time_str[16];
+    char buf[4];
+    int_to_str(h, buf);
+    strcpy(time_str, (h<10) ? "0" : "");
+    strcat(time_str, buf);
+    strcat(time_str, ":");
+    int_to_str(m, buf);
+    strcat(time_str, (m<10) ? "0" : "");
+    strcat(time_str, buf);
+    int time_w = measure_text_width(time_str);
+    right_x -= time_w;
+    sys_gfx_string(right_x, 8, time_str, 0xFF000000);
+    right_x -= 16; // spacing
+
+    // Memory indicator (free memory)
+    extern uint32_t k_get_free_mem();
+    uint32_t free_mem = k_get_free_mem();
+    uint32_t free_mb = free_mem / (1024 * 1024);
+    char mem_str[16] = "";
+    int_to_str((int)free_mb, buf);
+    strcpy(mem_str, buf);
+    strcat(mem_str, "MB");
+    int mem_w = measure_text_width(mem_str);
+    right_x -= mem_w;
+    // Green if > 64MB, yellow if > 16MB, red otherwise
+    uint32_t mem_col = (free_mb > 64) ? 0xFF4CAF50 : (free_mb > 16) ? 0xFFFF9800 : 0xFFF44336;
+    sys_gfx_string(right_x, 8, mem_str, mem_col);
+    right_x -= 16;
+
+    // Network status indicator
+    extern int net_is_connected;
+    int connected = net_is_connected;
+    char net_str[8];
+    strcpy(net_str, connected ? "Net" : "---");
+    int net_w = measure_text_width(net_str);
+    right_x -= net_w;
+    sys_gfx_string(right_x, 8, net_str, connected ? 0xFF4CAF50 : 0xFF999999);
+    right_x -= 16;
+
+    // CPU / window count
+    int win_count = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        window_t* w = ws_get_window_at_index(i);
+        if (w && w->is_visible && w->is_active) win_count++;
+    }
+    char win_str[16] = "";
+    strcpy(win_str, "Wins:");
+    int_to_str(win_count, buf);
+    strcat(win_str, buf);
+    int win_w = measure_text_width(win_str);
+    right_x -= win_w;
+    sys_gfx_string(right_x, 8, win_str, 0xFF666666);
+}
+
+// Global Menu Bar (Aqua White Gradient with enhanced status bar)
 int process_global_bar(int mx, int my, int click) {
     for(int i=0; i<HEADER_HEIGHT; i++) {
         uint32_t col = (i < HEADER_HEIGHT/2) ? 0xFFF8F8F8 : 0xFFE8E8E8;
@@ -614,8 +654,8 @@ int process_global_bar(int mx, int my, int click) {
         return 1;
     }
 
-    // 3. System Clock (Right Side)
-    draw_system_clock();
+    // 4. Status indicators on right side (network, memory, windows, clock)
+    draw_status_indicators();
 
     return 0;
 }
@@ -1543,7 +1583,6 @@ void start_bubble_view() {
 
         dock_render(buffer, 1024, 768, mx, my);
         process_global_bar(mx, my, (lb && !prev_lb));
-        draw_cursor(mx, my);
 
         ctx_menu_draw();
 
@@ -1551,6 +1590,10 @@ void start_bubble_view() {
         if (app_switcher_is_active()) {
             app_switcher_render(1024, 768);
         }
+
+        // FIX: Draw cursor LAST so it's always on top of everything
+        // (context menus, header bar, overlays, etc.)
+        draw_cursor(mx, my);
 
         gfx_swap_buffers();
         sys_vsync();

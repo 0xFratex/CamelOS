@@ -260,9 +260,9 @@ void desktop_draw_icons(uint32_t* buffer) {
         }
 
         const char* icon = (desk_entries[i].attributes & 0x10) ? "folder" : "file";
-        // Check for .app extension - show as installable app
+        // Check for .app extension - show as app icon (not installer)
         int len = strlen(desk_entries[i].filename);
-        if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".app") == 0) icon = "installing";
+        if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".app") == 0) icon = "terminal";
         // Check for .dmg extension - show as disk image
         if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".dmg") == 0) icon = "hdd_icon";
         // Check for .cdl extension - show as app
