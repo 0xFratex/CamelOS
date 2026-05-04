@@ -23,19 +23,25 @@ int kbd_layout = 0;
 // ============================================================
 // Keyboard Layout Tables
 // Each layout has a standard (no-shift) and shift mapping
-// for PS/2 scancodes 0-57.
+// for PS/2 scancodes 0-57, plus OEM_102 key (scancode 0x56)
+// which is outside the 0-57 range and handled separately.
+//
+// Layout data verified against Microsoft kbdlayout.info
+// scancode tables for each keyboard layout.
 // ============================================================
 
 typedef struct {
-    const char std[58];
-    const char shift[58];
+    const char std[58];      // scancodes 0-57 (base/no-shift)
+    const char shift[58];    // scancodes 0-57 (shifted)
+    const char oem102_std;   // scancode 0x56 base (0 = no OEM_102 key)
+    const char oem102_shift; // scancode 0x56 shift
     const char* name;
 } KeyboardLayout;
 
 // Layout ID constants are defined in keyboard.h
 
 static const KeyboardLayout kbd_layouts[] = {
-    // 0: US QWERTY (default)
+    // 0: US QWERTY (default) - ANSI layout, no OEM_102 key
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -45,9 +51,11 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,  // No OEM_102 key on ANSI US keyboard
         "US QWERTY"
     },
-    // 1: UK QWERTY
+    // 1: UK QWERTY - ISO layout with OEM_102 key
+    // Scancode 0x29=`/¬, 0x2B=#/~, 0x56=\ /|
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -57,73 +65,91 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '@', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        '\\', '|',  // OEM_102 key: \ / |
         "UK QWERTY"
     },
-    // 2: German QWERTZ
+    // 2: German QWERTZ - ISO layout
+    // Scancode 0x29=^/°, 0x0C=ß/? 0x0D=dead acute/grave,
+    // 0x1A=ü/Ü, 0x1B=+/*, 0x27=ö/Ö, 0x28=ä/Ä, 0x2B=#/'
+    // 0x35=-/_, 0x56=< / >
     {
-        {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 223, '\'', '\b',
+        {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 223, 180, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 252, '+', '\n',
          0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 246, 228, '#',
          0, '<', 'y', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
-        {0,  27, '!', '"', 167, '$', '%', '&', '/', '(', ')', '=', '?', '`', '\b',
+        {0,  27, '!', '"', 167, '$', '%', '&', '/', '(', ')', '=', '?', 96, '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P', 220, '*', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 214, 196, '\'',
          0, '>', 'Y', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "German QWERTZ"
     },
-    // 3: French AZERTY
+    // 3: French AZERTY - ISO layout
+    // Scancode 0x29=², 0x02=&/1, 0x03=é/2, ..., 0x1B=$/£
+    // 0x27=m/M, 0x28=ù/%, 0x2B=*/µ, 0x33=,/? 0x34=;/. 0x35=! /§
+    // 0x56=< / >
     {
         {0,  27, '&', 233, '"', '\'', '(', '-', 232, '_', 231, 224, ')', '=', '\b',
          '\t', 'a', 'z', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '^', '$', '\n',
-         0, 'q', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm', 249, '*',
-         0, '<', 'w', 'x', 'c', 'v', 'b', 'n', ',', ';', ':', '!', 0, '*', 0, ' '},
+         0, 'q', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm', 249, 178,
+         0, '*', 'w', 'x', 'c', 'v', 'b', 'n', ',', ';', ':', '!', 0, '*', 0, ' '},
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 176, '+', '\b',
          '\t', 'A', 'Z', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 168, 163, '\n',
          0, 'Q', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 'M', '%', 181,
-         0, '>', 'W', 'X', 'C', 'V', 'B', 'N', '?', '.', '/', 167, 0, '*', 0, ' '},
+         0, 181, 'W', 'X', 'C', 'V', 'B', 'N', '?', '.', '/', 167, 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "French AZERTY"
     },
-    // 4: Spanish QWERTY
+    // 4: Spanish QWERTY - ISO layout
+    // Scancode 0x29=º/ª, 0x0C='/?, 0x0D=¡/¿, 0x1A=`/^ (dead),
+    // 0x1B=+/*, 0x27=ñ/Ñ, 0x28=dead acute/" (dead),
+    // 0x2B=ç/Ç, 0x35=-/_, 0x56=< / >
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '\'', 161, '\b',
-         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 241, '\'', '`',
-         0, '<', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
-        {0,  27, '!', '"', 183, '$', '%', '&', '/', '(', ')', '=', '?', 168, '\b',
-         '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 209, '"', '~',
-         0, '>', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 96, '+', '\n',
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 241, 180, 186,
+         0, 231, 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
+        {0,  27, '!', '"', 183, '$', '%', '&', '/', '(', ')', '=', '?', 191, '\b',
+         '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '^', '*', '\n',
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 209, 168, 170,
+         0, 199, 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Spanish QWERTY"
     },
-    // 5: Italian QWERTY
+    // 5: Italian QWERTY - ISO layout
+    // Scancode 0x29=\ / |, 0x0C='/?, 0x0D=ì/^,
+    // 0x1A=è/é, 0x1B=+/*, 0x27=ò/ç, 0x28=à/°, 0x2B=ù/§
+    // 0x35=-/_, 0x56=< / >
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '\'', 236, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 232, '+', '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 242, 224, 249,
-         0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 242, 224, '\\',
+         0, 249, 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
         {0,  27, '!', '"', 163, '$', '%', '&', '/', '(', ')', '=', '?', '^', '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 233, '*', '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 231, 176, 167,
-         0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 231, 176, '|',
+         0, 167, 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Italian QWERTY"
     },
-    // 6: Brazilian ABNT2
-    // Physical layout: Row3=L Ç ~(dead)  Row4=, . ; /(extra key scancode 0x73)
-    // Position 39=ç, Position 40='~'(dead key for tilde/circumflex), Position 41='
-    // Position 53=;(remapped from US '/'), Position 55=*(numpad)
-    // The extra '/' key between ; and Right Shift uses scancode 0x73 (handled separately)
+    // 6: Brazilian ABNT2 - ISO layout with extra keys
+    // Scancode 0x29='/", 0x07=6/¨(dead), 0x1A=dead acute/grave,
+    // 0x1B=[/{, 0x27=ç/Ç, 0x28=~(dead)/^(dead), 0x2B=]/}
+    // 0x35=;/:, 0x56=\ /|, 0x73=/? (ABNT_C1), 0x7E=. (ABNT_C2 numpad)
+    // Data verified against kbdlayout.info KBDBR scancodes
     {
-        {0,  27, '\'', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, '~', '`',
-         0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', ';', 0, '*', 0, ' '},
-        {0,  27, '"', '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
-         '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', (char)199, '^', '~',
-         0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', ':', 0, '*', 0, ' '},
+        {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 180, '[', '\n',
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, '~', '\'',
+         0, ']', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', ';', 0, '*', 0, ' '},
+        {0,  27, '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
+         '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 96, '{', '\n',
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 199, '^', '"',
+         0, '}', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', ':', 0, '*', 0, ' '},
+        '\\', '|',  // OEM_102 key: \ / |
         "Brazilian ABNT2"
     },
-    // 7: Dvorak
+    // 7: Dvorak - ANSI layout
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '[', ']', '\b',
          '\t', '\'', ',', '.', 'p', 'y', 'f', 'g', 'c', 'r', 'l', '/', '=', '\n',
@@ -133,6 +159,7 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', '"', '<', '>', 'P', 'Y', 'F', 'G', 'C', 'R', 'L', '?', '+', '\n',
          0, 'A', 'O', 'E', 'U', 'I', 'D', 'H', 'T', 'N', 'S', '_', '~',
          0, '|', ':', 'Q', 'J', 'K', 'X', 'B', 'M', 'W', 'V', 'Z', 0, '*', 0, ' '},
+        0, 0,  // No OEM_102 key on ANSI Dvorak
         "Dvorak"
     },
     // 8: Japanese (Romaji - same as US for ASCII input)
@@ -145,6 +172,7 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,  // Japanese layouts vary; using ANSI for now
         "Japanese"
     },
     // 9: Korean (same as US for ASCII input)
@@ -157,6 +185,7 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,
         "Korean"
     },
     // 10: Chinese Pinyin (same as US for ASCII input)
@@ -169,9 +198,13 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,
         "Chinese Pinyin"
     },
-    // 11: Swiss (similar to German but with Swiss-specific chars)
+    // 11: Swiss (similar to German but with Swiss-specific chars) - ISO layout
+    // Scancode 0x29=^/°(dead), 0x0C='/?, 0x0D=^/`(dead),
+    // 0x1A=è/ü, 0x1B=¨/!, 0x27=ö/é, 0x28=ä/à,
+    // 0x2B=$/£, 0x35=-/_, 0x56=< / >
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '\'', '^', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 232, 168, '\n',
@@ -181,9 +214,13 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P', 252, '!', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 220, 196, 163,
          0, '>', 'Y', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Swiss"
     },
-    // 12: Swedish
+    // 12: Swedish - ISO layout
+    // Scancode 0x29=§/°, 0x0C=+/? 0x0D=dead acute/grave,
+    // 0x1A=å/Å, 0x1B=dead diaeresis/circumflex, 0x27=ö/Ö, 0x28=ä/Ä,
+    // 0x2B=dead tilde/circumflex(or ø), 0x35=-/_, 0x56=< / >
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', 180, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 229, 168, '\n',
@@ -193,33 +230,38 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 197, '^', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 214, 196, 198,
          0, '>', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Swedish"
     },
-    // 13: Norwegian
+    // 13: Norwegian - ISO layout
+    // Similar to Swedish but 0x28=ø/Ø, 0x2B=å/Å
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', 180, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 229, 168, '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 246, 230, 229,
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 246, 248, 229,
          0, '<', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
         {0,  27, '!', '"', '#', 164, '%', '&', '/', '(', ')', '=', '?', '`', '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 197, '^', '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 214, 198, 197,
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 214, 216, 197,
          0, '>', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Norwegian"
     },
-    // 14: Danish
+    // 14: Danish - ISO layout
+    // Similar to Norwegian
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', 180, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 229, 168, '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 246, 230, 184,
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 246, 230, 230,
          0, '<', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
         {0,  27, '!', '"', '#', 164, '%', '&', '/', '(', ')', '=', '?', '`', '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 197, '^', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 214, 198, 216,
          0, '>', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Danish"
     },
-    // 15: Finnish
+    // 15: Finnish - ISO layout (same as Swedish)
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', 180, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 229, 168, '\n',
@@ -229,6 +271,7 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 197, '^', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 214, 196, 196,
          0, '>', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Finnish"
     },
     // 16: Polish (Programmer's - US-based with AltGr for Polish chars)
@@ -241,9 +284,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,  // Polish programmer's uses ANSI layout
         "Polish"
     },
-    // 17: Czech QWERTZ
+    // 17: Czech QWERTZ - ISO layout
     {
         {0,  27, '+', 283, 353, 269, 345, 382, 253, 225, 237, 233, '=', 250, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 250, '/', '\n',
@@ -253,9 +297,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P', 218, '?', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 344, '"', 327,
          0, '|', 'Y', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Czech QWERTZ"
     },
-    // 18: Hungarian
+    // 18: Hungarian - ISO layout
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', 246, 252, 243, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 245, 250, '\n',
@@ -265,9 +310,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P', 213, 218, '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 201, 193, 218,
          0, 205, 'Y', 'X', 'C', 'V', 'B', 'N', 'M', '?', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Hungarian"
     },
-    // 19: Romanian
+    // 19: Romanian - ISO layout (close to US, with 0x29=â/Â at top-left)
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -277,21 +323,23 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', 258,
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Romanian"
     },
-    // 20: Turkish Q
+    // 20: Turkish Q - ISO layout
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '-', '\b',
-         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', '305', 'o', 'p', 287, 252, '\n',
+         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 305, 'o', 'p', 287, 252, '\n',
          0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 351, ',', 246,
          0, '<', 'z', 'x', 'c', 'v', 'b', 'n', 'm', 246, 231, '.', 0, '*', 0, ' '},
         {0,  27, '!', '\'', '^', '+', '%', '&', '/', '(', ')', '=', '?', '_', '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 304, 220, '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 350, ';', 214,
          0, '>', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', 214, 199, ':', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Turkish Q"
     },
-    // 21: Turkish F
+    // 21: Turkish F - ISO layout
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '/', '-', '\b',
          '\t', 'f', 'g', 287, 'o', 'd', 'r', 'n', 'h', 'p', 'q', 'w', 'u', '\n',
@@ -301,6 +349,7 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'F', 'G', 304, 'O', 'D', 'R', 'N', 'H', 'P', 'Q', 'W', 'U', '\n',
          0, 'L', 'U', 'I', 'E', 'A', 220, 'T', 'K', 'M', 'L', 'Y', 350,
          0, ';', 'J', 214, 'V', 'C', 199, 'Z', 'S', 'B', ':', 'X', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Turkish F"
     },
     // 22: Russian (JCUKEN layout - Cyrillic mapped to US positions)
@@ -313,9 +362,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 201, 214, 211, 202, 197, 205, 195, 216, 217, 199, 213, 218, '\n',
          0, 212, 219, 194, 192, 207, 208, 206, 203, 196, 198, 219, 223,
          0, '/', 223, 215, 209, 204, 200, 210, 220, 193, 222, 199, 0, '*', 0, ' '},
+        0, 0,  // Russian uses ANSI-like layout
         "Russian"
     },
-    // 23: Arabic
+    // 23: Arabic (US-based for ASCII input layer)
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -325,9 +375,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,
         "Arabic"
     },
-    // 24: Hebrew
+    // 24: Hebrew (placeholder - needs proper Hebrew character mapping)
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', '/', '\'', 247, 248, 224, 233, 233, 233, 233, 237, 231, 240, '\n',
@@ -337,9 +388,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        0, 0,
         "Hebrew"
     },
-    // 25: Thai (Kedmanee layout)
+    // 25: Thai (Kedmanee layout - US-based for ASCII layer)
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -349,6 +401,7 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,
         "Thai"
     },
     // 26: Vietnamese (US-based with dead keys for tone marks)
@@ -361,9 +414,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,
         "Vietnamese"
     },
-    // 27: Greek
+    // 27: Greek (placeholder - needs proper Greek character mapping)
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', ';', 243, 235, 231, 244, 253, 248, 233, 239, 240, 232, 250, '\n',
@@ -373,9 +427,10 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', ':', 211, 203, 199, 212, 221, 216, 201, 212, 200, 202, 218, '\n',
          0, 192, 211, 208, 214, 199, 220, 201, 202, 202, 221, 215,
          0, '|', 221, 221, 221, 221, 221, 221, 221, 221, 221, 221, 0, '*', 0, ' '},
+        0, 0,
         "Greek"
     },
-    // 28: Croatian/Serbian/Slovenian
+    // 28: Croatian/Serbian/Slovenian - ISO layout
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', 180, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 353, 273, '\n',
@@ -385,21 +440,25 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P', 352, 272, '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 268, 272, 381,
          0, '>', 'Y', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Croatian"
     },
-    // 29: Portuguese (Portugal)
+    // 29: Portuguese (Portugal) - ISO layout
+    // Scancode 0x29=\\/|, 0x0C='/?, 0x0D=«/», 0x27=ç/Ç
+    // 0x28=º/ª, 0x2B=~/^, 0x56=< / >
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '\'', 171, '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '+', '\'', '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, 186, 187,
-         0, '<', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, 186, '\\',
+         0, '~', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0, '*', 0, ' '},
         {0,  27, '!', '"', '#', '$', '%', '&', '/', '(', ')', '=', '?', 187, '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '*', 171, '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 199, 170, 186,
-         0, '>', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 199, 170, '|',
+         0, '^', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0, '*', 0, ' '},
+        '<', '>',  // OEM_102 key: < / >
         "Portuguese PT"
     },
-    // 30: Canadian Multilingual
+    // 30: Canadian Multilingual - ANSI layout
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -409,19 +468,23 @@ static const KeyboardLayout kbd_layouts[] = {
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
          0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        0, 0,
         "Canadian"
     },
     // 31: Brazilian ABNT1
-    // Similar to US QWERTY but with ç at position 39, '/' stays at position 53
+    // Like US QWERTY but with ç at scancode 0x27, dead tilde at 0x28,
+    // and dead acute/grave at 0x29. Uses standard / at 0x35 (no ABNT_C1 extra key).
+    // Scancode 0x29='/", 0x27=ç/Ç, 0x28=~(dead)/^(dead)
     {
-        {0,  27, '\'', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, '~', '`',
-         0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' '},
-        {0,  27, '"', '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
-         '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', (char)199, '^', '~',
-         0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 180, '[', '\n',
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, '~', '\'',
+         0, ']', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' '},
+        {0,  27, '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
+         '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 96, '{', '\n',
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 199, '^', '"',
+         0, '}', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
+        '\\', '|',  // OEM_102 key: \ / | (ABNT1 may have ISO key)
         "Brazilian ABNT1"
     },
 };
@@ -546,14 +609,26 @@ void keyboard_callback() {
         if (scancode == 0x57) key_out = KEY_F11;
         if (scancode == 0x58) key_out = KEY_F12;
 
-        // Handle ABNT2-specific extra key (scancode 0x73 = extra '/' between ';' and Right Shift)
-        // This scancode is only generated on Brazilian ABNT2 keyboards
-        if (scancode == 0x73) {
-            if (kbd_layout == KBD_LAYOUT_PORTBR) {
-                key_out = kbd_shift_pressed ? '?' : '/';
-            } else {
-                key_out = kbd_shift_pressed ? '?' : '/';
+        // Handle OEM_102 key (scancode 0x56 = extra key between LShift and Z on ISO keyboards)
+        // Present on most European and Brazilian keyboards
+        if (scancode == 0x56 && key_out == 0) {
+            const KeyboardLayout* layout = &kbd_layouts[kbd_layout];
+            if (layout->oem102_std) {
+                key_out = kbd_shift_pressed ? (unsigned char)layout->oem102_shift
+                                            : (unsigned char)layout->oem102_std;
             }
+        }
+
+        // Handle ABNT_C1 key (scancode 0x73 = extra '/' key on Brazilian ABNT2 keyboards)
+        // Located between ';' and Right Shift
+        if (scancode == 0x73 && key_out == 0) {
+            key_out = kbd_shift_pressed ? '?' : '/';
+        }
+
+        // Handle ABNT_C2 key (scancode 0x7E = numpad '.' on Brazilian ABNT2 keyboards)
+        // This replaces the standard numpad delete/period on ABNT2 keyboards
+        if (scancode == 0x7E && key_out == 0) {
+            key_out = '.';
         }
 
         if (key_out == 0 && scancode < 58) {
