@@ -30,14 +30,18 @@ extern void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int 
 #define SCROLLBAR_MIN_H 20    // Minimum thumb height
 #define SCROLLBAR_PAD   2     // Padding inside scrollbar track
 
+// Path size limit
+#define FM_PATH_MAX 128
+
 // ===== Per-Instance Data =====
-// Each Finder window gets its own directory path so they don't share navigation
+// Each Finder window gets its own directory path and navigation history
 #define MAX_FM_INSTANCES 8
+#define FM_HISTORY_SIZE 16
 typedef struct {
     int active;
     int window_id;
-    char path[128];
-    char history[16][128];
+    char path[FM_PATH_MAX];
+    char history[FM_HISTORY_SIZE][FM_PATH_MAX];
     int hist_count;
     int hist_pos;
 } FMInstance;
@@ -78,8 +82,21 @@ static void fm_set_current(void) {
     }
 }
 
+// Safe path builder: appends "/" + name to base, with bounds checking
+// Returns 1 on success, 0 if the result would overflow
+static int fm_build_path(char* buf, int buf_size, const char* base, const char* name) {
+    int blen = strlen(base);
+    int nlen = strlen(name);
+    int need = blen + (strcmp(base, "/") != 0 ? 1 : 0) + nlen + 1;
+    if (need > buf_size) return 0;
+    strcpy(buf, base);
+    if (strcmp(base, "/") != 0) strcat(buf, "/");
+    strcat(buf, name);
+    return 1;
+}
+
 // ===== Globals (shared across instances for scroll, selection, etc.) =====
-char fm_path[128] = "/";
+char fm_path[FM_PATH_MAX] = "/";
 pfs32_direntry_t last_entries[64];
 int is_selected[64];
 int last_count = 0;
@@ -107,11 +124,18 @@ static int sb_drag_start_offset = 0; // scroll_offset when drag started
 static int files_win_w = 550;
 static int files_win_h = 400;
 
-// Navigation history
-#define NAV_HISTORY_SIZE 16
-char nav_history[NAV_HISTORY_SIZE][128];
-int nav_history_count = 0;
-int nav_history_pos = -1;
+// Static temp buffer for files_refresh (avoids 8KB stack allocation)
+static pfs32_direntry_t fm_temp_entries[64];
+
+// Sync fm_path from the current instance
+static void fm_sync_path_from_instance(void) {
+    if (fm_cur) strcpy(fm_path, fm_cur->path);
+}
+
+// Sync fm_path TO the current instance (call after modifying fm_path)
+static void fm_sync_path_to_instance(void) {
+    if (fm_cur) strcpy(fm_cur->path, fm_path);
+}
 
 // Forward Declarations
 void files_refresh();
@@ -153,7 +177,7 @@ static void files_on_resize(int new_w, int new_h) {
 // Scroll callback — called from the main loop via window->scroll_callback
 void files_on_scroll(int delta) {
     fm_set_current();
-    if (fm_cur) strcpy(fm_path, fm_cur->path);
+    fm_sync_path_from_instance();
     scroll_offset -= delta * CELL_H;
     files_clamp_scroll(files_win_w, files_win_h - 30);
 }
@@ -170,45 +194,68 @@ extern void sys_fs_copy_recursive(const char* src, const char* dest);
 extern int sys_fs_delete_recursive(const char* path);
 extern void sys_fs_generate_unique_name(const char* path, const char* base, int is_dir, char* out);
 
-// ===== Navigation History =====
-void nav_push(const char* path) {
-    if (nav_history_pos < NAV_HISTORY_SIZE - 1) {
-        nav_history_pos++;
-        strcpy(nav_history[nav_history_pos], path);
-        nav_history_count = nav_history_pos + 1;
+// ===== Per-Instance Navigation History =====
+
+static void fm_nav_push(FMInstance* inst, const char* path) {
+    if (!inst) return;
+    if (inst->hist_pos < FM_HISTORY_SIZE - 1) {
+        inst->hist_pos++;
+        strncpy(inst->history[inst->hist_pos], path, FM_PATH_MAX - 1);
+        inst->history[inst->hist_pos][FM_PATH_MAX - 1] = 0;
+        inst->hist_count = inst->hist_pos + 1;
     }
 }
 
-void nav_back() {
-    if (nav_history_pos > 0) {
-        nav_history_pos--;
-        strcpy(fm_path, nav_history[nav_history_pos]);
-        if (fm_cur) strcpy(fm_cur->path, fm_path);
-        files_refresh();
-    }
+static void fm_nav_back(void) {
+    if (!fm_cur || fm_cur->hist_pos <= 0) return;
+    fm_cur->hist_pos--;
+    strcpy(fm_path, fm_cur->history[fm_cur->hist_pos]);
+    strcpy(fm_cur->path, fm_path);
+    files_refresh();
 }
 
-void nav_forward() {
-    if (nav_history_pos < nav_history_count - 1) {
-        nav_history_pos++;
-        strcpy(fm_path, nav_history[nav_history_pos]);
-        if (fm_cur) strcpy(fm_cur->path, fm_path);
-        files_refresh();
-    }
+static void fm_nav_forward(void) {
+    if (!fm_cur || fm_cur->hist_pos >= fm_cur->hist_count - 1) return;
+    fm_cur->hist_pos++;
+    strcpy(fm_path, fm_cur->history[fm_cur->hist_pos]);
+    strcpy(fm_cur->path, fm_path);
+    files_refresh();
 }
 
 void op_up_dir() {
+    fm_set_current();
+    fm_sync_path_from_instance();
     if (strcmp(fm_path, "/") == 0) return;
-    char new_path[128];
-    strcpy(new_path, fm_path);
+    char new_path[FM_PATH_MAX];
+    strncpy(new_path, fm_path, FM_PATH_MAX - 1);
+    new_path[FM_PATH_MAX - 1] = 0;
     int len = strlen(new_path);
     if (len > 1 && new_path[len-1] == '/') new_path[len-1] = 0;
     char* last = strrchr(new_path, '/');
     if (last && last != new_path) *last = 0;
     else strcpy(new_path, "/");
+    strncpy(fm_path, new_path, FM_PATH_MAX - 1);
+    fm_path[FM_PATH_MAX - 1] = 0;
+    fm_sync_path_to_instance();
+    fm_nav_push(fm_cur, fm_path);
+    files_refresh();
+}
+
+// ===== Navigate into a folder =====
+static void fm_navigate_into(const char* folder_name) {
+    fm_set_current();
+    fm_sync_path_from_instance();
+    
+    char new_path[FM_PATH_MAX];
+    if (!fm_build_path(new_path, FM_PATH_MAX, fm_path, folder_name)) {
+        // Path too long, don't navigate
+        return;
+    }
+    
+    // Update fm_path and instance
     strcpy(fm_path, new_path);
-    if (fm_cur) strcpy(fm_cur->path, fm_path);
-    nav_push(fm_path);
+    fm_sync_path_to_instance();
+    fm_nav_push(fm_cur, fm_path);
     files_refresh();
 }
 
@@ -221,7 +268,7 @@ void files_refresh() {
     sb_dragging = 0;
     
     // Sync from instance path to global
-    if (fm_cur) strcpy(fm_path, fm_cur->path);
+    fm_sync_path_from_instance();
     
     uint32_t blk = 0;
     extern int get_dir_block(const char*, uint32_t*);
@@ -230,20 +277,21 @@ void files_refresh() {
     }
     
     // Sync back to instance
-    if (fm_cur) strcpy(fm_cur->path, fm_path);
+    fm_sync_path_to_instance();
 
     memset(last_entries, 0, sizeof(last_entries));
     memset(is_selected, 0, sizeof(is_selected));
     
     extern int sys_fs_list_dir(const char*, void*, int);
-    pfs32_direntry_t temp[64];
-    int raw = sys_fs_list_dir(fm_path, temp, 64);
+    // Use static buffer instead of stack to avoid 8KB stack allocation
+    memset(fm_temp_entries, 0, sizeof(fm_temp_entries));
+    int raw = sys_fs_list_dir(fm_path, fm_temp_entries, 64);
     
     last_count = 0;
     for(int i=0; i<raw; i++) {
-        if(temp[i].filename[0] != 0 && temp[i].filename[0] != '.' && 
-           strcmp(temp[i].filename, "..") != 0) {
-            last_entries[last_count++] = temp[i];
+        if(fm_temp_entries[i].filename[0] != 0 && fm_temp_entries[i].filename[0] != '.' && 
+           strcmp(fm_temp_entries[i].filename, "..") != 0) {
+            last_entries[last_count++] = fm_temp_entries[i];
         }
     }
 }
@@ -253,9 +301,7 @@ void op_copy() {
     int idx = -1;
     for(int i=0; i<last_count; i++) if(is_selected[i]) idx=i;
     if(idx >= 0) {
-        strcpy(clipboard_path, fm_path);
-        if(strcmp(fm_path, "/")!=0) strcat(clipboard_path, "/");
-        strcat(clipboard_path, last_entries[idx].filename);
+        fm_build_path(clipboard_path, sizeof(clipboard_path), fm_path, last_entries[idx].filename);
         clipboard_active = 1; clipboard_op = 0;
     }
 }
@@ -276,8 +322,13 @@ void op_paste() {
     } else {
         strcpy(final_name, fname);
     }
-    strcat(dest, final_name);
-    sys_fs_copy_recursive(clipboard_path, dest);
+    // Bounds check before strcat
+    int dest_len = strlen(dest);
+    int fname_len = strlen(final_name);
+    if (dest_len + fname_len + 1 < 128) {
+        strcat(dest, final_name);
+        sys_fs_copy_recursive(clipboard_path, dest);
+    }
     
     if(clipboard_op == 1) {
         sys_fs_delete_recursive(clipboard_path);
@@ -297,9 +348,7 @@ void op_delete() {
     if(idx < 0) return;
     
     char path[128];
-    strcpy(path, fm_path);
-    if(strcmp(fm_path, "/")!=0) strcat(path, "/");
-    strcat(path, last_entries[idx].filename);
+    if (!fm_build_path(path, sizeof(path), fm_path, last_entries[idx].filename)) return;
     
     if(last_entries[idx].attributes & 0x10)
         sys_fs_delete_recursive(path);
@@ -325,9 +374,10 @@ void op_commit_new_item() {
     if (prompt_len == 0) { prompt_active = 0; return; }
     
     char path[128];
-    strcpy(path, fm_path);
-    if(strcmp(fm_path, "/")!=0) strcat(path, "/");
-    strcat(path, prompt_buffer);
+    if (!fm_build_path(path, sizeof(path), fm_path, prompt_buffer)) {
+        prompt_active = 0;
+        return;
+    }
     
     sys_fs_create(path, prompt_is_dir);
     prompt_active = 0;
@@ -394,9 +444,6 @@ void files_draw_ctx(int win_x, int win_y) {
     
     // Get mouse position for hover detection (mouse coords are window-local)
     extern int mouse_x, mouse_y;
-    // Convert screen mouse to window-local for hover detection
-    // Since files_draw_ctx receives win_x, win_y as the window's screen position,
-    // and mouse_x/mouse_y are screen coords, we can compare directly.
     int hover_idx = -1;
     for (int i = 0; i < item_count; i++) {
         int iy = my + 2 + i * CTX_ITEM_H;
@@ -456,18 +503,14 @@ void files_ctx_click(int click_x, int click_y) {
                 case 5: { // Open
                     if (ctx_target_idx >= 0 && ctx_target_idx < last_count) {
                         if (last_entries[ctx_target_idx].attributes & 0x10) {
-                            if(strcmp(fm_path, "/")!=0) strcat(fm_path, "/");
-                            strcat(fm_path, last_entries[ctx_target_idx].filename);
-                            nav_push(fm_path);
-                            files_refresh();
+                            fm_navigate_into(last_entries[ctx_target_idx].filename);
                         } else {
                             // Open file with default app (TextEdit for text files)
                             char full_path[256];
-                            strcpy(full_path, fm_path);
-                            if(strcmp(fm_path, "/")!=0) strcat(full_path, "/");
-                            strcat(full_path, last_entries[ctx_target_idx].filename);
-                            extern void desktop_execute_item(const char*, int);
-                            desktop_execute_item(full_path, 0);
+                            if (fm_build_path(full_path, sizeof(full_path), fm_path, last_entries[ctx_target_idx].filename)) {
+                                extern void desktop_execute_item(const char*, int);
+                                desktop_execute_item(full_path, 0);
+                            }
                         }
                     }
                     break;
@@ -482,7 +525,7 @@ void files_ctx_click(int click_x, int click_y) {
 // ===== Input Handling =====
 void files_on_input(int key) {
     fm_set_current();
-    if (fm_cur) strcpy(fm_path, fm_cur->path);
+    fm_sync_path_from_instance();
     if (prompt_active) {
         // Accept both LF (10) and CR (13) as Enter/Return
         if (key == '\n' || key == '\r' || key == 13) {
@@ -559,10 +602,10 @@ int handle_toolbar_click(int x, int y, int btn, int win_x, int win_y) {
     if (y >= win_y && y < win_y + TOOLBAR_H && btn == 1) {
         int bx = win_x + 6;
         // Back button
-        if (x >= bx && x < bx + 28) { nav_back(); return 1; }
+        if (x >= bx && x < bx + 28) { fm_nav_back(); return 1; }
         bx += 32;
         // Forward button
-        if (x >= bx && x < bx + 28) { nav_forward(); return 1; }
+        if (x >= bx && x < bx + 28) { fm_nav_forward(); return 1; }
         bx += 32;
         // Up button
         if (x >= bx && x < bx + 28) { op_up_dir(); return 1; }
@@ -577,7 +620,7 @@ int handle_toolbar_click(int x, int y, int btn, int win_x, int win_y) {
 // ===== Main Paint =====
 void files_on_paint(int x, int y, int w, int h) {
     fm_set_current();
-    if (fm_cur) strcpy(fm_path, fm_cur->path);
+    fm_sync_path_from_instance();
     // Background
     gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
     
@@ -719,7 +762,7 @@ void files_on_paint(int x, int y, int w, int h) {
 // ===== Mouse Handling =====
 void files_on_mouse(int x, int y, int btn) {
     fm_set_current();
-    if (fm_cur) strcpy(fm_path, fm_cur->path);
+    fm_sync_path_from_instance();
     // Content area dimensions — use tracked window dimensions
     int win_w = files_win_w, win_h = files_win_h - 30;
     int content_y_offset = MARGIN_TOP;
@@ -834,18 +877,15 @@ void files_on_mouse(int x, int y, int btn) {
             if (is_selected[i]) {
                 // Double click - open
                 if (last_entries[i].attributes & 0x10) {
-                    if(strcmp(fm_path, "/")!=0) strcat(fm_path, "/");
-                    strcat(fm_path, last_entries[i].filename);
-                    nav_push(fm_path);
-                    files_refresh();
+                    // Open folder: navigate into it
+                    fm_navigate_into(last_entries[i].filename);
                 } else {
                     // Open file with default app
                     char full_path[256];
-                    strcpy(full_path, fm_path);
-                    if(strcmp(fm_path, "/")!=0) strcat(full_path, "/");
-                    strcat(full_path, last_entries[i].filename);
-                    extern void desktop_execute_item(const char*, int);
-                    desktop_execute_item(full_path, 0);
+                    if (fm_build_path(full_path, sizeof(full_path), fm_path, last_entries[i].filename)) {
+                        extern void desktop_execute_item(const char*, int);
+                        desktop_execute_item(full_path, 0);
+                    }
                 }
                 return;
             }
@@ -882,8 +922,21 @@ void files_menu_action(int menu_idx, int item_idx) {
 
 // ===== Init =====
 void init_files_app() {
+    // Check if a path was passed as launch argument
+    extern void wrap_get_args(char* b, int m);
+    char args[256] = {0};
+    wrap_get_args(args, sizeof(args) - 1);
+    
+    // If a valid directory path was passed, use it as the initial path
+    if (args[0] == '/') {
+        strncpy(fm_path, args, FM_PATH_MAX - 1);
+        fm_path[FM_PATH_MAX - 1] = 0;
+    } else {
+        strcpy(fm_path, "/");
+    }
+    
     files_refresh();
-    nav_push(fm_path);
+    
     window_t* w = ws_create_window("Finder", 550, 400, files_on_paint, files_on_input, files_on_mouse);
     
     // Allocate a per-window instance for independent navigation
@@ -891,6 +944,7 @@ void init_files_app() {
     if (inst) {
         fm_cur = inst;
         strcpy(inst->path, fm_path);
+        fm_nav_push(inst, fm_path);
     }
     
     // Set scroll callback so the main loop can dispatch scroll wheel events
