@@ -7,6 +7,7 @@
 #include "../../hal/video/gfx_hal.h"
 #include "../dock.h"
 #include "../../fs/pfs32.h"
+#include "../../core/window_server.h"
 
 // Layout
 #define PAD 8
@@ -162,7 +163,7 @@ static void te_ensure_cursor_visible(int w) {
     }
 }
 
-static void textedit_on_paint(int x, int y, int w, int h) {
+static void textedit_on_paint(window_t* win, int x, int y, int w, int h) {
     // Background
     gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
     
@@ -270,7 +271,7 @@ static void textedit_on_paint(int x, int y, int w, int h) {
     }
 }
 
-static void textedit_on_input(int key) {
+static void textedit_on_input(window_t* win, int key) {
     if (key == 0) return;
     
     // Prompt mode
@@ -404,7 +405,7 @@ static void textedit_on_input(int key) {
     te_ensure_cursor_visible(win_w);
 }
 
-static void textedit_on_mouse(int x, int y, int btn) {
+static void textedit_on_mouse(window_t* win, int x, int y, int btn) {
     if (btn != 1) return;
     
     // Toolbar buttons
@@ -449,14 +450,14 @@ static void textedit_on_mouse(int x, int y, int btn) {
     }
 }
 
-static void textedit_on_scroll(int delta) {
+static void textedit_on_scroll(window_t* win, int delta) {
     scroll_offset -= delta * 3;
     if (scroll_offset < 0) scroll_offset = 0;
     if (scroll_offset > line_count - 5) scroll_offset = line_count - 5;
     if (scroll_offset < 0) scroll_offset = 0;
 }
 
-static void textedit_on_hscroll(int delta) {
+static void textedit_on_hscroll(window_t* win, int delta) {
     hscroll_offset -= delta * 5;  // Scroll 5 characters at a time
     if (hscroll_offset < 0) hscroll_offset = 0;
     // Don't scroll past the longest line
@@ -471,7 +472,7 @@ static void textedit_on_hscroll(int delta) {
     if (hscroll_offset > max_hscroll) hscroll_offset = max_hscroll;
 }
 
-static void textedit_on_resize(int new_w, int new_h) {
+static void textedit_on_resize(window_t* win, int new_w, int new_h) {
     // Re-clamp horizontal scroll on resize
     te_ensure_cursor_visible(new_w);
 }

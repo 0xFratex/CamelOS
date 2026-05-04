@@ -208,8 +208,8 @@ void ws_handle_mouse(int x, int y, int button) {
                     int local_x = x - w->x;
                     int local_y = y - w->y - 30; // Adjust for title bar
                     
-                    typedef void (*mcb)(int,int,int);
-                    ((mcb)w->mouse_callback)(local_x, local_y, button);
+                    typedef void (*mcb)(window_t*,int,int,int);
+                    ((mcb)w->mouse_callback)(w, local_x, local_y, button);
                 }
                 
                 handled = 1;

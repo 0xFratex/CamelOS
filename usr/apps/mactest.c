@@ -13,6 +13,7 @@
 #include "../../fs/pfs32.h"
 #include "../../core/dmg_mount.h"
 #include "../../core/app_bundle.h"
+#include "../../core/window_server.h"
 
 // Tab IDs
 #define TAB_MACHO    0
@@ -492,7 +493,7 @@ static void draw_result_text(int x, int y, int w, int h, const char* text) {
     }
 }
 
-static void mactest_on_paint(int x, int y, int w, int h) {
+static void mactest_on_paint(window_t* win, int x, int y, int w, int h) {
     gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
     draw_tab_bar(x, y, w);
     
@@ -542,7 +543,7 @@ static void mactest_on_paint(int x, int y, int w, int h) {
     gfx_draw_string(x + 32, btn_y + 6, "Run All Tests", 0xFFFFFFFF);
 }
 
-static void mactest_on_mouse(int x, int y, int btn) {
+static void mactest_on_mouse(window_t* win, int x, int y, int btn) {
     if (btn != 1) return;
     
     // Tab clicks - use dynamic width
@@ -566,16 +567,16 @@ static void mactest_on_mouse(int x, int y, int btn) {
     }
 }
 
-static void mactest_on_input(int key) {
+static void mactest_on_input(window_t* win, int key) {
     (void)key;
 }
 
-static void mactest_on_scroll(int delta) {
+static void mactest_on_scroll(window_t* win, int delta) {
     scroll_offset -= delta * 3;
     if (scroll_offset < 0) scroll_offset = 0;
 }
 
-static void mactest_on_resize(int new_w, int new_h) {
+static void mactest_on_resize(window_t* win, int new_w, int new_h) {
     mactest_win_w = new_w;
     mactest_win_h = new_h;
 }

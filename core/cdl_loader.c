@@ -309,8 +309,8 @@ void wrap_process_events() {
         compositor_draw_window(active_win);
         
         // Then draw content
-        typedef void (*pcb)(int,int,int,int);
-        ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30, active_win->width, active_win->height - 30);
+        typedef void (*pcb)(window_t*,int,int,int,int);
+        ((pcb)active_win->paint_callback)(active_win, active_win->x, active_win->y + 30, active_win->width, active_win->height - 30);
         
         // Swap buffers to show the update
         extern void gfx_swap_buffers();

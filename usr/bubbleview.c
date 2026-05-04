@@ -435,8 +435,10 @@ void draw_window_animated(window_t* w, int mx, int my) {
             w->anim_t = 1.0f;
             // Finish state transitions
             if (w->anim_state == 2) { 
-                // === FIX: Destroy window on close to reset app state ===
-                ws_destroy_window(w); 
+                // Close animation finished — use ws_close() which properly
+                // invokes the close_callback (to free app instance data)
+                // before destroying the window.
+                ws_close(w); 
                 return; 
             }
             if (w->anim_state == 3) { w->state = WIN_STATE_MINIMIZED; } // Minimize
@@ -475,9 +477,9 @@ void draw_window_animated(window_t* w, int mx, int my) {
         // Draw Content if mostly visible
         if (w->anim_t > 0.8f && w->anim_state != 2) {
             if(w->paint_callback) {
-                typedef void (*pcb)(int,int,int,int);
+                typedef void (*pcb)(window_t*,int,int,int,int);
                 gfx_set_clip(curr.x, curr.y + 30, curr.w, curr.h - 30);
-                ((pcb)w->paint_callback)(curr.x, curr.y + 30, curr.w, curr.h - 30);
+                ((pcb)w->paint_callback)(w, curr.x, curr.y + 30, curr.w, curr.h - 30);
                 gfx_reset_clip();
             }
         }
@@ -486,9 +488,9 @@ void draw_window_animated(window_t* w, int mx, int my) {
         compositor_draw_window(w);
         // Call paint callback for content
         if(w->paint_callback) {
-            typedef void (*pcb)(int,int,int,int);
+            typedef void (*pcb)(window_t*,int,int,int,int);
             gfx_set_clip(w->x, w->y + 30, w->width, w->height - 30);
-            ((pcb)w->paint_callback)(w->x, w->y + 30, w->width, w->height - 30);
+            ((pcb)w->paint_callback)(w, w->x, w->y + 30, w->width, w->height - 30);
             gfx_reset_clip();
         }
     }
@@ -527,6 +529,23 @@ void draw_dropdown(int x, int y, char** items, int count, int is_app_menu, windo
 }
 
 // --- STATUS INDICATORS (Right side of header bar) ---
+// Draw a small Wi-Fi icon to indicate network connectivity.
+static void draw_wifi_icon(int x, int y, int connected) {
+    // Wi-Fi icon: 3 concentric arcs + dot at bottom
+    uint32_t col = connected ? 0xFF333333 : 0xFFBBBBBB;
+    // Dot at bottom center
+    gfx_fill_rect(x + 6, y + 12, 3, 3, col);
+    // Arc 1 (innermost)
+    gfx_draw_line(x + 4, y + 9, x + 6, y + 7, col);
+    gfx_draw_line(x + 6, y + 7, x + 9, y + 9, col);
+    // Arc 2 (middle)
+    gfx_draw_line(x + 2, y + 6, x + 6, y + 3, col);
+    gfx_draw_line(x + 6, y + 3, x + 11, y + 6, col);
+    // Arc 3 (outermost)
+    gfx_draw_line(x + 0, y + 3, x + 6, y + 0, col);
+    gfx_draw_line(x + 6, y + 0, x + 13, y + 3, col);
+}
+
 void draw_status_indicators() {
     int right_x = 1024 - 15;
     
@@ -545,46 +564,12 @@ void draw_status_indicators() {
     int time_w = measure_text_width(time_str);
     right_x -= time_w;
     sys_gfx_string(right_x, 8, time_str, 0xFF000000);
-    right_x -= 16; // spacing
+    right_x -= 20; // spacing
 
-    // Memory indicator (free memory)
-    extern uint32_t k_get_free_mem();
-    uint32_t free_mem = k_get_free_mem();
-    uint32_t free_mb = free_mem / (1024 * 1024);
-    char mem_str[16] = "";
-    int_to_str((int)free_mb, buf);
-    strcpy(mem_str, buf);
-    strcat(mem_str, "MB");
-    int mem_w = measure_text_width(mem_str);
-    right_x -= mem_w;
-    // Green if > 64MB, yellow if > 16MB, red otherwise
-    uint32_t mem_col = (free_mb > 64) ? 0xFF4CAF50 : (free_mb > 16) ? 0xFFFF9800 : 0xFFF44336;
-    sys_gfx_string(right_x, 8, mem_str, mem_col);
-    right_x -= 16;
-
-    // Network status indicator
+    // Network status icon (Wi-Fi style)
     extern int net_is_connected;
-    int connected = net_is_connected;
-    char net_str[8];
-    strcpy(net_str, connected ? "Net" : "---");
-    int net_w = measure_text_width(net_str);
-    right_x -= net_w;
-    sys_gfx_string(right_x, 8, net_str, connected ? 0xFF4CAF50 : 0xFF999999);
-    right_x -= 16;
-
-    // CPU / window count
-    int win_count = 0;
-    for (int i = 0; i < MAX_WINDOWS; i++) {
-        window_t* w = ws_get_window_at_index(i);
-        if (w && w->is_visible && w->is_active) win_count++;
-    }
-    char win_str[16] = "";
-    strcpy(win_str, "Wins:");
-    int_to_str(win_count, buf);
-    strcat(win_str, buf);
-    int win_w = measure_text_width(win_str);
-    right_x -= win_w;
-    sys_gfx_string(right_x, 8, win_str, 0xFF666666);
+    draw_wifi_icon(right_x - 14, 6, net_is_connected);
+    right_x -= 20;
 }
 
 // Global Menu Bar (Aqua White Gradient with enhanced status bar)
@@ -967,8 +952,8 @@ void handle_input(int mx, int my, int lb, int rb) {
         } else {
             // Resize released - notify the window via resize_callback
             if (resize_win && resize_win->resize_callback) {
-                typedef void (*rcb)(int, int);
-                ((rcb)resize_win->resize_callback)(resize_win->width, resize_win->height);
+                typedef void (*rcb)(window_t*,int, int);
+                ((rcb)resize_win->resize_callback)(resize_win, resize_win->width, resize_win->height);
             }
             resize_win = 0; // Release
         }
@@ -1079,8 +1064,8 @@ void handle_input(int mx, int my, int lb, int rb) {
 
                 // Content Click
                 if (w->mouse_callback) {
-                    typedef void (*mcb)(int,int,int);
-                    ((mcb)w->mouse_callback)(lx, ly - 30, btn);
+                    typedef void (*mcb)(window_t*,int,int,int);
+                    ((mcb)w->mouse_callback)(w, lx, ly - 30, btn);
                 }
                 return; 
             }
@@ -1330,11 +1315,11 @@ void start_bubble_view() {
                             my >= w->y && my < w->y + w->height) {
                             if (kbd_shift && w->hscroll_callback) {
                                 // Shift+Scroll = horizontal scroll
-                                typedef void (*hscb)(int);
-                                ((hscb)w->hscroll_callback)(scroll_delta);
+                                typedef void (*hscb)(window_t*,int);
+                                ((hscb)w->hscroll_callback)(w, scroll_delta);
                             } else if (w->scroll_callback) {
-                                typedef void (*scb)(int);
-                                ((scb)w->scroll_callback)(scroll_delta);
+                                typedef void (*scb)(window_t*,int);
+                                ((scb)w->scroll_callback)(w, scroll_delta);
                             }
                             scroll_handled = 1;
                             break;  // Only one window gets the scroll
@@ -1344,11 +1329,11 @@ void start_bubble_view() {
                 // Fallback: if no window under cursor, try active_win
                 if (!scroll_handled && active_win) {
                     if (kbd_shift && active_win->hscroll_callback) {
-                        typedef void (*hscb)(int);
-                        ((hscb)active_win->hscroll_callback)(scroll_delta);
+                        typedef void (*hscb)(window_t*,int);
+                        ((hscb)active_win->hscroll_callback)(active_win, scroll_delta);
                     } else if (active_win->scroll_callback) {
-                        typedef void (*scb)(int);
-                        ((scb)active_win->scroll_callback)(scroll_delta);
+                        typedef void (*scb)(window_t*,int);
+                        ((scb)active_win->scroll_callback)(active_win, scroll_delta);
                     }
                 }
             }
@@ -1378,8 +1363,8 @@ void start_bubble_view() {
         // Dispatch key to active window's input callback
         // Skip if rename mode is active (key goes to rename handler instead)
         if (k != 0 && !renaming_mode && active_win && active_win->input_callback) {
-             typedef void (*icb)(int);
-             ((icb)active_win->input_callback)((int)k);
+             typedef void (*icb)(window_t*,int);
+             ((icb)active_win->input_callback)(active_win, (int)k);
         }
 
         // --- FLICKER FIX: Dirty-region optimisation for window dragging ---

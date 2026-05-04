@@ -111,8 +111,16 @@ static FMInstance* fm_alloc_instance(int window_id) {
     return 0;
 }
 
-// Set the current instance from the active window
-static void fm_set_current(void) {
+// Set the current instance from the given window's user_data.
+// This is the CORRECT way: each callback receives the window that owns it,
+// so we resolve the instance directly from user_data instead of from
+// the global active_win (which may point to a different window).
+static void fm_set_current_for(window_t* win) {
+    if (win && win->user_data) {
+        fm_cur = (FMInstance*)win->user_data;
+        return;
+    }
+    // Fallback: try active_win (for cases where win is not available)
     extern window_t* active_win;
     if (active_win) {
         FMInstance* inst = fm_find_instance(active_win->id);
@@ -121,6 +129,13 @@ static void fm_set_current(void) {
     for (int i = 0; i < MAX_FM_INSTANCES; i++) {
         if (fm_instances[i].active) { fm_cur = &fm_instances[i]; return; }
     }
+    fm_cur = 0;
+}
+
+// Legacy compatibility: resolve from active_win
+static void fm_set_current(void) {
+    extern window_t* active_win;
+    fm_set_current_for(active_win);
 }
 
 // Safe path builder: appends "/" + name to base, with bounds checking
@@ -138,7 +153,7 @@ static int fm_build_path(char* buf, int buf_size, const char* base, const char* 
 
 // Forward Declarations
 void files_refresh();
-void files_on_scroll(int delta);
+void files_on_scroll(window_t* win, int delta);
 
 // External desktop path for sync
 extern char g_desktop_path[128];
@@ -165,25 +180,25 @@ static void files_clamp_scroll(FMInstance* inst) {
     if (inst->scroll_offset > max_s) inst->scroll_offset = max_s;
 }
 
-// Resize callback
-static void files_on_resize(int new_w, int new_h) {
-    fm_set_current();
+// Resize callback — receives window* as first arg for instance resolution
+static void files_on_resize(window_t* win, int new_w, int new_h) {
+    fm_set_current_for(win);
     if (!fm_cur) return;
     fm_cur->win_w = new_w;
     fm_cur->win_h = new_h;
     files_clamp_scroll(fm_cur);
 }
 
-// Scroll callback
-void files_on_scroll(int delta) {
-    fm_set_current();
+// Scroll callback — receives window* for instance resolution
+void files_on_scroll(window_t* win, int delta) {
+    fm_set_current_for(win);
     if (!fm_cur) return;
     fm_cur->scroll_offset -= delta * CELL_H;
     files_clamp_scroll(fm_cur);
 }
 
-void files_on_hscroll(int delta) {
-    fm_set_current();
+void files_on_hscroll(window_t* win, int delta) {
+    fm_set_current_for(win);
     if (!fm_cur) return;
     fm_cur->hscroll_offset -= delta * CELL_W;
     int max_hscroll = (fm_cur->entry_count * CELL_W) - fm_cur->win_w + SCROLLBAR_W;
@@ -223,7 +238,7 @@ static void fm_nav_forward(void) {
 }
 
 void op_up_dir() {
-    fm_set_current();
+    fm_set_current();  // Uses active_win — OK because ops are user-triggered on the active window
     if (!fm_cur) return;
     if (strcmp(fm_cur->path, "/") == 0) return;
     char new_path[FM_PATH_MAX];
@@ -242,7 +257,7 @@ void op_up_dir() {
 
 // ===== Navigate into a folder =====
 static void fm_navigate_into(const char* folder_name) {
-    fm_set_current();
+    fm_set_current();  // Uses active_win — OK because navigation is user-triggered
     if (!fm_cur) return;
     
     char new_path[FM_PATH_MAX];
@@ -509,8 +524,8 @@ void files_ctx_click(int click_x, int click_y) {
 }
 
 // ===== Input Handling =====
-void files_on_input(int key) {
-    fm_set_current();
+void files_on_input(window_t* win, int key) {
+    fm_set_current_for(win);
     if (!fm_cur) return;
     
     if (fm_cur->prompt_active) {
@@ -593,8 +608,8 @@ int handle_toolbar_click(int x, int y, int btn, int win_x, int win_y) {
 }
 
 // ===== Main Paint =====
-void files_on_paint(int x, int y, int w, int h) {
-    fm_set_current();
+void files_on_paint(window_t* win, int x, int y, int w, int h) {
+    fm_set_current_for(win);
     if (!fm_cur) return;
     
     // Background
@@ -719,8 +734,8 @@ void files_on_paint(int x, int y, int w, int h) {
 }
 
 // ===== Mouse Handling =====
-void files_on_mouse(int x, int y, int btn) {
-    fm_set_current();
+void files_on_mouse(window_t* win, int x, int y, int btn) {
+    fm_set_current_for(win);
     if (!fm_cur) return;
     
     int win_w = fm_cur->win_w, win_h = fm_cur->win_h - 30;
@@ -879,6 +894,15 @@ void files_menu_action(int menu_idx, int item_idx) {
     }
 }
 
+// ===== Close callback — frees FMInstance when window is closed =====
+static void files_on_close(window_t* win) {
+    FMInstance* inst = (FMInstance*)win->user_data;
+    if (inst) {
+        inst->active = 0;
+        win->user_data = 0;
+    }
+}
+
 // ===== Init =====
 void init_files_app() {
     extern void wrap_get_args(char* b, int m);
@@ -901,11 +925,15 @@ void init_files_app() {
         strcpy(inst->path, initial_path);
         fm_nav_push(inst, inst->path);
         files_refresh();
+        // Store instance pointer in window user_data so callbacks can
+        // resolve their instance directly without relying on active_win
+        w->user_data = (void*)inst;
     }
     
     w->scroll_callback = (void*)files_on_scroll;
     w->hscroll_callback = (void*)files_on_hscroll;
     w->resize_callback = (void*)files_on_resize;
+    w->close_callback = (void*)files_on_close;
     
     w->menu_count = 3;
     strcpy(w->menus[0].name, "File");

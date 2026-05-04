@@ -7,6 +7,7 @@
 #include "../../hal/video/gfx_hal.h"
 #include "../dock.h"
 #include "../../fs/pfs32.h"
+#include "../../core/window_server.h"
 
 // Tab IDs
 #define TAB_ABOUT    0
@@ -497,7 +498,7 @@ static void draw_network_tab(int x, int y, int w, int h) {
     }
 }
 
-static void settings_on_paint(int x, int y, int w, int h) {
+static void settings_on_paint(window_t* win, int x, int y, int w, int h) {
     // Background
     gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
     
@@ -520,7 +521,7 @@ static void settings_on_paint(int x, int y, int w, int h) {
 // Current window dimensions (updated on resize)
 static int settings_win_w = 500;
 
-static void settings_on_mouse(int x, int y, int btn) {
+static void settings_on_mouse(window_t* win, int x, int y, int btn) {
     if (btn != 1) return;
     
     // Tab clicks - use dynamic width from actual window size
@@ -549,12 +550,12 @@ static void settings_on_menu_action(int menu_id, int item_idx) {
     }
 }
 
-static void settings_on_input(int key) {
+static void settings_on_input(window_t* win, int key) {
     // No keyboard input needed for settings
     (void)key;
 }
 
-static void settings_on_scroll(int delta) {
+static void settings_on_scroll(window_t* win, int delta) {
     settings_scroll_y += delta * 20;
     if (settings_scroll_y < 0) settings_scroll_y = 0;
     // Upper bound is clamped dynamically in draw_hardware_tab based on content height
@@ -562,7 +563,7 @@ static void settings_on_scroll(int delta) {
     if (settings_scroll_y > 2000) settings_scroll_y = 2000;
 }
 
-static void settings_on_resize(int new_w, int new_h) {
+static void settings_on_resize(window_t* win, int new_w, int new_h) {
     settings_win_w = new_w;
 }
 

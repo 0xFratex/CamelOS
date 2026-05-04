@@ -5,9 +5,9 @@
 
 // --- Window Management (Now using Window Server) ---
 Window* fw_create_window(const char* title, int w, int h,
-                        void(*pf)(int,int,int,int),
-                        void(*inf)(int),
-                        void(*mf)(int,int,int))
+                        void(*pf)(window_t*,int,int,int,int),
+                        void(*inf)(window_t*,int),
+                        void(*mf)(window_t*,int,int,int))
 {
     // Now delegate to Window Server
     window_t* win = ws_create_window(title, w, h, pf, inf, mf);

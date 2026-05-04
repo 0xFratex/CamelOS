@@ -33,9 +33,9 @@ extern window_t* active_win;
 void fw_open_context_menu(int x, int y, int type);
 
 Window* fw_create_window(const char* title, int w, int h, 
-                        void(*pf)(int,int,int,int), 
-                        void(*inf)(int),
-                        void(*mf)(int,int,int));
+                        void(*pf)(window_t*,int,int,int,int), 
+                        void(*inf)(window_t*,int),
+                        void(*mf)(window_t*,int,int,int));
 
 void fw_register_dock(const char* label, int color, Window* win);
 

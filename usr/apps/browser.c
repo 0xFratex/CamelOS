@@ -12,6 +12,7 @@
 #include "../../core/tls.h"
 #include "../../core/http.h"
 #include "../dock.h"
+#include "../../core/window_server.h"
 
 // Layout
 #define URL_BAR_H 36
@@ -847,7 +848,7 @@ static void browser_download_file(const char* url) {
 
 // ---------- Rendering ----------
 
-static void browser_on_paint(int x, int y, int w, int h) {
+static void browser_on_paint(window_t* win, int x, int y, int w, int h) {
     // Background
     gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
     
@@ -1094,17 +1095,17 @@ static void browser_on_paint(int x, int y, int w, int h) {
 
 // ---------- Event Handlers ----------
 
-static void browser_on_scroll(int delta) {
+static void browser_on_scroll(window_t* win, int delta) {
     scroll_offset -= delta * 3;
     if (scroll_offset < 0) scroll_offset = 0;
 }
 
-static void browser_on_resize(int new_w, int new_h) {
+static void browser_on_resize(window_t* win, int new_w, int new_h) {
     browser_win_w = new_w;
     browser_win_h = new_h;
 }
 
-static void browser_on_input(int key) {
+static void browser_on_input(window_t* win, int key) {
     if (key == 0) return;
     
     if (url_active) {
@@ -1137,7 +1138,7 @@ static void browser_on_input(int key) {
     }
 }
 
-static void browser_on_mouse(int lx, int ly, int btn) {
+static void browser_on_mouse(window_t* win, int lx, int ly, int btn) {
     if (btn != 1) return;
     
     // URL bar click

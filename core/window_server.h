@@ -122,6 +122,9 @@ typedef struct {
     int owner_pid;
     // Icon asset name for App Switcher / Dock
     char icon_name[32];
+
+    // Per-window user data — apps store a back-pointer to their instance
+    void* user_data;
 } window_t;
 
 // Kernel API

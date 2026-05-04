@@ -3,6 +3,7 @@
 #include "../core/http.h"
 #include "../../sys/api.h"
 #include "../../hal/video/gfx_hal.h"
+#include "../../core/window_server.h"
 
 #define TERM_COLS 80
 #define TERM_ROWS 24
@@ -83,7 +84,7 @@ void term_clear() {
     term_print(" $ ");
 }
 
-void term_on_paint(int x, int y, int w, int h) {
+void term_on_paint(window_t* win, int x, int y, int w, int h) {
     // Draw dark background with slight blue tint (modern terminal look)
     gfx_fill_rect(x, y, w, h, 0xFF1E1E2E);
 
@@ -485,7 +486,7 @@ void execute_term_cmd() {
     term_print(" $ ");
 }
 
-void term_on_input(int key) {
+void term_on_input(window_t* win, int key) {
     if(key == 0) return;
     if(key == '\n') { execute_term_cmd(); }
     else if (key == '\b') {
@@ -525,7 +526,7 @@ void term_on_input(int key) {
     }
 }
 
-void term_on_scroll(int delta) {
+void term_on_scroll(window_t* win, int delta) {
     // Scroll the terminal buffer
     for (int i = 0; i < (delta > 0 ? delta : -delta); i++) {
         if (delta > 0) {
