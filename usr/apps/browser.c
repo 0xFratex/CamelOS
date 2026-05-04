@@ -620,6 +620,8 @@ static void browser_load_page(const char* url) {
     }
     page_line_count = line;
     
+    #undef FLUSH_LINE
+    
     char count_str[16];
     strcpy(status_text, "Loaded (");
     int_to_str(page_line_count, count_str);
@@ -1222,31 +1224,31 @@ void init_browser_app() {
     browser_window->min_w = 400;
     
     // Wire up scroll and resize callbacks
-    w->scroll_callback = (void*)browser_on_scroll;
-    w->resize_callback = (void*)browser_on_resize;
+    ((window_t*)browser_window)->scroll_callback = (void*)browser_on_scroll;
+    ((window_t*)browser_window)->resize_callback = (void*)browser_on_resize;
     
-    w->menu_count = 4;
-    strcpy(w->menus[0].name, "File");
-    strcpy(w->menus[0].items[0].label, "New Tab");
-    strcpy(w->menus[0].items[1].label, "Close");
-    w->menus[0].item_count = 2;
+    ((window_t*)browser_window)->menu_count = 4;
+    strcpy(((window_t*)browser_window)->menus[0].name, "File");
+    strcpy(((window_t*)browser_window)->menus[0].items[0].label, "New Tab");
+    strcpy(((window_t*)browser_window)->menus[0].items[1].label, "Close");
+    ((window_t*)browser_window)->menus[0].item_count = 2;
     
-    strcpy(w->menus[1].name, "Edit");
-    strcpy(w->menus[1].items[0].label, "Copy URL");
-    strcpy(w->menus[1].items[1].label, "Paste");
-    w->menus[1].item_count = 2;
+    strcpy(((window_t*)browser_window)->menus[1].name, "Edit");
+    strcpy(((window_t*)browser_window)->menus[1].items[0].label, "Copy URL");
+    strcpy(((window_t*)browser_window)->menus[1].items[1].label, "Paste");
+    ((window_t*)browser_window)->menus[1].item_count = 2;
     
-    strcpy(w->menus[2].name, "View");
-    strcpy(w->menus[2].items[0].label, "Refresh");
-    strcpy(w->menus[2].items[1].label, "Source");
-    w->menus[2].item_count = 2;
+    strcpy(((window_t*)browser_window)->menus[2].name, "View");
+    strcpy(((window_t*)browser_window)->menus[2].items[0].label, "Refresh");
+    strcpy(((window_t*)browser_window)->menus[2].items[1].label, "Source");
+    ((window_t*)browser_window)->menus[2].item_count = 2;
     
-    strcpy(w->menus[3].name, "Bookmarks");
-    strcpy(w->menus[3].items[0].label, "Show Bookmarks");
-    strcpy(w->menus[3].items[1].label, "Add Current");
-    w->menus[3].item_count = 2;
+    strcpy(((window_t*)browser_window)->menus[3].name, "Bookmarks");
+    strcpy(((window_t*)browser_window)->menus[3].items[0].label, "Show Bookmarks");
+    strcpy(((window_t*)browser_window)->menus[3].items[1].label, "Add Current");
+    ((window_t*)browser_window)->menus[3].item_count = 2;
     
-    fw_register_dock("Browser", 5, w);
+    fw_register_dock("Browser", 5, browser_window);
 
     // If a launch URL was set (by init_browser_app_with_url), navigate to it
     if (browser_launch_url[0] != 0) {
