@@ -57,4 +57,7 @@ http_loading_state_t* http_get_loading_state(void);
 // Cancel current request (if possible)
 void http_cancel_request(void);
 
+// Process events during blocking HTTP operations (prevents GUI freeze)
+void http_process_events(void);
+
 #endif

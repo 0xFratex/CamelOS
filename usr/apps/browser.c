@@ -10,6 +10,7 @@
 #include "../../core/tcp.h"
 #include "../../core/socket.h"
 #include "../../core/tls.h"
+#include "../../core/http.h"
 #include "../dock.h"
 
 // Layout
@@ -91,7 +92,6 @@ static void browser_load_page(const char* url) {
     strcpy(status_text, "Loading...");
 
     // Ensure "Loading..." state is rendered before blocking I/O
-    extern void http_process_events(void);
     http_process_events();
     
     // Parse URL to extract host, path, and scheme
@@ -303,13 +303,11 @@ static void browser_load_page(const char* url) {
         }
         if (retry % 10 == 0) {
             // Yield to event loop to prevent GUI freeze
-            extern void rtl8139_poll(void);
-            extern void http_process_events(void);
             http_process_events();
         }
     }
     response[total_read] = 0;
-    
+
     // Clean up TLS session and socket
     if (tls_session) {
         extern void tls_client_session_close(tls_session_t*);
@@ -653,13 +651,11 @@ static void browser_download_file(const char* url) {
         else { for (volatile int d = 0; d < 50000; d++); }
         if (retry % 10 == 0) {
             // Yield to event loop to prevent GUI freeze
-            extern void rtl8139_poll(void);
-            extern void http_process_events(void);
             http_process_events();
         }
     }
     response[total_read] = 0;
-    
+
     // Clean up TLS and socket
     if (tls_session) {
         extern void tls_client_session_close(tls_session_t*);

@@ -119,7 +119,7 @@ static void draw_loading_overlay(int x, int y, int w, int h) {
 }
 
 // Full event processing during HTTP requests - redraws window and swaps buffers
-static void http_process_events(void) {
+void http_process_events(void) {
     rtl8139_poll();  // Poll network card
 
     s_printf("[EVT] processing\n");
