@@ -50,6 +50,99 @@ static int is_ws(char c) {
     return (c == ' ' || c == '\t' || c == '\n' || c == '\r');
 }
 
+// Case-insensitive substring search (like strcasestr)
+static const char* str_casestr(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return NULL;
+    int nlen = strlen(needle);
+    if (nlen == 0) return haystack;
+    const char *p = haystack;
+    while (*p) {
+        if (str_casencmp(p, needle, nlen) == 0) return p;
+        p++;
+    }
+    return NULL;
+}
+
+// Decode HTML entities in-place in a text buffer
+// Handles: &amp; &lt; &gt; &nbsp; &quot; &#39; &#NNN; &#xHHH;
+static void decode_html_entities(char *text) {
+    if (!text) return;
+    char *dst = text;
+    char *src = text;
+    while (*src) {
+        if (*src == '&') {
+            // Try named entities
+            if (strncmp(src, "&amp;", 5) == 0) {
+                *dst++ = '&'; src += 5; continue;
+            }
+            if (strncmp(src, "&lt;", 4) == 0) {
+                *dst++ = '<'; src += 4; continue;
+            }
+            if (strncmp(src, "&gt;", 4) == 0) {
+                *dst++ = '>'; src += 4; continue;
+            }
+            if (strncmp(src, "&nbsp;", 6) == 0) {
+                *dst++ = ' '; src += 6; continue;
+            }
+            if (strncmp(src, "&quot;", 6) == 0) {
+                *dst++ = '"'; src += 6; continue;
+            }
+            if (strncmp(src, "&#39;", 5) == 0) {
+                *dst++ = '\''; src += 5; continue;
+            }
+            if (strncmp(src, "&apos;", 6) == 0) {
+                *dst++ = '\''; src += 6; continue;
+            }
+            // Numeric character reference: &#NNN;
+            if (src[1] == '#' && src[2] >= '0' && src[2] <= '9') {
+                int val = 0;
+                const char *np = src + 2;
+                while (*np >= '0' && *np <= '9') {
+                    val = val * 10 + (*np - '0');
+                    np++;
+                }
+                if (*np == ';') np++;
+                if (val > 0 && val < 0x10000) {
+                    // Simple: only handle ASCII range for now
+                    if (val < 128) {
+                        *dst++ = (char)val;
+                    } else {
+                        *dst++ = '?'; // placeholder for non-ASCII
+                    }
+                    src = np;
+                    continue;
+                }
+            }
+            // Hex character reference: &#xHHH;
+            if (src[1] == '#' && (src[2] == 'x' || src[2] == 'X')) {
+                int val = 0;
+                const char *np = src + 3;
+                while (1) {
+                    int d = hex_digit(*np);
+                    if (d < 0) break;
+                    val = val * 16 + d;
+                    np++;
+                }
+                if (*np == ';') np++;
+                if (val > 0 && val < 0x10000) {
+                    if (val < 128) {
+                        *dst++ = (char)val;
+                    } else {
+                        *dst++ = '?';
+                    }
+                    src = np;
+                    continue;
+                }
+            }
+            // Not a known entity, copy as-is
+            *dst++ = *src++;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0';
+}
+
 // Skip whitespace, return pointer to next non-ws character
 static const char* skip_ws(const char *p) {
     if (!p) return NULL;
@@ -418,6 +511,10 @@ static void apply_default_element_styles(dom_node_t *node) {
         node->computed_style.margin[2] = 8;
         node->computed_style.margin[3] = 8;
     }
+    // Links get blue color by default
+    else if (str_casecmp(tag, "a") == 0) {
+        node->computed_style.color = 0xFF0000FF; // blue
+    }
     // HR gets top/bottom margin
     else if (str_casecmp(tag, "hr") == 0) {
         node->computed_style.margin[0] = 8;
@@ -761,6 +858,8 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                     if (text_node) {
                         text_node->type = DOM_NODE_TEXT;
                         safe_strcpy(text_node->text, text_buf, DOM_MAX_TEXT_LEN);
+                        // Decode HTML entities in the text node
+                        decode_html_entities(text_node->text);
                         text_node->computed_style.display = DOM_DISPLAY_INLINE;
                         dom_node_append_child(stack[stack_top], text_node);
                     }
@@ -878,18 +977,26 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
 
             // Handle special elements
             if (str_casecmp(tag_name, "html") == 0) {
-                // Use the pre-created root
-                if (root->child_count == 0) {
-                    // Transfer attributes to root
-                    for (int i = 0; i < elem->attr_count; i++) {
-                        dom_node_set_attr(root, elem->attrs[i].name, elem->attrs[i].value);
-                    }
-                    // Free the duplicate node
-                    elem->in_use = 0;
-                    doc->node_count--;
-                    // Don't push to stack, root is already there
-                    continue;
+                // Use the pre-created root instead of creating a duplicate
+                // Transfer attributes to root
+                for (int i = 0; i < elem->attr_count; i++) {
+                    dom_node_set_attr(root, elem->attrs[i].name, elem->attrs[i].value);
                 }
+                // Free the duplicate node
+                elem->in_use = 0;
+                doc->node_count--;
+                // Don't add to parent or push to stack; root is already there
+                continue;
+            }
+            // Also handle <head> specially - mark as display:none
+            if (str_casecmp(tag_name, "head") == 0) {
+                elem->computed_style.display = DOM_DISPLAY_NONE;
+            }
+            // Handle <meta>, <link>, <title> etc in head - also display:none
+            if (str_casecmp(tag_name, "meta") == 0 ||
+                str_casecmp(tag_name, "link") == 0 ||
+                str_casecmp(tag_name, "title") == 0) {
+                elem->computed_style.display = DOM_DISPLAY_NONE;
             }
 
             // Add to current parent
@@ -905,7 +1012,8 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
 
             // Handle raw text elements (style, script)
             if (is_raw_text_element(tag_name)) {
-                // Find closing tag
+                // Find closing tag using case-insensitive search
+                // Build pattern: </tagname>
                 char close_pattern[64];
                 close_pattern[0] = '<';
                 close_pattern[1] = '/';
@@ -917,10 +1025,12 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                 close_pattern[cpi++] = '>';
                 close_pattern[cpi] = '\0';
 
-                // Search for the closing tag
-                const char *close_pos = strstr(p, close_pattern);
+                // Case-insensitive search for closing tag (handles </STYLE>, </Style>, etc.)
+                const char *close_pos = str_casestr(p, close_pattern);
                 if (close_pos) {
                     int content_len = close_pos - p;
+                    // Also skip any whitespace before the '>' in the closing tag
+                    // Some HTML has </style > with space before >
 
                     if (str_casecmp(tag_name, "style") == 0) {
                         // Store in stylesheets
@@ -933,19 +1043,8 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                             doc->stylesheets[doc->stylesheet_count][copy_len] = '\0';
                             doc->stylesheet_count++;
                         }
-                        // Also create a text child node
-                        if (content_len > 0) {
-                            dom_node_t *text_node = dom_node_alloc(doc);
-                            if (text_node) {
-                                text_node->type = DOM_NODE_TEXT;
-                                int copy_len = content_len;
-                                if (copy_len >= DOM_MAX_TEXT_LEN) copy_len = DOM_MAX_TEXT_LEN - 1;
-                                memcpy(text_node->text, p, copy_len);
-                                text_node->text[copy_len] = '\0';
-                                text_node->computed_style.display = DOM_DISPLAY_INLINE;
-                                dom_node_append_child(elem, text_node);
-                            }
-                        }
+                        // Mark style elements as display:none (don't show CSS text)
+                        elem->computed_style.display = DOM_DISPLAY_NONE;
                     } else if (str_casecmp(tag_name, "script") == 0) {
                         // Store in scripts
                         if (doc->script_count < DOM_MAX_SCRIPTS) {
@@ -957,24 +1056,38 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                             doc->scripts[doc->script_count][copy_len] = '\0';
                             doc->script_count++;
                         }
-                        // Also create a text child node
-                        if (content_len > 0) {
-                            dom_node_t *text_node = dom_node_alloc(doc);
-                            if (text_node) {
-                                text_node->type = DOM_NODE_TEXT;
-                                int copy_len = content_len;
-                                if (copy_len >= DOM_MAX_TEXT_LEN) copy_len = DOM_MAX_TEXT_LEN - 1;
-                                memcpy(text_node->text, p, copy_len);
-                                text_node->text[copy_len] = '\0';
-                                text_node->computed_style.display = DOM_DISPLAY_INLINE;
-                                dom_node_append_child(elem, text_node);
-                            }
-                        }
+                        // Mark script elements as display:none (don't show JS text)
+                        elem->computed_style.display = DOM_DISPLAY_NONE;
                     }
 
                     p = close_pos + strlen(close_pattern);
                 } else {
-                    // No closing tag found - skip to end
+                    // No closing tag found - consume rest as content
+                    // This is more robust than skipping to EOF
+                    int content_len = strlen(p);
+                    if (str_casecmp(tag_name, "style") == 0) {
+                        if (doc->stylesheet_count < DOM_MAX_STYLESHEETS) {
+                            int copy_len = content_len;
+                            if (copy_len >= DOM_MAX_STYLESHEET_LEN) {
+                                copy_len = DOM_MAX_STYLESHEET_LEN - 1;
+                            }
+                            memcpy(doc->stylesheets[doc->stylesheet_count], p, copy_len);
+                            doc->stylesheets[doc->stylesheet_count][copy_len] = '\0';
+                            doc->stylesheet_count++;
+                        }
+                        elem->computed_style.display = DOM_DISPLAY_NONE;
+                    } else if (str_casecmp(tag_name, "script") == 0) {
+                        if (doc->script_count < DOM_MAX_SCRIPTS) {
+                            int copy_len = content_len;
+                            if (copy_len >= DOM_MAX_SCRIPT_LEN) {
+                                copy_len = DOM_MAX_SCRIPT_LEN - 1;
+                            }
+                            memcpy(doc->scripts[doc->script_count], p, copy_len);
+                            doc->scripts[doc->script_count][copy_len] = '\0';
+                            doc->script_count++;
+                        }
+                        elem->computed_style.display = DOM_DISPLAY_NONE;
+                    }
                     while (*p) p++;
                 }
                 // Don't push raw text elements onto the stack
@@ -1024,15 +1137,59 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
             if (text_node) {
                 text_node->type = DOM_NODE_TEXT;
                 safe_strcpy(text_node->text, text_buf, DOM_MAX_TEXT_LEN);
+                // Decode HTML entities in the text node
+                decode_html_entities(text_node->text);
                 text_node->computed_style.display = DOM_DISPLAY_INLINE;
                 dom_node_append_child(stack[stack_top], text_node);
             }
         }
     }
 
-    // If no <body> was found, treat the root as the body
+    // If no <body> was found, look for it in the root's children
+    // or treat the root as the body
     if (!doc->body) {
-        doc->body = doc->root;
+        // Search children of root for a body-like element
+        dom_node_t *child = doc->root->first_child;
+        while (child) {
+            if (child->type == DOM_NODE_ELEMENT &&
+                str_casecmp(child->tag, "body") == 0) {
+                doc->body = child;
+                break;
+            }
+            child = child->next_sibling;
+        }
+        // If still not found, use the root itself
+        if (!doc->body) {
+            doc->body = doc->root;
+        }
+    }
+
+    s_printf("[DOM] Parse complete: nodes=");
+    // Debug: log node count
+    {
+        char nc[16]; int nc_i = 0; int nc_v = doc->node_count;
+        if (nc_v == 0) { nc[0] = '0'; nc_i = 1; }
+        else { char tmp[16]; int ti = 0;
+            while (nc_v > 0) { tmp[ti++] = '0' + (nc_v % 10); nc_v /= 10; }
+            for (int j = 0; j < ti; j++) nc[nc_i++] = tmp[ti - 1 - j];
+        }
+        nc[nc_i] = 0;
+        s_printf(nc);
+        s_printf(" body=");
+        s_printf(doc->body ? doc->body->tag : "NULL");
+        s_printf(" children=");
+        {
+            int cc = doc->body ? doc->body->child_count : 0;
+            char cc_s[16]; int cc_i = 0;
+            if (cc == 0) { cc_s[0] = '0'; cc_i = 1; }
+            else { char tmp[16]; int ti = 0;
+                while (cc > 0) { tmp[ti++] = '0' + (cc % 10); cc /= 10; }
+                for (int j = 0; j < ti; j++) cc_s[cc_i++] = tmp[ti - 1 - j];
+            }
+            cc_s[cc_i] = 0;
+            s_printf(cc_s);
+        }
+        s_printf("\n");
     }
 
     return 0;
@@ -1818,9 +1975,11 @@ void dom_compute_styles(dom_document_t *doc, int viewport_w, int viewport_h) {
 // ============================================================================
 
 // Render a single node and its children
+// scroll_offset is now applied only at the dom_render level (via initial parent_y offset),
+// not at each recursion level. This prevents double-applying the scroll offset.
 static void render_node(dom_document_t *doc, dom_node_t *node,
                         uint32_t *buffer, int bx, int by, int bw, int bh,
-                        int scroll_offset, int parent_x, int parent_y) {
+                        int scroll_offset_unused, int parent_x, int parent_y) {
     if (!node || !buffer) return;
 
     dom_style_t *s = &node->computed_style;
@@ -1828,9 +1987,10 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
     // Skip hidden nodes
     if (s->display == DOM_DISPLAY_NONE) return;
 
-    // Compute absolute position
+    // Compute absolute screen position
+    // parent_y already includes the scroll offset (applied once at top level)
     int abs_x = parent_x + s->layout_x;
-    int abs_y = parent_y + s->layout_y - scroll_offset;
+    int abs_y = parent_y + s->layout_y;
 
     // Skip nodes that are entirely outside the viewport
     int node_h = s->layout_h;
@@ -1840,7 +2000,7 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
         if (node->type == DOM_NODE_ELEMENT && node->first_child) {
             dom_node_t *child = node->first_child;
             while (child) {
-                render_node(doc, child, buffer, bx, by, bw, bh, scroll_offset, abs_x, abs_y);
+                render_node(doc, child, buffer, bx, by, bw, bh, 0, abs_x, abs_y);
                 child = child->next_sibling;
             }
         }
@@ -1850,13 +2010,17 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
     if (node->type == DOM_NODE_TEXT) {
         // Render text content
         if (node->text[0] && s->font_size > 0) {
-            int text_x = abs_x + s->content_x;
-            int text_y = abs_y + s->content_y;
+            // content_x/content_y are absolute positions in the parent coordinate system,
+            // NOT relative to layout_x/layout_y. So compute from parent directly.
+            int text_x = parent_x + s->content_x;
+            int text_y = parent_y + s->content_y;
 
             // Check if text is within the visible area
             if (text_y >= by && text_y < by + bh - s->font_size) {
                 int font_scale = 1;
                 if (s->font_size >= 24) font_scale = 2;
+                // For very large headings
+                if (s->font_size >= 32) font_scale = 3;
 
                 // Handle text alignment
                 int draw_x = text_x;
@@ -1893,9 +2057,10 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
         int box_h = s->layout_h;
 
         // Draw background (only if not transparent)
+        // abs_x already includes margin[3] offset (layout_x = margin[3]),
+        // so background starts at abs_x (border-box edge), not abs_x + margin[3]
         if (s->background_color != DOM_COLOR_TRANSPARENT && box_w > 0 && box_h > 0) {
-            // Background covers the content area plus padding
-            int bg_x = abs_x + s->margin[3];
+            int bg_x = abs_x;
             int bg_y = abs_y;
             int bg_w = box_w - s->margin[1] - s->margin[3];
             int bg_h = s->content_h + s->padding[0] + s->padding[2] +
@@ -1913,7 +2078,7 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
             int bw_bottom = s->border[2].width;
             int bw_left   = s->border[3].width;
 
-            int inner_x = abs_x + s->margin[3];
+            int inner_x = abs_x;
             int inner_y = abs_y;
             int inner_w = box_w - s->margin[1] - s->margin[3];
             int inner_h = s->content_h + s->padding[0] + s->padding[2] +
@@ -1942,7 +2107,7 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
         // Recurse into children
         dom_node_t *child = node->first_child;
         while (child) {
-            render_node(doc, child, buffer, bx, by, bw, bh, scroll_offset, abs_x, abs_y);
+            render_node(doc, child, buffer, bx, by, bw, bh, 0, abs_x, abs_y);
             child = child->next_sibling;
         }
     }
@@ -1959,7 +2124,10 @@ void dom_render(dom_document_t *doc, uint32_t *buffer,
     gfx_fill_rect(x, y, w, h, DOM_COLOR_WHITE);
 
     // Render the DOM tree starting from body
-    render_node(doc, doc->body, buffer, x, y, w, h, scroll_offset, 0, 0);
+    // Pass x, y-scroll_offset as initial parent position so content is drawn
+    // at the correct screen coordinates. scroll_offset is applied only once
+    // here; render_node just accumulates layout positions without re-applying scroll.
+    render_node(doc, doc->body, buffer, x, y, w, h, 0, x, y - scroll_offset);
 
     // Reset clipping
     gfx_reset_clip();

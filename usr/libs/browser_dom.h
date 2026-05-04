@@ -11,7 +11,7 @@
 // CONFIGURATION LIMITS
 // ============================================================================
 
-#define DOM_MAX_NODES           256
+#define DOM_MAX_NODES           512
 #define DOM_MAX_CSS_RULES       64
 #define DOM_MAX_ATTRS           32
 #define DOM_MAX_SCRIPTS         8
@@ -27,7 +27,7 @@
 #define DOM_MAX_CLASS_LEN       128
 #define DOM_MAX_STYLE_LEN       512
 #define DOM_MAX_URL_LEN         256
-#define DOM_MAX_TEXT_LEN        1024
+#define DOM_MAX_TEXT_LEN        2048
 #define DOM_MAX_CHILDREN        64
 
 // ============================================================================

@@ -165,6 +165,21 @@ static void browser_load_page(const char* url) {
         path[127] = 0;
     }
     
+    // Directory index: if path ends with '/', try appending index.html
+    // This handles cases where the server returns a directory listing
+    // instead of serving the index file automatically
+    int path_len = strlen(path);
+    if (path_len > 0 && path[path_len - 1] == '/') {
+        if (path_len + 10 < 127) {
+            strcat(path, "index.html");
+        }
+    }
+    // Also try to detect if we got a directory listing (HTML with no body content)
+    // by keeping track of the original path
+    char original_path[128];
+    strncpy(original_path, path, 127);
+    original_path[127] = 0;
+    
     // Try DNS resolution
     char ip_str[16];
     extern int dns_resolve(const char* name, char* ip_buf, int ip_buf_len);
@@ -299,7 +314,7 @@ static void browser_load_page(const char* url) {
     }
     
     // Read response - allocate on heap to avoid 16KB stack overflow
-    #define BROWSER_RESPONSE_SIZE 16384
+    #define BROWSER_RESPONSE_SIZE 32768
     char* response = (char*)kmalloc(BROWSER_RESPONSE_SIZE);
     if (!response) {
         strcpy(page_lines[0], "Error: Out of memory");
