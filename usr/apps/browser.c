@@ -13,6 +13,8 @@
 #include "../../core/http.h"
 #include "../dock.h"
 #include "../../core/window_server.h"
+#include "../libs/browser_dom.h"
+#include "mujs.h"
 
 // Layout
 #define URL_BAR_H 36
@@ -97,6 +99,11 @@ static struct {
 static int link_count = 0;
 static int hovered_link = -1;
 
+// DOM engine state
+static dom_document_t* dom_doc = 0;
+static js_State* js_state = 0;
+static int use_dom_rendering = 0; // 1 when DOM engine is active
+
 static void browser_navigate(const char* url);
 
 // ---------- HTTP Fetch with HTTPS support ----------
@@ -108,6 +115,10 @@ static void browser_load_page(const char* url) {
     link_count = 0;
     page_title[0] = 0;
     strcpy(status_text, "Loading...");
+
+    // Clean up previous DOM document if any
+    if (dom_doc) { dom_document_destroy(dom_doc); dom_doc = 0; }
+    use_dom_rendering = 0;
 
     // Ensure "Loading..." state is rendered before blocking I/O
     http_process_events();
@@ -622,12 +633,55 @@ static void browser_load_page(const char* url) {
     page_line_count = line;
     
     #undef FLUSH_LINE
-    
+
+    // --- DOM Engine rendering path ---
+    // Try to create a DOM document for rich rendering (CSS, layout, JS)
+    // If successful, use_dom_rendering = 1 and the paint function will
+    // use dom_render() instead of the line-by-line fallback above.
+    dom_doc = dom_document_create();
+    if (dom_doc) {
+        int dom_ok = dom_parse_html(dom_doc, body);
+        if (dom_ok == 0) {
+            dom_apply_all_stylesheets(dom_doc);
+            dom_compute_styles(dom_doc, browser_win_w - PAD*2 - 12,
+                               browser_win_h - URL_BAR_H - STATUS_BAR_H - BOOKMARK_BAR_H);
+
+            // Extract and execute scripts with MuJS
+            const char* scripts = dom_get_scripts(dom_doc);
+            if (scripts && scripts[0]) {
+                js_state = js_newstate(NULL, NULL, JS_STRICT);
+                if (js_state) {
+                    // Register console.log -> output to serial
+                    // Register document.getElementById -> use dom_get_element_by_id
+                    if (js_dostring(js_state, scripts)) {
+                        s_printf("[Browser] JS execution error\n");
+                    }
+                    js_freestate(js_state);
+                    js_state = 0;
+                }
+            }
+
+            use_dom_rendering = 1;
+        } else {
+            // DOM parsing failed, fall back to line-based rendering
+            dom_document_destroy(dom_doc);
+            dom_doc = 0;
+            use_dom_rendering = 0;
+        }
+    } else {
+        // DOM document creation failed, fall back to line-based rendering
+        use_dom_rendering = 0;
+    }
+
     char count_str[16];
-    strcpy(status_text, "Loaded (");
-    int_to_str(page_line_count, count_str);
-    strcat(status_text, count_str);
-    strcat(status_text, " lines)");
+    if (use_dom_rendering) {
+        strcpy(status_text, "Loaded (DOM)");
+    } else {
+        strcpy(status_text, "Loaded (");
+        int_to_str(page_line_count, count_str);
+        strcat(status_text, count_str);
+        strcat(status_text, " lines)");
+    }
     if (use_tls) strcat(status_text, " [TLS]");
     is_loading = 0;
     kfree(response);
@@ -945,118 +999,151 @@ static void browser_on_paint(window_t* win, int x, int y, int w, int h) {
     int content_h = y + h - content_y_start - STATUS_BAR_H;
     if (content_h < 0) content_h = 0;
     int visible_lines = content_h / 16;
-    
+
     // Clamp scroll offset
     if (scroll_offset < 0) scroll_offset = 0;
-    int max_scroll = page_line_count - visible_lines;
-    if (max_scroll < 0) max_scroll = 0;
-    if (scroll_offset > max_scroll) scroll_offset = max_scroll;
-    
+    if (use_dom_rendering && dom_doc) {
+        // Pixel-based scrolling for DOM rendering
+        int max_scroll = dom_doc->total_height - content_h;
+        if (max_scroll < 0) max_scroll = 0;
+        if (scroll_offset > max_scroll) scroll_offset = max_scroll;
+    } else {
+        // Line-based scrolling for fallback rendering
+        int max_scroll = page_line_count - visible_lines;
+        if (max_scroll < 0) max_scroll = 0;
+        if (scroll_offset > max_scroll) scroll_offset = max_scroll;
+    }
+
     // Find hovered link
     hovered_link = -1;
     int mmx, mmy, mml;
     sys_mouse_read(&mmx, &mmy, &mml);
     // (Hover detection done in mouse callback)
-    
-    for (int i = 0; i < visible_lines && (i + scroll_offset) < page_line_count; i++) {
-        int ly = content_y_start + i * 16;
-        int line_idx = i + scroll_offset;
-        int lt = line_types[line_idx];
-        
-        // Check if this line has a link - draw in blue/underline
-        int is_link_line = 0;
-        for (int li = 0; li < link_count; li++) {
-            if (links[li].line == line_idx) {
-                is_link_line = 1;
-                break;
+
+    if (use_dom_rendering && dom_doc) {
+        // --- DOM Engine rendering ---
+        // Set clip region to content area so DOM doesn't overwrite URL/status bars
+        gfx_set_clip(x + PAD, content_y_start, w - PAD*2 - 12, content_h);
+        uint32_t* buffer = gfx_get_active_buffer();
+        dom_render(dom_doc, buffer, x + PAD, content_y_start,
+                   w - PAD*2 - 12, content_h, scroll_offset);
+        gfx_reset_clip();
+    } else {
+        // --- Fallback: line-by-line rendering ---
+        for (int i = 0; i < visible_lines && (i + scroll_offset) < page_line_count; i++) {
+            int ly = content_y_start + i * 16;
+            int line_idx = i + scroll_offset;
+            int lt = line_types[line_idx];
+
+            // Check if this line has a link - draw in blue/underline
+            int is_link_line = 0;
+            for (int li = 0; li < link_count; li++) {
+                if (links[li].line == line_idx) {
+                    is_link_line = 1;
+                    break;
+                }
+            }
+
+            // Horizontal rule
+            if (lt == LINE_HR) {
+                int rule_y = ly + 8;
+                gfx_fill_rect(x + PAD, rule_y, w - PAD * 2 - 12, 1, 0xFFC0C0C0);
+                continue;
+            }
+
+            // Determine text offset and color based on line type
+            int text_x = x + PAD;
+            uint32_t text_color = 0xFF333333;
+
+            switch (lt) {
+                case LINE_H1:
+                    text_x += 0;  // No indent
+                    text_color = 0xFF1A1A1A;  // Very dark
+                    break;
+                case LINE_H2:
+                    text_x += 0;
+                    text_color = 0xFF222222;
+                    break;
+                case LINE_H3:
+                    text_x += 8;  // Slight indent
+                    text_color = 0xFF333333;
+                    break;
+                case LINE_H4:
+                    text_x += 16;
+                    text_color = 0xFF444444;
+                    break;
+                case LINE_H5:
+                case LINE_H6:
+                    text_x += 24;
+                    text_color = 0xFF555555;
+                    break;
+                case LINE_LI:
+                    text_x = x + PAD;  // Bullet already in text
+                    // Replace bullet placeholder with actual bullet char
+                    {
+                        char* bp = page_lines[line_idx];
+                        while (*bp) {
+                            if (*bp == '\x1e') *bp = 0x2B;  // Use '+' as bullet
+                            bp++;
+                        }
+                    }
+                    text_color = 0xFF333333;
+                    break;
+                case LINE_QUOTE:
+                    text_x += 20;  // Indent for blockquote
+                    text_color = 0xFF666666;  // Slightly muted
+                    // Draw left border for blockquote
+                    gfx_fill_rect(x + PAD + 8, ly, 3, 16, 0xFFDDDDDD);
+                    break;
+                case LINE_PRE:
+                    // Preformatted: use monospace-style rendering with background
+                    gfx_fill_rect(x + PAD, ly - 1, w - PAD * 2 - 12, 18, 0xFFF5F5F5);
+                    text_color = 0xFF222222;
+                    break;
+                default:
+                    break;
+            }
+
+            if (is_link_line) {
+                gfx_draw_string(text_x, ly, page_lines[line_idx], 0xFF007AFF);
+                // Underline
+                int tw = strlen(page_lines[line_idx]) * 8;
+                gfx_fill_rect(text_x, ly + 14, tw, 1, 0xFF007AFF);
+            } else {
+                gfx_draw_string(text_x, ly, page_lines[line_idx], text_color);
+            }
+
+            // Heading underline for h1 and h2
+            if (lt == LINE_H1 || lt == LINE_H2) {
+                int tw = strlen(page_lines[line_idx]) * 8;
+                uint32_t ul_color = (lt == LINE_H1) ? 0xFF333333 : 0xFF888888;
+                gfx_fill_rect(text_x, ly + 15, tw, 1, ul_color);
             }
         }
-        
-        // Horizontal rule
-        if (lt == LINE_HR) {
-            int rule_y = ly + 8;
-            gfx_fill_rect(x + PAD, rule_y, w - PAD * 2 - 12, 1, 0xFFC0C0C0);
-            continue;
-        }
-        
-        // Determine text offset and color based on line type
-        int text_x = x + PAD;
-        uint32_t text_color = 0xFF333333;
-        
-        switch (lt) {
-            case LINE_H1:
-                text_x += 0;  // No indent
-                text_color = 0xFF1A1A1A;  // Very dark
-                break;
-            case LINE_H2:
-                text_x += 0;
-                text_color = 0xFF222222;
-                break;
-            case LINE_H3:
-                text_x += 8;  // Slight indent
-                text_color = 0xFF333333;
-                break;
-            case LINE_H4:
-                text_x += 16;
-                text_color = 0xFF444444;
-                break;
-            case LINE_H5:
-            case LINE_H6:
-                text_x += 24;
-                text_color = 0xFF555555;
-                break;
-            case LINE_LI:
-                text_x = x + PAD;  // Bullet already in text
-                // Replace bullet placeholder with actual bullet char
-                {
-                    char* bp = page_lines[line_idx];
-                    while (*bp) {
-                        if (*bp == '\x1e') *bp = 0x2B;  // Use '+' as bullet
-                        bp++;
-                    }
-                }
-                text_color = 0xFF333333;
-                break;
-            case LINE_QUOTE:
-                text_x += 20;  // Indent for blockquote
-                text_color = 0xFF666666;  // Slightly muted
-                // Draw left border for blockquote
-                gfx_fill_rect(x + PAD + 8, ly, 3, 16, 0xFFDDDDDD);
-                break;
-            case LINE_PRE:
-                // Preformatted: use monospace-style rendering with background
-                gfx_fill_rect(x + PAD, ly - 1, w - PAD * 2 - 12, 18, 0xFFF5F5F5);
-                text_color = 0xFF222222;
-                break;
-            default:
-                break;
-        }
-        
-        if (is_link_line) {
-            gfx_draw_string(text_x, ly, page_lines[line_idx], 0xFF007AFF);
-            // Underline
-            int tw = strlen(page_lines[line_idx]) * 8;
-            gfx_fill_rect(text_x, ly + 14, tw, 1, 0xFF007AFF);
-        } else {
-            gfx_draw_string(text_x, ly, page_lines[line_idx], text_color);
-        }
-        
-        // Heading underline for h1 and h2
-        if (lt == LINE_H1 || lt == LINE_H2) {
-            int tw = strlen(page_lines[line_idx]) * 8;
-            uint32_t ul_color = (lt == LINE_H1) ? 0xFF333333 : 0xFF888888;
-            gfx_fill_rect(text_x, ly + 15, tw, 1, ul_color);
+
+        // Empty state
+        if (page_line_count == 0) {
+            gfx_draw_string_centered(x + w/2, y + h/2 - 20, "CamelOS Browser", 0xFF999999, 1);
+            gfx_draw_string_centered(x + w/2, y + h/2 + 4, "Enter a URL and press Go", 0xFFCCCCCC, 1);
         }
     }
-    
-    // Empty state
-    if (page_line_count == 0) {
-        gfx_draw_string_centered(x + w/2, y + h/2 - 20, "CamelOS Browser", 0xFF999999, 1);
-        gfx_draw_string_centered(x + w/2, y + h/2 + 4, "Enter a URL and press Go", 0xFFCCCCCC, 1);
-    }
-    
+
     // Scrollbar
-    if (page_line_count > visible_lines) {
+    if (use_dom_rendering && dom_doc) {
+        // Pixel-based scrollbar for DOM rendering
+        int total_h = dom_doc->total_height;
+        if (total_h > content_h) {
+            int sb_x = x + w - 10;
+            int sb_h = content_h;
+            int thumb_h = (content_h * sb_h) / total_h;
+            if (thumb_h < 20) thumb_h = 20;
+            int max_px = total_h - content_h;
+            int thumb_y_pos = (max_px > 0) ? content_y_start + (scroll_offset * (sb_h - thumb_h)) / max_px : content_y_start;
+            gfx_fill_rect(sb_x, content_y_start, 8, sb_h, 0x10C0C0C0);
+            gfx_fill_rounded_rect(sb_x + 1, thumb_y_pos, 6, thumb_h, 0xFFC0C0C0, 3);
+        }
+    } else if (page_line_count > visible_lines) {
+        // Line-based scrollbar for fallback rendering
         int sb_x = x + w - 10;
         int sb_h = content_h;
         int thumb_h = (visible_lines * sb_h) / page_line_count;
@@ -1096,7 +1183,13 @@ static void browser_on_paint(window_t* win, int x, int y, int w, int h) {
 // ---------- Event Handlers ----------
 
 static void browser_on_scroll(window_t* win, int delta) {
-    scroll_offset -= delta * 3;
+    if (use_dom_rendering) {
+        // Pixel-based scrolling for DOM rendering (larger step)
+        scroll_offset -= delta * 30;
+    } else {
+        // Line-based scrolling for fallback rendering
+        scroll_offset -= delta * 3;
+    }
     if (scroll_offset < 0) scroll_offset = 0;
 }
 

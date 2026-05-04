@@ -83,17 +83,54 @@ void gfx_init_hal(void* mboot_ptr) {
 void gfx_swap_buffers() {
     if (!use_backbuffer || !gfx_ctx.vram_ptr) return;
     if (gfx_ctx.bpp == 24) {
+        // Optimised 24bpp conversion: process 4 pixels at a time using
+        // 32-bit writes.  Each source pixel is 4 bytes (XRGB), each dest
+        // pixel is 3 bytes (RGB).  Four source pixels = 16 bytes → 12 dest
+        // bytes = 3 DWORDs.  This reduces loop overhead by 4x and lets the
+        // compiler use 32-bit stores instead of three 8-bit stores per pixel.
         uint8_t* dst_row = (uint8_t*)gfx_ctx.vram_ptr;
         uint32_t* src_row = gfx_ctx.back_ptr;
-        for(int y=0; y < gfx_ctx.height; y++) {
+        int w = gfx_ctx.width;
+        int h = gfx_ctx.height;
+
+        for(int y = 0; y < h; y++) {
             uint8_t* d = dst_row;
             uint32_t* s = src_row;
-            for(int x=0; x < gfx_ctx.width; x++) {
+            int x = 0;
+
+            // Process 4 pixels at a time
+            int chunks = w >> 2;  // w / 4
+            for(int c = 0; c < chunks; c++) {
+                uint32_t p0 = s[0], p1 = s[1], p2 = s[2], p3 = s[3];
+                s += 4;
+
+                // Pack 4 pixels (12 bytes) into 3 DWORD writes
+                // Pixel 0: R0 G0 B0 | Pixel 1: R1 → DWORD0 = B0 G0 R0 R1
+                // Pixel 1: G1 B1 | Pixel 2: R2 G2 → DWORD1 = G2 R2 B1 G1
+                // Pixel 2: B2 | Pixel 3: R3 G3 B3 → DWORD2 = B3 G3 R3 B2
+                uint32_t dw0 = (p0 & 0xFFFFFF) | ((p1 & 0xFF) << 24);
+                uint32_t dw1 = ((p1 >> 8) & 0xFFFF) | ((p2 & 0xFFFF) << 16);
+                uint32_t dw2 = ((p2 >> 16) & 0xFF) | ((p3 & 0xFFFFFF) << 8);
+
+                // Write 3 DWORDs (12 bytes)
+                *((uint32_t*)d) = dw0;
+                *((uint32_t*)(d + 4)) = dw1;
+                *((uint32_t*)(d + 8)) = dw2;
+                d += 12;
+            }
+
+            // Handle remaining pixels (0-3)
+            x = chunks << 2;
+            for(; x < w; x++) {
                 uint32_t c = *s++;
-                d[0] = c & 0xFF; d[1] = (c >> 8) & 0xFF; d[2] = (c >> 16) & 0xFF;
+                d[0] = c & 0xFF;
+                d[1] = (c >> 8) & 0xFF;
+                d[2] = (c >> 16) & 0xFF;
                 d += 3;
             }
-            dst_row += gfx_ctx.pitch; src_row += gfx_ctx.width;
+
+            dst_row += gfx_ctx.pitch;
+            src_row += w;
         }
         return;
     }
