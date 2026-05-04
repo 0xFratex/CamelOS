@@ -89,6 +89,10 @@ static void browser_load_page(const char* url) {
     link_count = 0;
     page_title[0] = 0;
     strcpy(status_text, "Loading...");
+
+    // Ensure "Loading..." state is rendered before blocking I/O
+    extern void http_process_events(void);
+    http_process_events();
     
     // Parse URL to extract host, path, and scheme
     int use_tls = 0;
@@ -296,6 +300,12 @@ static void browser_load_page(const char* url) {
         else {
             // Short delay before retry
             for (volatile int d = 0; d < 50000; d++);
+        }
+        if (retry % 10 == 0) {
+            // Yield to event loop to prevent GUI freeze
+            extern void rtl8139_poll(void);
+            extern void http_process_events(void);
+            http_process_events();
         }
     }
     response[total_read] = 0;
@@ -641,6 +651,12 @@ static void browser_download_file(const char* url) {
         if (n > 0) { total_read += n; download_progress = 10 + (total_read * 80) / BROWSER_RESPONSE_SIZE; }
         else if (n == 0) break;
         else { for (volatile int d = 0; d < 50000; d++); }
+        if (retry % 10 == 0) {
+            // Yield to event loop to prevent GUI freeze
+            extern void rtl8139_poll(void);
+            extern void http_process_events(void);
+            http_process_events();
+        }
     }
     response[total_read] = 0;
     
@@ -717,7 +733,7 @@ static void browser_on_paint(int x, int y, int w, int h) {
     bx += 34;
     
     // URL input field
-    int url_w = w - (bx - x) - 100;
+    int url_w = w - (bx - x) - 94;
     if (url_w < 60) url_w = 60;
     gfx_fill_rounded_rect(bx, y + 6, url_w, 24, 0xFFFFFFFF, 4);
     gfx_draw_rect(bx, y + 6, url_w, 24, url_active ? 0xFF007AFF : 0xFFC6C6C8);
@@ -917,7 +933,7 @@ static void browser_on_mouse(int lx, int ly, int btn) {
         url_active = 1;
         
         int bx = 6 + 30 + 30 + 30 + 34;
-        int url_w = browser_win_w - bx - 100;
+        int url_w = browser_win_w - bx - 94;
         if (url_w < 60) url_w = 60;
         int go_x = bx + url_w + 4;
         int dl_x = go_x + 32;

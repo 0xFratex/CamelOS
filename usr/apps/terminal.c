@@ -500,10 +500,24 @@ void term_on_input(int key) {
     }
 }
 
+void term_on_scroll(int delta) {
+    // Scroll the terminal buffer
+    for (int i = 0; i < (delta > 0 ? delta : -delta); i++) {
+        if (delta > 0) {
+            // Scroll up - show older content (we can't go back, so just move viewport)
+            // For now, treat scroll up as no-op since we don't have scrollback buffer
+        } else {
+            // Scroll down - just add a blank line at bottom
+            term_scroll();
+        }
+    }
+}
+
 void init_terminal_app() {
     term_reset();
     Window* w = fw_create_window("Terminal", 550, 320, term_on_paint, term_on_input, 0);
     w->min_w = 300;
+    w->scroll_callback = (void*)term_on_scroll;
     
     w->menu_count = 2;
     strcpy(w->menus[0].name, "Shell");

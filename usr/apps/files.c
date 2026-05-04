@@ -53,6 +53,10 @@ static int sb_dragging = 0;      // 1 when user is dragging the scrollbar thumb
 static int sb_drag_start_y = 0;  // Mouse Y when drag started
 static int sb_drag_start_offset = 0; // scroll_offset when drag started
 
+// Tracked window dimensions (updated via resize_callback)
+static int files_win_w = 550;
+static int files_win_h = 400;
+
 // Navigation history
 #define NAV_HISTORY_SIZE 16
 char nav_history[NAV_HISTORY_SIZE][128];
@@ -89,11 +93,17 @@ static void files_clamp_scroll(int win_w, int win_h) {
     if (scroll_offset > max_s) scroll_offset = max_s;
 }
 
+// Resize callback — called when the window is resized
+static void files_on_resize(int new_w, int new_h) {
+    files_win_w = new_w;
+    files_win_h = new_h;
+    files_clamp_scroll(new_w, new_h - 30);
+}
+
 // Scroll callback — called from the main loop via window->scroll_callback
 void files_on_scroll(int delta) {
     scroll_offset -= delta * CELL_H;
-    // Content area dimensions: window(550x400) minus title bar(30px)
-    files_clamp_scroll(550, 370);
+    files_clamp_scroll(files_win_w, files_win_h - 30);
 }
 extern void sys_fs_copy_recursive(const char* src, const char* dest);
 extern int sys_fs_delete_recursive(const char* path);
@@ -299,8 +309,8 @@ void files_draw_ctx(int win_x, int win_y) {
     int mx = win_x + ctx_x;
     int my = win_y + ctx_y;
     // Ensure menu stays within window bounds
-    if (mx + max_w > win_x + 550) mx = win_x + 550 - max_w;
-    if (my + menu_h > win_y + 400) my = win_y + 400 - menu_h;
+    if (mx + max_w > win_x + files_win_w) mx = win_x + files_win_w - max_w;
+    if (my + menu_h > win_y + files_win_h) my = win_y + files_win_h - menu_h;
     
     // Background
     gfx_fill_rounded_rect(mx, my, max_w, menu_h, 0xFFFFFFFF, 6);
@@ -357,8 +367,8 @@ void files_ctx_click(int click_x, int click_y) {
     
     // Apply same clamping as files_draw_ctx() so click detection matches drawn position
     int mx = ctx_x, my = ctx_y;
-    if (mx + max_w > 550) mx = 550 - max_w;
-    if (my + menu_h > 400) my = 400 - menu_h;
+    if (mx + max_w > files_win_w) mx = files_win_w - max_w;
+    if (my + menu_h > files_win_h) my = files_win_h - menu_h;
     if (mx < 0) mx = 0;
     if (my < 0) my = 0;
     
@@ -617,8 +627,8 @@ void files_on_paint(int x, int y, int w, int h) {
 
 // ===== Mouse Handling =====
 void files_on_mouse(int x, int y, int btn) {
-    // Content area dimensions — must match paint callback (window minus title bar)
-    int win_w = 550, win_h = 370;
+    // Content area dimensions — use tracked window dimensions
+    int win_w = files_win_w, win_h = files_win_h - 30;
     int content_y_offset = MARGIN_TOP;
     int content_h = win_h - MARGIN_TOP;
     int cols = (win_w - MARGIN_LEFT - SCROLLBAR_W) / CELL_W;
@@ -777,6 +787,7 @@ void init_files_app() {
     
     // Set scroll callback so the main loop can dispatch scroll wheel events
     w->scroll_callback = (void*)files_on_scroll;
+    w->resize_callback = (void*)files_on_resize;
     
     w->menu_count = 3;
     strcpy(w->menus[0].name, "File");

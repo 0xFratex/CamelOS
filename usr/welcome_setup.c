@@ -170,16 +170,17 @@ static ThemeDef themes[THEME_COUNT] = {
     {"Forest",   0xFF34C759, 0xFF30B350, 0xFF34C759}   // Green
 };
 
-// Keyboard layout display names (matching keyboard.h KBD_LAYOUT_COUNT = 31)
+// Keyboard layout display names (matching keyboard.h KBD_LAYOUT_COUNT = 32)
 static const char* kbd_layout_display_names[] = {
     "US QWERTY", "UK QWERTY", "German QWERTZ", "French AZERTY",
-    "Spanish QWERTY", "Italian QWERTY", "Portuguese BR", "Dvorak",
+    "Spanish QWERTY", "Italian QWERTY", "Brazilian ABNT2", "Dvorak",
     "Japanese", "Korean", "Chinese Pinyin", "Swiss",
     "Swedish", "Norwegian", "Danish", "Finnish",
     "Polish", "Czech QWERTZ", "Hungarian", "Romanian",
     "Turkish Q", "Turkish F", "Russian", "Arabic",
     "Hebrew", "Thai", "Vietnamese", "Greek",
-    "Croatian", "Portuguese PT", "Canadian"
+    "Croatian", "Portuguese PT", "Canadian",
+    "Brazilian ABNT1"
 };
 #define KBD_LAYOUT_DISPLAY_COUNT (sizeof(kbd_layout_display_names) / sizeof(char*))
 
@@ -421,7 +422,138 @@ int welcome_setup_save_config(void) {
     sys_fs_create("/sbin", 1);
     sys_fs_create("/dev", 1);
     sys_fs_create("/Volumes", 1);
-    
+
+    // Create standard system files to make the OS feel complete
+    char file_buf[512];
+    int file_len;
+
+    // /etc/hosts - Network hosts file
+    file_len = sprintf(file_buf,
+        "# CamelOS Hosts File\n"
+        "127.0.0.1       localhost\n"
+        "255.255.255.255 broadcasthost\n"
+        "::1             localhost\n");
+    sys_fs_create("/etc/hosts", 0);
+    sys_fs_write("/etc/hosts", file_buf, file_len);
+
+    // /etc/resolv.conf - DNS configuration
+    file_len = sprintf(file_buf,
+        "# CamelOS DNS Configuration\n"
+        "nameserver 8.8.8.8\n"
+        "nameserver 8.8.4.4\n");
+    sys_fs_create("/etc/resolv.conf", 0);
+    sys_fs_write("/etc/resolv.conf", file_buf, file_len);
+
+    // /etc/hostname
+    file_len = sprintf(file_buf, "camelos\n");
+    sys_fs_create("/etc/hostname", 0);
+    sys_fs_write("/etc/hostname", file_buf, file_len);
+
+    // /etc/passwd - Minimal user database
+    file_len = sprintf(file_buf,
+        "# CamelOS User Database\n"
+        "root:x:0:0:root:/root:/bin/sh\n");
+    sys_fs_create("/etc/passwd", 0);
+    sys_fs_write("/etc/passwd", file_buf, file_len);
+
+    // /etc/motd - Message of the day
+    file_len = sprintf(file_buf,
+        "Welcome to CamelOS!\n"
+        "Type 'help' for available commands.\n");
+    sys_fs_create("/etc/motd", 0);
+    sys_fs_write("/etc/motd", file_buf, file_len);
+
+    // /etc/shells
+    file_len = sprintf(file_buf, "/bin/sh\n/bin/csh\n");
+    sys_fs_create("/etc/shells", 0);
+    sys_fs_write("/etc/shells", file_buf, file_len);
+
+    // /var/log/system.log placeholder
+    sys_fs_create("/var", 1);
+    sys_fs_create("/var/log", 1);
+    file_len = sprintf(file_buf,
+        "[%s] CamelOS system initialized\n"
+        "[%s] Network stack ready\n"
+        "[%s] Filesystem mounted\n",
+        g_setup.config.username, g_setup.config.username, g_setup.config.username);
+    sys_fs_create("/var/log/system.log", 0);
+    sys_fs_write("/var/log/system.log", file_buf, file_len);
+
+    // /tmp directory (used by browser downloads and app installer)
+    sys_fs_create("/tmp", 1);
+
+    // /home symlink equivalent - create /home directory for compatibility
+    sys_fs_create("/home", 1);
+    char home_compat[128];
+    strcpy(home_compat, "/home/");
+    strcat(home_compat, g_setup.config.username);
+    sys_fs_create(home_compat, 1);
+
+    // Readme on Desktop
+    char readme_path[128];
+    strcpy(readme_path, "/Users/");
+    strcat(readme_path, g_setup.config.username);
+    strcat(readme_path, "/Desktop/Welcome.txt");
+    file_len = sprintf(file_buf,
+        "Welcome to CamelOS!\n"
+        "===================\n\n"
+        "CamelOS is a modern operating system with a macOS-inspired interface.\n\n"
+        "Getting Started:\n"
+        "- Use the Dock at the bottom to launch applications\n"
+        "- Click the Browser icon to browse the web\n"
+        "- Use Terminal for command-line access\n"
+        "- Try: curl http://example.com to download files\n"
+        "- Try: open http://example.com to open URLs\n\n"
+        "Tips:\n"
+        "- Drag windows by their title bar\n"
+        "- Resize windows from the bottom-right corner\n"
+        "- Use Ctrl+Tab to switch between apps\n"
+        "- Double-click desktop icons to open them\n\n"
+        "Enjoy CamelOS!\n");
+    sys_fs_create(readme_path, 0);
+    sys_fs_write(readme_path, file_buf, file_len);
+
+    // Sample Documents
+    char doc_path[128];
+    strcpy(doc_path, "/Users/");
+    strcat(doc_path, g_setup.config.username);
+    strcat(doc_path, "/Documents/Notes.txt");
+    file_len = sprintf(file_buf,
+        "My Notes\n"
+        "========\n\n"
+        "This is the Documents folder. Store your text files here.\n"
+        "You can edit files using the TextEdit application.\n\n"
+        "Quick Commands:\n"
+        "- ls: list files\n"
+        "- cd: change directory\n"
+        "- cat: view file contents\n"
+        "- curl: download files from the internet\n"
+        "- ping: test network connectivity\n");
+    sys_fs_create(doc_path, 0);
+    sys_fs_write(doc_path, file_buf, file_len);
+
+    // /usr/lib/README
+    file_len = sprintf(file_buf,
+        "CamelOS CDL Libraries\n"
+        "====================\n\n"
+        "This directory contains CDL (CamelOS Dynamic Library) modules.\n"
+        "CDL files can be loaded at runtime using sys_load_library().\n\n"
+        "Place .cdl files here to make them available system-wide.\n");
+    sys_fs_create("/usr/lib/README", 0);
+    sys_fs_write("/usr/lib/README", file_buf, file_len);
+
+    // /Applications/README
+    file_len = sprintf(file_buf,
+        "CamelOS Applications\n"
+        "===================\n\n"
+        "Install applications by:\n"
+        "1. Downloading .app bundles via the browser\n"
+        "2. Opening .dmg files to mount and install\n"
+        "3. Dragging apps to this folder\n\n"
+        "Installed apps appear in the Dock automatically.\n");
+    sys_fs_create("/Applications/README", 0);
+    sys_fs_write("/Applications/README", file_buf, file_len);
+
     // CRITICAL: Flush all changes to disk so config persists across reboots
     // Double-flush to ensure data reaches persistent storage
     pfs32_sync();

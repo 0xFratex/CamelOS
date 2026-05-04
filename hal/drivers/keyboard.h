@@ -33,7 +33,8 @@
 #define KBD_LAYOUT_CROATIAN  28
 #define KBD_LAYOUT_PORTPT    29
 #define KBD_LAYOUT_CANADIAN  30
-#define KBD_LAYOUT_COUNT     31
+#define KBD_LAYOUT_BRAZILIAN_ABNT1 31
+#define KBD_LAYOUT_COUNT     32
 
 void init_keyboard();
 void kbd_set_layout(int layout_id);

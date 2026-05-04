@@ -183,6 +183,8 @@ static window_t* resize_win = 0;
 static int resize_orig_w, resize_orig_h;
 static int resize_mx, resize_my;
 
+static int cursor_type = 0; // 0=arrow, 1=resize
+
 // System Menu Items
 static char* sys_menu_items[] = { "About Camel OS", "-", "Restart", "Shutdown" };
 static int sys_menu_count = 4;
@@ -194,6 +196,35 @@ int measure_text_width(const char* str) { return strlen(str) * 8; }
 // Draw a crisp pixel-perfect macOS-style arrow cursor
 // Arrow pointing top-left, ~12x19 pixels
 static void draw_cursor(int mx, int my) {
+    if (cursor_type == 1) {
+        // Resize cursor (diagonal double-arrow) 13x13
+        static const uint8_t resize_shape[13][13] = {
+            {1,0,0,0,0,0,0,0,0,0,0,0,1},
+            {0,2,0,0,0,0,0,0,0,0,0,2,0},
+            {0,0,2,0,0,0,0,0,0,0,2,0,0},
+            {0,0,0,2,0,0,0,0,0,2,0,0,0},
+            {0,0,0,0,2,0,0,0,2,0,0,0,0},
+            {0,0,0,0,0,2,0,2,0,0,0,0,0},
+            {0,0,0,0,0,0,1,0,0,0,0,0,0},
+            {0,0,0,0,0,2,0,2,0,0,0,0,0},
+            {0,0,0,0,2,0,0,0,2,0,0,0,0},
+            {0,0,0,2,0,0,0,0,0,2,0,0,0},
+            {0,0,2,0,0,0,0,0,0,0,2,0,0},
+            {0,2,0,0,0,0,0,0,0,0,0,2,0},
+            {1,0,0,0,0,0,0,0,0,0,0,0,1},
+        };
+        for (int row = 0; row < 13; row++) {
+            for (int col = 0; col < 13; col++) {
+                int px = mx + col;
+                int py = my + row;
+                if (px < 0 || px >= 1024 || py < 0 || py >= 768) continue;
+                uint8_t v = resize_shape[row][col];
+                if (v == 1) gfx_put_pixel(px, py, 0xFF000000);
+                else if (v == 2) gfx_put_pixel(px, py, 0xFFFFFFFF);
+            }
+        }
+        return;
+    }
     // Classic arrow cursor shape (1=black outline, 2=white fill)
     // Row 0: 1 pixel at tip
     // Each row builds the arrow shape
@@ -1273,9 +1304,27 @@ void start_bubble_view() {
         // old and new positions instead of the full screen.  This cuts the
         // wallpaper memcpy from ~3 MB to a small fraction, keeping each frame
         // well within the vsync interval.
+        // Detect cursor type based on mouse position
+        cursor_type = 0; // default arrow
+        if (!resize_win && !drag_win) {
+            for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
+                window_t* w = ws_get_window_at_index(i);
+                if (!w || !w->is_visible || w->state == WIN_STATE_MINIMIZED) continue;
+                int lx = mx - w->x;
+                int ly = my - w->y;
+                if (lx >= 0 && lx < w->width && ly >= 0 && ly < w->height) {
+                    if (lx >= w->width - RESIZE_MARGIN && ly >= w->height - RESIZE_MARGIN) {
+                        cursor_type = 1; // resize cursor
+                    }
+                    break;
+                }
+            }
+        }
+        if (resize_win) cursor_type = 1; // keep resize cursor while dragging
+
         buffer = gfx_get_active_buffer();
 
-        if (drag_was_active && (drag_win || drag_just_released)) {
+        if (drag_was_active && (drag_win || drag_just_released) && !resize_win) {
             // Compute dirty rect = union of old position + new position + shadow pad
             int ox = drag_prev_x, oy = drag_prev_y;
             int nx, ny, ww, wh;
