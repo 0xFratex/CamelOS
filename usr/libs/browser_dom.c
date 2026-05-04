@@ -63,6 +63,14 @@ static const char* str_casestr(const char *haystack, const char *needle) {
     return NULL;
 }
 
+// Parse a hex digit character to its integer value
+static int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 // Decode HTML entities in-place in a text buffer
 // Handles: &amp; &lt; &gt; &nbsp; &quot; &#39; &#NNN; &#xHHH;
 static void decode_html_entities(char *text) {
@@ -109,7 +117,7 @@ static void decode_html_entities(char *text) {
                     } else {
                         *dst++ = '?'; // placeholder for non-ASCII
                     }
-                    src = np;
+                    src = (char *)np;
                     continue;
                 }
             }
@@ -130,7 +138,7 @@ static void decode_html_entities(char *text) {
                     } else {
                         *dst++ = '?';
                     }
-                    src = np;
+                    src = (char *)np;
                     continue;
                 }
             }
@@ -162,7 +170,7 @@ static void safe_strcpy(char *dst, const char *src, int max_len) {
 }
 
 // Safe string cat with truncation
-static void safe_strcat(char *dst, const char *src, int max_total) {
+static void __attribute__((unused)) safe_strcat(char *dst, const char *src, int max_total) {
     if (!dst || !src || max_total <= 0) return;
     int dlen = strlen(dst);
     int remaining = max_total - dlen - 1;
@@ -235,14 +243,6 @@ static const named_color_t named_colors[] = {
 // COLOR PARSING
 // ============================================================================
 
-// Parse a hex digit character to its integer value
-static int hex_digit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
 // Parse a hex color component (2 hex digits) to 0-255
 static int hex_byte(const char *s) {
     int hi = hex_digit(s[0]);
@@ -307,9 +307,12 @@ int dom_parse_color(const char *str, uint32_t *out_color) {
         // Parse b
         if (parse_int(p, &b) != 0) return -1;
         // Clamp to 0-255
-        if (r < 0) r = 0; if (r > 255) r = 255;
-        if (g < 0) g = 0; if (g > 255) g = 255;
-        if (b < 0) b = 0; if (b > 255) b = 255;
+        if (r < 0) r = 0;
+        if (r > 255) r = 255;
+        if (g < 0) g = 0;
+        if (g > 255) g = 255;
+        if (b < 0) b = 0;
+        if (b > 255) b = 255;
         *out_color = DOM_COLOR((uint8_t)r, (uint8_t)g, (uint8_t)b);
         return 0;
     }
@@ -321,11 +324,13 @@ int dom_parse_color(const char *str, uint32_t *out_color) {
         while (is_ws(*p)) p++;
         if (parse_int(p, &r) != 0) return -1;
         while (*p && *p != ',') p++;
-        if (!*p) return -1; p++;
+        if (!*p) return -1;
+        p++;
         while (is_ws(*p)) p++;
         if (parse_int(p, &g) != 0) return -1;
         while (*p && *p != ',') p++;
-        if (!*p) return -1; p++;
+        if (!*p) return -1;
+        p++;
         while (is_ws(*p)) p++;
         if (parse_int(p, &b) != 0) return -1;
         while (*p && *p != ',') p++;
@@ -334,10 +339,14 @@ int dom_parse_color(const char *str, uint32_t *out_color) {
             while (is_ws(*p)) p++;
             if (parse_int(p, &a) != 0) a = 255;
         }
-        if (r < 0) r = 0; if (r > 255) r = 255;
-        if (g < 0) g = 0; if (g > 255) g = 255;
-        if (b < 0) b = 0; if (b > 255) b = 255;
-        if (a < 0) a = 0; if (a > 255) a = 255;
+        if (r < 0) r = 0;
+        if (r > 255) r = 255;
+        if (g < 0) g = 0;
+        if (g > 255) g = 255;
+        if (b < 0) b = 0;
+        if (b > 255) b = 255;
+        if (a < 0) a = 0;
+        if (a > 255) a = 255;
         *out_color = DOM_COLOR_A((uint8_t)a, (uint8_t)r, (uint8_t)g, (uint8_t)b);
         return 0;
     }
@@ -583,7 +592,7 @@ dom_node_t* dom_node_alloc(dom_document_t *doc) {
     return NULL;
 }
 
-static void dom_node_free(dom_document_t *doc, dom_node_t *node) {
+static void __attribute__((unused)) dom_node_free(dom_document_t *doc, dom_node_t *node) {
     if (!doc || !node) return;
     // Recursively free children first
     dom_node_t *child = node->first_child;
@@ -2051,8 +2060,6 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
 
     // Element node: draw background, border, then recurse into children
     if (node->type == DOM_NODE_ELEMENT) {
-        int box_x = abs_x;
-        int box_y = abs_y;
         int box_w = s->layout_w;
         int box_h = s->layout_h;
 
