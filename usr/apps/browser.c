@@ -301,10 +301,8 @@ static void browser_load_page(const char* url) {
             // Short delay before retry
             for (volatile int d = 0; d < 50000; d++);
         }
-        if (retry % 10 == 0) {
-            // Yield to event loop to prevent GUI freeze
-            http_process_events();
-        }
+        // Yield to event loop every iteration to prevent GUI freeze
+        http_process_events();
     }
     response[total_read] = 0;
 
@@ -649,10 +647,8 @@ static void browser_download_file(const char* url) {
         if (n > 0) { total_read += n; download_progress = 10 + (total_read * 80) / BROWSER_RESPONSE_SIZE; }
         else if (n == 0) break;
         else { for (volatile int d = 0; d < 50000; d++); }
-        if (retry % 10 == 0) {
-            // Yield to event loop to prevent GUI freeze
-            http_process_events();
-        }
+        // Yield to event loop every iteration to prevent GUI freeze
+        http_process_events();
     }
     response[total_read] = 0;
 

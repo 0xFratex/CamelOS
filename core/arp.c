@@ -325,8 +325,10 @@ int arp_resolve(uint32_t ip, uint8_t* mac_out) {
                 return 0; // Success
             }
             
-            // Small delay
-            for(volatile int i = 0; i < 1000; i++) asm volatile("pause");
+            // Use timer_sleep instead of busy-wait to reduce CPU usage
+            // and allow other processing
+            extern void http_process_events(void);
+            http_process_events();
         }
     }
     

@@ -118,36 +118,14 @@ static void draw_loading_overlay(int x, int y, int w, int h) {
     }
 }
 
-// Full event processing during HTTP requests - redraws window and swaps buffers
+// Full event processing during HTTP requests - keeps system responsive
 void http_process_events(void) {
-    rtl8139_poll();  // Poll network card
+    rtl8139_poll();  // Poll network card for incoming packets
 
-    s_printf("[EVT] processing\n");
-
-    // Temporarily disabled overlay to prevent corruption
-    // if (active_win && active_win->paint_callback) {
-    //     // Draw window frame first
-    //     extern void compositor_draw_window(window_t* w);
-    //     compositor_draw_window(active_win);
-    //
-    //     // Draw content area with loading overlay if loading
-    //     if (http_loading_state.is_loading) {
-    //         // First draw the content
-    //         typedef void (*pcb)(int,int,int,int);
-    //         ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30,
-    //                                           active_win->width, active_win->height - 30);
-    //
-    //         // Then draw loading overlay
-    //         draw_loading_overlay(active_win->x, active_win->y + 30,
-    //                             active_win->width, active_win->height - 30);
-    //     } else {
-    //         // Just draw the content
-    //         typedef void (*pcb)(int,int,int,int);
-    //         ((pcb)active_win->paint_callback)(active_win->x, active_win->y + 30,
-    //                                           active_win->width, active_win->height - 30);
-    //     }
-    // }
-
+    // Minimal sleep to allow other interrupts to fire and prevent
+    // the CPU from being consumed 100% by polling loops.
+    // Using 1 tick (~20ms) which is short enough for responsiveness
+    // but long enough to let the scheduler and other IRQs run.
     timer_sleep(1);
 }
 

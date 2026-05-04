@@ -1139,6 +1139,11 @@ void start_bubble_view() {
     while(1) {
         int dummy = 0;
 
+        // Poll network card every frame to prevent packet loss
+        // and allow network processing even during idle GUI
+        extern void rtl8139_poll(void);
+        rtl8139_poll();
+
         int mask = sys_mouse_read(&mx, &my, &dummy);
 
         int lb = mask & 1;

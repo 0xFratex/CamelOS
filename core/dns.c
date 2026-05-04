@@ -139,6 +139,10 @@ int dns_resolve(const char* domain, char* ip_out, int max_len) {
                 return 0;
             }
         }
+
+        // Process GUI events to prevent system freeze during DNS lookup
+        extern void http_process_events(void);
+        http_process_events();
     }
     
     k_close(s);

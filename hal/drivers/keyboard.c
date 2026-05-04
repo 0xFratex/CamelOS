@@ -21,6 +21,133 @@ static int kbd_extended = 0;
 int kbd_layout = 0;
 
 // ============================================================
+// Dead Key Support
+// Dead keys are accent keys that don't produce a character
+// immediately, but instead modify the next key pressed.
+// For example: ´ + a = á, ~ + o = õ, ^ + e = ê, etc.
+// If the dead key is pressed twice, or space is pressed,
+// the accent character itself is produced.
+// ============================================================
+
+#define DEAD_KEY_NONE     0
+#define DEAD_KEY_ACUTE    1   // ´ (acute accent)
+#define DEAD_KEY_GRAVE    2   // ` (grave accent)
+#define DEAD_KEY_TILDE    3   // ~ (tilde)
+#define DEAD_KEY_CIRCUM   4   // ^ (circumflex)
+#define DEAD_KEY_DIAER    5   // ¨ (diaeresis/umlaut)
+
+static int kbd_dead_key = DEAD_KEY_NONE;
+
+// Dead key composition table
+// Maps (dead_key_type, base_char) -> composed_char
+// Returns 0 if no valid composition exists
+static int kbd_compose_dead_key(int dead, int ch) {
+    // ISO-8859-1 (Latin-1) character codes
+    switch (dead) {
+    case DEAD_KEY_ACUTE:
+        switch (ch) {
+        case 'a': return 225;   // á
+        case 'e': return 233;   // é
+        case 'i': return 237;   // í
+        case 'o': return 243;   // ó
+        case 'u': return 250;   // ú
+        case 'A': return 193;   // Á
+        case 'E': return 201;   // É
+        case 'I': return 205;   // Í
+        case 'O': return 211;   // Ó
+        case 'U': return 218;   // Ú
+        case 'c': return 263;   // ć
+        case 'C': return 262;   // Ć
+        case 'y': return 253;   // ý
+        case 'Y': return 221;   // Ý
+        case 'z': return 378;   // ź
+        case 'Z': return 377;   // Ź
+        }
+        break;
+    case DEAD_KEY_GRAVE:
+        switch (ch) {
+        case 'a': return 224;   // à
+        case 'e': return 232;   // è
+        case 'i': return 236;   // ì
+        case 'o': return 242;   // ò
+        case 'u': return 249;   // ù
+        case 'A': return 192;   // À
+        case 'E': return 200;   // È
+        case 'I': return 204;   // Ì
+        case 'O': return 210;   // Ò
+        case 'U': return 217;   // Ù
+        }
+        break;
+    case DEAD_KEY_TILDE:
+        switch (ch) {
+        case 'a': return 227;   // ã
+        case 'o': return 245;   // õ
+        case 'n': return 241;   // ñ
+        case 'A': return 195;   // Ã
+        case 'O': return 213;   // Õ
+        case 'N': return 209;   // Ñ
+        }
+        break;
+    case DEAD_KEY_CIRCUM:
+        switch (ch) {
+        case 'a': return 226;   // â
+        case 'e': return 234;   // ê
+        case 'i': return 238;   // î
+        case 'o': return 244;   // ô
+        case 'u': return 251;   // û
+        case 'A': return 194;   // Â
+        case 'E': return 202;   // Ê
+        case 'I': return 206;   // Î
+        case 'O': return 212;   // Ô
+        case 'U': return 219;   // Û
+        }
+        break;
+    case DEAD_KEY_DIAER:
+        switch (ch) {
+        case 'a': return 228;   // ä
+        case 'e': return 235;   // ë
+        case 'i': return 239;   // ï
+        case 'o': return 246;   // ö
+        case 'u': return 252;   // ü
+        case 'A': return 196;   // Ä
+        case 'E': return 203;   // Ë
+        case 'I': return 207;   // Ï
+        case 'O': return 214;   // Ö
+        case 'U': return 220;   // Ü
+        case 'y': return 255;   // ÿ
+        case 'Y': return 159;   // Ÿ
+        }
+        break;
+    }
+    return 0; // No valid composition
+}
+
+// Returns the standalone accent character for a dead key
+// (used when dead key is pressed twice or space follows)
+static int kbd_dead_key_char(int dead) {
+    switch (dead) {
+    case DEAD_KEY_ACUTE:  return 180; // ´
+    case DEAD_KEY_GRAVE:  return 96;  // `
+    case DEAD_KEY_TILDE:  return 126; // ~
+    case DEAD_KEY_CIRCUM: return 94;  // ^
+    case DEAD_KEY_DIAER:  return 168; // ¨
+    }
+    return 0;
+}
+
+// Check if a character is a dead key accent for the current layout
+static int kbd_detect_dead_key(int ch) {
+    switch (ch) {
+    case 180: return DEAD_KEY_ACUTE;   // ´ (acute)
+    case 96:  return DEAD_KEY_GRAVE;    // ` (grave)
+    case 126: return DEAD_KEY_TILDE;    // ~ (tilde)
+    case 94:  return DEAD_KEY_CIRCUM;   // ^ (circumflex)
+    case 168: return DEAD_KEY_DIAER;    // ¨ (diaeresis)
+    }
+    return DEAD_KEY_NONE;
+}
+
+// ============================================================
 // Keyboard Layout Tables
 // Each layout has a standard (no-shift) and shift mapping
 // for PS/2 scancodes 0-57, plus OEM_102 key (scancode 0x56)
@@ -544,6 +671,7 @@ void init_keyboard() {
     kbd_caps_lock = 0;
     kbd_extended = 0;
     kbd_layout = 0; // Default US QWERTY
+    kbd_dead_key = DEAD_KEY_NONE;
 }
 
 void kbd_flush() {
@@ -650,14 +778,62 @@ void keyboard_callback() {
             } else {
                 key_out = kbd_shift_pressed ? (unsigned char)layout_shift[scancode] : (unsigned char)layout_std[scancode];
             }
+
+            // --- Dead Key Detection ---
+            // Check if the produced character is a dead key accent
+            int dead = kbd_detect_dead_key(key_out);
+            if (dead != DEAD_KEY_NONE) {
+                // If we already had a pending dead key, produce the
+                // previous accent first, then store the new one
+                if (kbd_dead_key != DEAD_KEY_NONE) {
+                    int prev_char = kbd_dead_key_char(kbd_dead_key);
+                    if (prev_char) {
+                        int next = (write_ptr + 1) % KBD_BUFFER_SIZE;
+                        if (next != read_ptr) {
+                            kbd_buffer[write_ptr] = prev_char;
+                            write_ptr = next;
+                        }
+                    }
+                }
+                kbd_dead_key = dead;
+                key_out = 0; // Don't produce a character yet
+            }
         }
     }
 
     if (key_out) {
-        int next = (write_ptr + 1) % KBD_BUFFER_SIZE;
-        if (next != read_ptr) {
+        // --- Dead Key Composition ---
+        if (kbd_dead_key != DEAD_KEY_NONE) {
+            // Try to compose dead key with the new character
+            int composed = kbd_compose_dead_key(kbd_dead_key, key_out);
+            if (composed) {
+                // Valid composition - produce the composed character
+                key_out = composed;
+            } else if (key_out == ' ') {
+                // Space after dead key - produce the accent itself
+                key_out = kbd_dead_key_char(kbd_dead_key);
+            } else if (kbd_detect_dead_key(key_out) != DEAD_KEY_NONE) {
+                // Another dead key pressed - produce previous accent,
+                // set new dead key (handled in detection above)
+            } else {
+                // Invalid composition - produce the accent first, then the key
+                int accent = kbd_dead_key_char(kbd_dead_key);
+                if (accent) {
+                    int next = (write_ptr + 1) % KBD_BUFFER_SIZE;
+                    if (next != read_ptr) {
+                        kbd_buffer[write_ptr] = accent;
+                        write_ptr = next;
+                    }
+                }
+                // key_out remains the original character
+            }
+            kbd_dead_key = DEAD_KEY_NONE;
+        }
+
+        int next2 = (write_ptr + 1) % KBD_BUFFER_SIZE;
+        if (next2 != read_ptr) {
             kbd_buffer[write_ptr] = key_out;
-            write_ptr = next;
+            write_ptr = next2;
         }
     }
 }

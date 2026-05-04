@@ -190,7 +190,10 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
                     sock->state = SOCKET_ERROR;
                     return -1;
                 }
-                asm volatile("pause");
+
+                // Process GUI events to prevent system freeze
+                extern void http_process_events(void);
+                http_process_events();
             }
         }
     }
@@ -315,6 +318,12 @@ int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr
                 available = sock->recv_tail - sock->recv_head;
             } else {
                 available = sock->recv_buffer_size - sock->recv_head + sock->recv_tail;
+            }
+
+            // Process GUI events to prevent system freeze
+            if (available == 0) {
+                extern void http_process_events(void);
+                http_process_events();
             }
         }
     }
