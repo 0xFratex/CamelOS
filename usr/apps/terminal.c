@@ -1,5 +1,6 @@
 #include "../usr/framework.h"
 #include "../core/string.h"
+#include "../core/http.h"
 #include "../../sys/api.h"
 #include "../../hal/video/gfx_hal.h"
 
@@ -158,6 +159,9 @@ void execute_term_cmd() {
         term_print("  pwd      - Print working directory\n");
         term_print("  clear    - Clear screen\n");
         term_print("  echo     - Print text\n");
+        term_print("  curl     - Download file via HTTP\n");
+        term_print("  open     - Open URL/app/DMG\n");
+        term_print("  ping     - Ping a host\n");
         term_print("  exit     - Close terminal\n");
     }
     else if (strcmp(cmd, "clear") == 0) {
@@ -237,6 +241,228 @@ void execute_term_cmd() {
                 term_print("Invalid directory.");
             }
         }
+    }
+    else if (strcmp(cmd, "curl") == 0) {
+        if (strlen(arg) == 0) {
+            term_print("Usage: curl <url> [-o <file>]\n");
+            term_print("Downloads a file via HTTP/HTTPS.");
+        } else {
+            // Parse URL and optional -o flag
+            char curl_url[256] = {0};
+            char curl_output[128] = {0};
+            int curl_has_output = 0;
+
+            // Extract URL (first token in arg)
+            int ci = 0, cj = 0;
+            while (arg[ci] && arg[ci] != ' ' && cj < 255) curl_url[cj++] = arg[ci++];
+            curl_url[cj] = 0;
+
+            // Skip whitespace, check for -o flag
+            while (arg[ci] == ' ') ci++;
+            if (arg[ci] == '-' && arg[ci+1] == 'o') {
+                ci += 2;
+                while (arg[ci] == ' ') ci++;
+                cj = 0;
+                while (arg[ci] && arg[ci] != ' ' && cj < 127) curl_output[cj++] = arg[ci++];
+                curl_output[cj] = 0;
+                curl_has_output = 1;
+            }
+
+            // Default to http:// if no scheme
+            if (strstr(curl_url, "://") == NULL) {
+                char prefixed[270];
+                strcpy(prefixed, "http://");
+                strcat(prefixed, curl_url);
+                strncpy(curl_url, prefixed, 255);
+                curl_url[255] = 0;
+            }
+
+            // Auto-detect filename if -o not specified
+            if (!curl_has_output) {
+                const char* last_slash = strrchr(curl_url, '/');
+                const char* fname = last_slash ? last_slash + 1 : curl_url;
+                int fname_len = strlen(fname);
+                for (int k = 0; k < fname_len; k++) {
+                    if (fname[k] == '?' || fname[k] == '#') { fname_len = k; break; }
+                }
+                if (fname_len == 0) {
+                    strcpy(curl_output, "index.html");
+                } else {
+                    if (fname_len > 127) fname_len = 127;
+                    memcpy(curl_output, fname, fname_len);
+                    curl_output[fname_len] = 0;
+                }
+
+                // Prepend current directory
+                char full_path[256];
+                if (curl_output[0] == '/') {
+                    strncpy(full_path, curl_output, 255);
+                } else {
+                    strcpy(full_path, current_term_path);
+                    int plen = strlen(full_path);
+                    if (plen > 1 && full_path[plen-1] != '/') strcat(full_path, "/");
+                    strcat(full_path, curl_output);
+                }
+                strncpy(curl_output, full_path, 127);
+                curl_output[127] = 0;
+            } else if (curl_output[0] != '/') {
+                char full_path[256];
+                strcpy(full_path, current_term_path);
+                int plen = strlen(full_path);
+                if (plen > 1 && full_path[plen-1] != '/') strcat(full_path, "/");
+                strcat(full_path, curl_output);
+                strncpy(curl_output, full_path, 127);
+                curl_output[127] = 0;
+            }
+
+            term_print("Downloading: ");
+            term_print(curl_url);
+            term_print("\n  Saving to: ");
+            term_print(curl_output);
+            term_print("\n");
+
+            // Allocate response buffer on heap
+            #define TERM_CURL_MAX 65536
+            char* response = (char*)kmalloc(TERM_CURL_MAX);
+            if (!response) {
+                term_print("Error: Out of memory.\n");
+            } else {
+                memset(response, 0, TERM_CURL_MAX);
+                int total_len = http_get_simple(curl_url, response, TERM_CURL_MAX);
+
+                if (total_len <= 0) {
+                    term_print("Error: Download failed.\n");
+                } else {
+                    // Skip HTTP headers
+                    char* body = strstr(response, "\r\n\r\n");
+                    int body_len = 0;
+                    if (body) { body += 4; body_len = total_len - (body - response); }
+                    else { body = response; body_len = total_len; }
+
+                    int result = sys_fs_write(curl_output, body, body_len);
+                    if (result >= 0) {
+                        term_print("  Downloaded ");
+                        char size_str[16];
+                        int_to_str(body_len, size_str);
+                        term_print(size_str);
+                        term_print(" bytes -> ");
+                        term_print(curl_output);
+                        term_print("\n");
+
+                        // Auto-install .app/.cdl/.dmg files
+                        int outlen = strlen(curl_output);
+                        if (outlen > 4) {
+                            const char* ext = curl_output + outlen - 4;
+                            if (strcmp(ext, ".cdl") == 0 || strcmp(ext, ".app") == 0) {
+                                term_print("  Installable app detected. Installing...\n");
+                                extern void desktop_install_app(const char*);
+                                desktop_install_app(curl_output);
+                                term_print("  Installation complete.\n");
+                            } else if (strcmp(ext, ".dmg") == 0) {
+                                term_print("  DMG image detected. Mounting...\n");
+                                extern int app_installer_open_dmg(const char*);
+                                app_installer_open_dmg(curl_output);
+                            }
+                        }
+                    } else {
+                        term_print("Error: Could not save file.\n");
+                    }
+                }
+                kfree(response);
+            }
+        }
+    }
+    else if (strcmp(cmd, "open") == 0) {
+        if (strlen(arg) == 0) {
+            term_print("Usage: open <url|app|dmg>\n");
+            term_print("  open http://example.com     - Open URL in browser\n");
+            term_print("  open /Applications/Foo.app  - Launch application\n");
+            term_print("  open ~/Downloads/app.dmg    - Mount DMG image\n");
+        } else {
+            // Resolve path
+            char resolved[256] = {0};
+            if (strncmp(arg, "~/", 2) == 0) {
+                strcpy(resolved, "/home/user/");
+                strcat(resolved, arg + 2);
+            } else if (arg[0] != '/') {
+                strcpy(resolved, current_term_path);
+                int plen = strlen(resolved);
+                if (plen > 1 && resolved[plen-1] != '/') strcat(resolved, "/");
+                strcat(resolved, arg);
+            } else {
+                strncpy(resolved, arg, 255);
+            }
+
+            // URL detection
+            if (strncmp(arg, "http://", 7) == 0 || strncmp(arg, "https://", 8) == 0) {
+                term_print("Opening URL in browser: ");
+                term_print(arg);
+                term_print("\n");
+                extern void init_browser_app_with_url(const char* url);
+                init_browser_app_with_url(arg);
+            }
+            // .app bundle
+            else if (strlen(resolved) > 4 && strcmp(resolved + strlen(resolved) - 4, ".app") == 0) {
+                term_print("Launching app: ");
+                term_print(resolved);
+                term_print("\n");
+                extern int wrap_exec(const char*);
+                int result = wrap_exec(resolved);
+                if (result < 0) term_print("Error: Could not launch app.\n");
+            }
+            // .dmg file
+            else if (strlen(resolved) > 4 && strcmp(resolved + strlen(resolved) - 4, ".dmg") == 0) {
+                if (!sys_fs_exists(resolved)) {
+                    term_print("Error: DMG file not found.\n");
+                } else {
+                    term_print("Mounting DMG: ");
+                    term_print(resolved);
+                    term_print("\n");
+                    extern int app_installer_open_dmg(const char*);
+                    int result = app_installer_open_dmg(resolved);
+                    if (result < 0) term_print("Error: Could not mount DMG.\n");
+                }
+            }
+            // .cdl file
+            else if (strlen(resolved) > 4 && strcmp(resolved + strlen(resolved) - 4, ".cdl") == 0) {
+                term_print("Loading CDL app: ");
+                term_print(resolved);
+                term_print("\n");
+                extern int sys_load_library(const char*);
+                int handle = sys_load_library(resolved);
+                if (handle >= 0) term_print("CDL app loaded.\n");
+                else term_print("Error: Could not load CDL app.\n");
+            }
+            // Fallback: try to execute
+            else {
+                term_print("Launching: ");
+                term_print(resolved);
+                term_print("\n");
+                extern int wrap_exec(const char*);
+                int result = wrap_exec(resolved);
+                if (result < 0) term_print("Error: Could not launch.\n");
+            }
+        }
+    }
+    else if (strcmp(cmd, "ping") == 0) {
+        const char* target = (strlen(arg) > 0) ? arg : "8.8.8.8";
+        term_print("Pinging ");
+        term_print(target);
+        term_print("...\n");
+
+        for (int pi = 0; pi < 4; pi++) {
+            char ping_buf[128];
+            memset(ping_buf, 0, 128);
+            int status = sys_net_ping(target, ping_buf, 128);
+            if (status >= 0) {
+                term_print(ping_buf);
+                term_print("\n");
+            } else {
+                term_print("Ping failed.\n");
+            }
+            sys_delay(200);
+        }
+        term_print("Ping complete.\n");
     }
     else if (strlen(cmd) > 0) {
         term_print("Unknown command: ");

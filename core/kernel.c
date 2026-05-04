@@ -157,6 +157,7 @@ extern void init_files_app(void);
 extern void init_terminal_app(void);
 extern void init_textedit_app(void);
 extern void init_browser_app(void);
+extern void init_browser_app_with_url(const char* url);
 extern void init_settings_app(void);
 extern void init_mactest_app(void);
 

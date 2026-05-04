@@ -981,6 +981,10 @@ static void browser_on_mouse(int lx, int ly, int btn) {
 
 // ---------- Init ----------
 
+// Global variable to hold a URL passed at launch time
+// Set by init_browser_app_with_url() before the window is created
+static char browser_launch_url[256] = "";
+
 void init_browser_app() {
     page_line_count = 0;
     url_buf[0] = 0;
@@ -1017,4 +1021,19 @@ void init_browser_app() {
     w->menus[3].item_count = 2;
     
     fw_register_dock("Browser", 5, w);
+
+    // If a launch URL was set (by init_browser_app_with_url), navigate to it
+    if (browser_launch_url[0] != 0) {
+        browser_navigate(browser_launch_url);
+        browser_launch_url[0] = 0;  // Clear after use
+    }
+}
+
+// Launch the browser and immediately navigate to a URL
+// This is called by the shell's "open" command for URLs
+void init_browser_app_with_url(const char* url) {
+    // Store the URL so init_browser_app can use it after window creation
+    strncpy(browser_launch_url, url, 255);
+    browser_launch_url[255] = 0;
+    init_browser_app();
 }

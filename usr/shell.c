@@ -1,6 +1,8 @@
 #include "../sys/api.h"
 #include "../core/string.h"
 #include "../core/memory.h"
+#include "../core/http.h"
+#include "../core/dns.h"
 #include <string.h>
 
 // CDL loader declaration
@@ -9,6 +11,12 @@ extern int sys_load_library(const char* path);
 // Watermark allocator externs
 extern unsigned int k_get_heap_mark();
 extern void k_rewind_heap(unsigned int m);
+
+// App installer for DMG mounting
+extern int app_installer_open_dmg(const char* dmg_path);
+
+// Desktop installer for .app/.cdl auto-install
+extern void desktop_install_app(const char* source_path);
 
 // Simple file concatenation
 void cmd_cat(const char* arg) {
@@ -148,6 +156,274 @@ int is_app_bundle(const char* filename) {
     return 0;
 }
 
+// ============================================================================
+// curl command - Download files via HTTP/HTTPS
+// Usage:
+//   curl <url>                  - Download and auto-detect filename from URL
+//   curl <url> -o <filename>    - Download and save as <filename>
+// ============================================================================
+
+void cmd_curl(const char* args) {
+    if (strlen(args) == 0) {
+        sys_print("Usage: curl <url> [-o <filename>]\n");
+        sys_print("  Downloads a file via HTTP/HTTPS.\n");
+        sys_print("  Without -o, saves to current directory using URL filename.\n");
+        return;
+    }
+
+    // Parse: url and optional -o filename
+    char url[256] = {0};
+    char output_path[128] = {0};
+    int has_output = 0;
+
+    // Extract URL (first token)
+    int i = 0, j = 0;
+    while (args[i] && args[i] != ' ' && j < 255) url[j++] = args[i++];
+    url[j] = 0;
+
+    // Skip whitespace
+    while (args[i] == ' ') i++;
+
+    // Check for -o flag
+    if (args[i] == '-' && args[i+1] == 'o') {
+        i += 2;
+        while (args[i] == ' ') i++;
+        j = 0;
+        while (args[i] && args[i] != ' ' && j < 127) output_path[j++] = args[i++];
+        output_path[j] = 0;
+        has_output = 1;
+    }
+
+    if (strlen(url) == 0) {
+        sys_print("Error: No URL specified.\n");
+        return;
+    }
+
+    // Validate URL has a scheme
+    if (strstr(url, "://") == NULL) {
+        // Default to http:// if no scheme provided
+        char prefixed_url[270];
+        strcpy(prefixed_url, "http://");
+        strcat(prefixed_url, url);
+        strncpy(url, prefixed_url, 255);
+        url[255] = 0;
+    }
+
+    // Auto-detect filename from URL if -o not specified
+    if (!has_output) {
+        // Find the last path component after the final '/'
+        const char* last_slash = strrchr(url, '/');
+        const char* fname = last_slash ? last_slash + 1 : url;
+
+        // Strip query string if present
+        int fname_len = strlen(fname);
+        for (int k = 0; k < fname_len; k++) {
+            if (fname[k] == '?' || fname[k] == '#') { fname_len = k; break; }
+        }
+
+        if (fname_len == 0) {
+            // No filename in URL, use "index.html"
+            strcpy(output_path, "index.html");
+        } else {
+            if (fname_len > 127) fname_len = 127;
+            memcpy(output_path, fname, fname_len);
+            output_path[fname_len] = 0;
+        }
+
+        // Prepend current directory
+        char full_path[256];
+        if (output_path[0] == '/') {
+            strncpy(full_path, output_path, 255);
+        } else {
+            strcpy(full_path, current_path);
+            int plen = strlen(full_path);
+            if (plen > 1 && full_path[plen-1] != '/') {
+                strcat(full_path, "/");
+            }
+            strcat(full_path, output_path);
+        }
+        strncpy(output_path, full_path, 127);
+        output_path[127] = 0;
+    } else if (output_path[0] != '/') {
+        // Relative path - prepend current directory
+        char full_path[256];
+        strcpy(full_path, current_path);
+        int plen = strlen(full_path);
+        if (plen > 1 && full_path[plen-1] != '/') {
+            strcat(full_path, "/");
+        }
+        strcat(full_path, output_path);
+        strncpy(output_path, full_path, 127);
+        output_path[127] = 0;
+    }
+
+    sys_print("Downloading: ");
+    sys_print(url);
+    sys_print("\n  Saving to: ");
+    sys_print(output_path);
+    sys_print("\n");
+
+    // Allocate response buffer (64KB max, on heap to avoid stack overflow)
+    #define CURL_MAX_RESPONSE 65536
+    char* response = (char*)kmalloc(CURL_MAX_RESPONSE);
+    if (!response) {
+        sys_print("Error: Out of memory for download buffer.\n");
+        return;
+    }
+    memset(response, 0, CURL_MAX_RESPONSE);
+
+    sys_print("  Resolving host...\n");
+
+    // Use the kernel's http_get_simple() for the download
+    int total_len = http_get_simple(url, response, CURL_MAX_RESPONSE);
+
+    if (total_len <= 0) {
+        sys_print("Error: Download failed.\n");
+        sys_print("  Possible causes: DNS failure, connection refused, timeout.\n");
+        kfree(response);
+        return;
+    }
+
+    // Find the body (skip HTTP headers)
+    char* body = strstr(response, "\r\n\r\n");
+    int body_len = 0;
+    if (body) {
+        body += 4;
+        body_len = total_len - (body - response);
+    } else {
+        body = response;
+        body_len = total_len;
+    }
+
+    // Write body to file
+    int result = sys_fs_write(output_path, body, body_len);
+
+    if (result >= 0) {
+        sys_print("  Downloaded ");
+        char size_str[16];
+        int_to_str(body_len, size_str);
+        sys_print(size_str);
+        sys_print(" bytes -> ");
+        sys_print(output_path);
+        sys_print("\n");
+
+        // Check if the file is an installable app (.app, .cdl, .dmg)
+        int outlen = strlen(output_path);
+        if (outlen > 4) {
+            const char* ext = output_path + outlen - 4;
+            if (strcmp(ext, ".cdl") == 0 || strcmp(ext, ".app") == 0) {
+                sys_print("  Installable app detected. Installing...\n");
+                desktop_install_app(output_path);
+                sys_print("  Installation complete.\n");
+            } else if (strcmp(ext, ".dmg") == 0) {
+                sys_print("  DMG image detected. Mounting...\n");
+                app_installer_open_dmg(output_path);
+            }
+        }
+    } else {
+        sys_print("Error: Could not save file to disk.\n");
+    }
+
+    kfree(response);
+}
+
+// ============================================================================
+// open command - Open URLs in browser, launch apps, mount DMGs
+// Usage:
+//   open http://example.com       - Opens URL in browser
+//   open https://example.com      - Opens URL in browser (HTTPS)
+//   open /Applications/Foo.app    - Launches an app
+//   open ~/Downloads/app.dmg      - Mounts a DMG
+// ============================================================================
+
+void cmd_open(const char* args) {
+    if (strlen(args) == 0) {
+        sys_print("Usage: open <url|app|dmg>\n");
+        sys_print("  open http://example.com     - Open URL in browser\n");
+        sys_print("  open /Applications/Foo.app  - Launch application\n");
+        sys_print("  open ~/Downloads/app.dmg    - Mount DMG image\n");
+        return;
+    }
+
+    // Resolve path (handle ~/ prefix)
+    char resolved_path[256] = {0};
+    if (strncmp(args, "~/", 2) == 0) {
+        // Expand ~ to /home/user
+        strcpy(resolved_path, "/home/user/");
+        strcat(resolved_path, args + 2);
+    } else if (args[0] != '/') {
+        // Relative path - prepend current directory
+        strcpy(resolved_path, current_path);
+        int plen = strlen(resolved_path);
+        if (plen > 1 && resolved_path[plen-1] != '/') {
+            strcat(resolved_path, "/");
+        }
+        strcat(resolved_path, args);
+    } else {
+        strncpy(resolved_path, args, 255);
+    }
+
+    // Check if the argument is a URL (starts with http:// or https://)
+    if (strncmp(args, "http://", 7) == 0 || strncmp(args, "https://", 8) == 0) {
+        sys_print("Opening URL in browser: ");
+        sys_print(args);
+        sys_print("\n");
+
+        // Launch browser with URL argument
+        extern void init_browser_app_with_url(const char* url);
+        init_browser_app_with_url(args);
+        return;
+    }
+
+    // Check if it's a .app bundle
+    int path_len = strlen(resolved_path);
+    if (path_len > 4 && strcmp(resolved_path + path_len - 4, ".app") == 0) {
+        sys_print("Launching app: ");
+        sys_print(resolved_path);
+        sys_print("\n");
+        execute_program(resolved_path);
+        return;
+    }
+
+    // Check if it's a .dmg file
+    if (path_len > 4 && strcmp(resolved_path + path_len - 4, ".dmg") == 0) {
+        if (!sys_fs_exists(resolved_path)) {
+            sys_print("Error: DMG file not found: ");
+            sys_print(resolved_path);
+            sys_print("\n");
+            return;
+        }
+        sys_print("Mounting DMG: ");
+        sys_print(resolved_path);
+        sys_print("\n");
+        int result = app_installer_open_dmg(resolved_path);
+        if (result < 0) {
+            sys_print("Error: Could not mount DMG.\n");
+        }
+        return;
+    }
+
+    // Check if it's a .cdl file
+    if (path_len > 4 && strcmp(resolved_path + path_len - 4, ".cdl") == 0) {
+        sys_print("Loading CDL app: ");
+        sys_print(resolved_path);
+        sys_print("\n");
+        int handle = sys_load_library(resolved_path);
+        if (handle >= 0) {
+            sys_print("CDL app loaded successfully.\n");
+        } else {
+            sys_print("Error: Could not load CDL app.\n");
+        }
+        return;
+    }
+
+    // Fallback: try to execute it as a program
+    sys_print("Attempting to launch: ");
+    sys_print(resolved_path);
+    sys_print("\n");
+    execute_program(resolved_path);
+}
+
 void execute_program(const char* path) {
     sys_print("Launching App: "); sys_print(path); sys_print("\n");
     
@@ -257,7 +533,7 @@ void shell_main() {
             sys_clear();
         }
         else if (strcmp(cmd, "help") == 0) {
-            sys_print("cmds: ls, cd, cat, gui, reboot, ./<file>, run <app>, loadtest, ping\n");
+            sys_print("cmds: ls, cd, cat, gui, reboot, ./<file>, run <app>, loadtest, ping, curl, open\n");
         }
         else if (strcmp(cmd, "./") == 0 || strcmp(cmd, "run") == 0) {
             // Execute program/bundle
@@ -343,6 +619,26 @@ void shell_main() {
                 sys_delay(200);
             }
             sys_print("Ping complete.\n");
+        }
+        else if (strcmp(cmd, "curl") == 0) {
+            // Get the raw args after "curl " to preserve URL and -o flag
+            char* curl_args = strstr(cmd_buffer, "curl ");
+            if(curl_args) {
+                curl_args += 5; // Skip "curl "
+                cmd_curl(curl_args);
+            } else {
+                cmd_curl("");
+            }
+        }
+        else if (strcmp(cmd, "open") == 0) {
+            // Get the raw args after "open "
+            char* open_args = strstr(cmd_buffer, "open ");
+            if(open_args) {
+                open_args += 5; // Skip "open "
+                cmd_open(open_args);
+            } else {
+                cmd_open("");
+            }
         }
         else if(strlen(cmd) > 0) {
             sys_print("Unknown command.\n");
