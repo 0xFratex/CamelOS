@@ -15,6 +15,7 @@
 #include "../../core/window_server.h"
 #include "../libs/browser_dom.h"
 #include "mujs.h"
+#include "../../common/serial.h"
 
 // Layout
 #define URL_BAR_H 36

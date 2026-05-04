@@ -336,6 +336,9 @@ void cmd_curl(const char* args) {
 //   open ~/Downloads/app.dmg      - Mounts a DMG
 // ============================================================================
 
+// Forward declaration
+void execute_program(const char* path);
+
 void cmd_open(const char* args) {
     if (strlen(args) == 0) {
         sys_print("Usage: open <url|app|dmg>\n");

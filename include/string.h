@@ -33,6 +33,7 @@ void int_to_hex(uint32_t n, char* buf);
 int sprintf(char* buf, const char* fmt, ...);
 int snprintf(char* buf, size_t size, const char* fmt, ...);
 int vsprintf(char* buf, const char* fmt, va_list args);
+int vsnprintf(char* buf, size_t size, const char* fmt, va_list args);
 void printk(const char* fmt, ...);
 
 // Network utilities

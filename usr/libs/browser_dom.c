@@ -467,7 +467,7 @@ void dom_document_destroy(dom_document_t *doc) {
 dom_node_t* dom_node_alloc(dom_document_t *doc) {
     if (!doc) return NULL;
     if (doc->node_count >= DOM_MAX_NODES) {
-        s_printf("[DOM] Node pool exhausted (max %d)\n", DOM_MAX_NODES);
+        s_printf("[DOM] Node pool exhausted\n");
         return NULL;
     }
     // Find a free slot (in_use == 0)
@@ -482,7 +482,7 @@ dom_node_t* dom_node_alloc(dom_document_t *doc) {
             return node;
         }
     }
-    s_printf("[DOM] No free node slots found (count=%d)\n", doc->node_count);
+    s_printf("[DOM] No free node slots found\n");
     return NULL;
 }
 

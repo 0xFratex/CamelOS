@@ -1,4 +1,4 @@
-// mujs_min.c – core runtime, no extras
+// mujs_min.c – core runtime + regexp + date + math + json
 #include "jsstate.c"
 #include "jsvalue.c"
 #include "jsrun.c"
@@ -18,3 +18,9 @@
 #include "jsintern.c"
 #include "jsrepr.c"
 #include "jsgc.c"
+#include "jsregexp.c"
+#include "regexp.c"
+#include "utf.c"
+#include "jsdate.c"
+#include "jsmath.c"
+#include "json.c"

@@ -217,6 +217,15 @@ int snprintf(char* buf, size_t size, const char* fmt, ...) {
     return len;
 }
 
+// vsnprintf - needed by libc_compat
+int vsnprintf(char* buf, size_t size, const char* fmt, va_list args) {
+    int len = vsprintf(buf, fmt, args);
+    if (len >= (int)size && size > 0) {
+        buf[size - 1] = 0;
+    }
+    return len;
+}
+
 // Simple atoi implementation
 int atoi(const char* str) {
     int result = 0;

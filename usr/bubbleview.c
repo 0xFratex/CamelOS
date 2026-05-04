@@ -115,7 +115,6 @@ static int prev_lb = 0;
 static int prev_rb = 0;
 
 // Double Click State
-static int last_click_time = 0;
 static int frame_counter = 0; // Simple tick simulation
 static int last_select_idx = -1; // New: track for "select -> click again" logic
 
@@ -192,6 +191,8 @@ static int drag_off_y = 0;
 // Dirty-region tracking removed — always-full-redraw eliminates shadow compounding.
 // Kept for drag_prev_x/y which are used by handle_input snap-restore logic.
 static int drag_prev_x = 0, drag_prev_y = 0;
+static int drag_was_active = 0;
+static int drag_just_released = 0;
 
 #define DRAG_SHADOW_PAD 12       // kept for compatibility
 

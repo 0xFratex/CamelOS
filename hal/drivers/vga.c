@@ -267,6 +267,20 @@ void vga_wait_vsync() {
     while(!(inb(0x3DA) & 8));
 }
 
+// Set the CRTC display start address for page flipping
+// This atomically switches the displayed framebuffer page during VBLANK,
+// eliminating tearing caused by copying 3MB to VRAM during scanout.
+void vga_set_display_start(uint32_t offset_bytes) {
+    // Convert byte offset to DWORD offset (CRTC uses character clock units)
+    uint32_t offset = offset_bytes / 4;
+    // Write Start Address High (CRTC reg 0x0C)
+    outb(0x3D4, 0x0C);
+    outb(0x3D5, (offset >> 8) & 0xFF);
+    // Write Start Address Low (CRTC reg 0x0D)
+    outb(0x3D4, 0x0D);
+    outb(0x3D5, offset & 0xFF);
+}
+
 void vga_set_color(unsigned char fg, unsigned char bg) {
     text_color = (bg << 4) | (fg & 0x0F);
 }

@@ -11,6 +11,11 @@ typedef struct {
     uint32_t bpp;
     uint32_t* vram_ptr;
     uint32_t* back_ptr; // Double Buffer
+    // Page-flipping state for tear-free rendering
+    int use_page_flip;      // 1 = hardware page flipping enabled
+    int current_page;       // 0 or 1 - which VRAM page is currently displayed
+    uint32_t page_size;     // pitch * height (bytes per page)
+    uint32_t* vram_page[2]; // Pointers to VRAM page 0 and page 1
 } gfx_context_t;
 
 extern gfx_context_t gfx_ctx;

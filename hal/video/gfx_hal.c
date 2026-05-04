@@ -68,20 +68,74 @@ void gfx_init_hal(void* mboot_ptr) {
 
     // 3. Allocate Backbuffer (CRITICAL FIX: NULL CHECK)
     uint32_t size = gfx_ctx.width * gfx_ctx.height * 4;
-    gfx_ctx.back_ptr = (uint32_t*)kmalloc(size);
-    
-    if (gfx_ctx.back_ptr) { 
-        use_backbuffer = 1; 
-        memset(gfx_ctx.back_ptr, 0, size); 
-        s_printf("[GFX] Backbuffer Allocated.\n");
-    } else {
-        use_backbuffer = 0;
-        s_printf("[GFX] WARNING: Backbuffer alloc failed! Using direct VRAM.\n");
+    gfx_ctx.page_size = gfx_ctx.pitch * gfx_ctx.height;
+
+    // 4. Try Hardware Page Flipping (tear-free rendering)
+    // QEMU's stdvga provides 16MB VRAM - enough for 2 pages of 3MB each
+    // Page flipping eliminates tearing by swapping the CRTC start address
+    // instead of copying 3MB to VRAM during scanout.
+    gfx_ctx.use_page_flip = 0;
+    gfx_ctx.current_page = 0;
+    gfx_ctx.vram_page[0] = gfx_ctx.vram_ptr;
+    gfx_ctx.vram_page[1] = (uint32_t*)((uint8_t*)gfx_ctx.vram_ptr + gfx_ctx.page_size);
+
+    // Check if second VRAM page is accessible (need at least 2 * page_size VRAM)
+    // QEMU typically gives 16MB, Bochs gives 8MB - both enough for 2 pages at 1024x768
+    if (gfx_ctx.vram_ptr && gfx_ctx.bpp >= 24 && gfx_ctx.page_size > 0) {
+        // Map second page of VRAM into our address space
+        uint32_t page1_phys = (uint32_t)gfx_ctx.vram_page[1];
+        // Only try page flip if the second page address is within reasonable VRAM range
+        // (typically 0xFD000000 - 0xFE000000 for QEMU)
+        if (page1_phys >= 0xE0000000) {
+            paging_map_region(page1_phys, page1_phys, gfx_ctx.page_size, 0x03);
+            // Verify the mapping worked by trying to write and read back
+            gfx_ctx.vram_page[1][0] = 0xDEADBEEF;
+            if (gfx_ctx.vram_page[1][0] == 0xDEADBEEF) {
+                gfx_ctx.use_page_flip = 1;
+                gfx_ctx.vram_page[1][0] = 0; // Clean up test write
+                // Render into the off-screen page (page 1 initially)
+                gfx_ctx.back_ptr = gfx_ctx.vram_page[1];
+                // Display starts at page 0
+                gfx_ctx.current_page = 0;
+                use_backbuffer = 1;
+                s_printf("[GFX] Page flipping enabled (2 VRAM pages)\n");
+            }
+        }
+    }
+
+    if (!gfx_ctx.use_page_flip) {
+        // Fallback: system RAM backbuffer + memcpy to VRAM
+        gfx_ctx.back_ptr = (uint32_t*)kmalloc(size);
+
+        if (gfx_ctx.back_ptr) {
+            use_backbuffer = 1;
+            memset(gfx_ctx.back_ptr, 0, size);
+            s_printf("[GFX] Backbuffer Allocated.\n");
+        } else {
+            use_backbuffer = 0;
+            s_printf("[GFX] WARNING: Backbuffer alloc failed! Using direct VRAM.\n");
+        }
     }
 }
 
 void gfx_swap_buffers() {
     if (!use_backbuffer || !gfx_ctx.vram_ptr) return;
+
+    // Hardware Page Flipping: swap CRTC start address instead of copying
+    // This is ~100ns vs ~8ms memcpy, and completely eliminates tearing
+    if (gfx_ctx.use_page_flip) {
+        // The back_ptr is already pointing to the off-screen VRAM page
+        // (rendering went directly into VRAM). Just flip the display.
+        extern void vga_set_display_start(uint32_t offset_bytes);
+        int next_page = 1 - gfx_ctx.current_page;
+        vga_set_display_start(next_page * gfx_ctx.page_size);
+        gfx_ctx.current_page = next_page;
+        // Set back_ptr to the NEW off-screen page for next frame's rendering
+        gfx_ctx.back_ptr = gfx_ctx.vram_page[1 - gfx_ctx.current_page];
+        return;
+    }
+
+    // Fallback: copy system RAM backbuffer to VRAM
     if (gfx_ctx.bpp == 24) {
         // Optimised 24bpp conversion: process 4 pixels at a time using
         // 32-bit writes.  Each source pixel is 4 bytes (XRGB), each dest
