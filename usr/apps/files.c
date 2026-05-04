@@ -389,6 +389,14 @@ void files_ctx_click(int click_x, int click_y) {
                             strcat(fm_path, last_entries[ctx_target_idx].filename);
                             nav_push(fm_path);
                             files_refresh();
+                        } else {
+                            // Open file with default app (TextEdit for text files)
+                            char full_path[256];
+                            strcpy(full_path, fm_path);
+                            if(strcmp(fm_path, "/")!=0) strcat(full_path, "/");
+                            strcat(full_path, last_entries[ctx_target_idx].filename);
+                            extern void desktop_execute_item(const char*, int);
+                            desktop_execute_item(full_path, 0);
                         }
                     }
                     break;
@@ -745,6 +753,14 @@ void files_on_mouse(int x, int y, int btn) {
                     strcat(fm_path, last_entries[i].filename);
                     nav_push(fm_path);
                     files_refresh();
+                } else {
+                    // Open file with default app
+                    char full_path[256];
+                    strcpy(full_path, fm_path);
+                    if(strcmp(fm_path, "/")!=0) strcat(full_path, "/");
+                    strcat(full_path, last_entries[i].filename);
+                    extern void desktop_execute_item(const char*, int);
+                    desktop_execute_item(full_path, 0);
                 }
                 return;
             }

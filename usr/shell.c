@@ -644,9 +644,27 @@ void shell_main() {
             sys_print("Unknown command.\n");
         }
 
-        // 2. Rewind heap after command finishes.
-        // This effectively "frees" all memory allocated during the command execution.
-        // WARNING: Do not use this if you launched a background window/task!
-        k_rewind_heap(mark);
+        // 2. Heap cleanup after command finishes.
+        // NOTE: We used to k_rewind_heap(mark) here, but that's extremely dangerous —
+        // it frees ALL memory allocated during command execution, including GUI windows
+        // created by wrap_exec() (open, run, etc.), causing use-after-free crashes
+        // (Int 13 GPF, Int 14 Page Fault). Instead, each command that allocates
+        // temporary buffers should kfree() them explicitly. The heap mark/rewind
+        // is now only used for commands that are known to NOT create persistent objects.
+        //
+        // Commands that create persistent objects (windows, installed apps, etc.):
+        //   open, run, curl (with .app/.dmg auto-install)
+        // These must NOT rewind the heap.
+        //
+        // Commands that are safe to rewind:
+        //   ls, cd, pwd, echo, clear, cat, help, ping
+        int safe_to_rewind = 1;
+        if (strcmp(cmd, "open") == 0 || strcmp(cmd, "run") == 0 ||
+            (strcmp(cmd, "curl") == 0) || strncmp(cmd, "./", 2) == 0) {
+            safe_to_rewind = 0;
+        }
+        if (safe_to_rewind) {
+            k_rewind_heap(mark);
+        }
     }
 }

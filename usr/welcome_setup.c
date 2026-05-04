@@ -554,6 +554,119 @@ int welcome_setup_save_config(void) {
     sys_fs_create("/Applications/README", 0);
     sys_fs_write("/Applications/README", file_buf, file_len);
 
+    // /System/Library/CoreServices/SystemVersion.plist
+    file_len = sprintf(file_buf,
+        "CamelOS Version Info\n"
+        "====================\n"
+        "ProductName: CamelOS\n"
+        "ProductVersion: 1.0\n"
+        "BuildVersion: 2026.05\n");
+    sys_fs_create("/System/Library/CoreServices/SystemVersion.plist", 0);
+    sys_fs_write("/System/Library/CoreServices/SystemVersion.plist", file_buf, file_len);
+
+    // /var/log/install.log
+    file_len = sprintf(file_buf,
+        "[%s] System installation completed\n"
+        "[%s] Default applications registered\n"
+        "[%s] Network stack initialized\n",
+        g_setup.config.username, g_setup.config.username, g_setup.config.username);
+    sys_fs_create("/var/log/install.log", 0);
+    sys_fs_write("/var/log/install.log", file_buf, file_len);
+
+    // /etc/fstab - Filesystem table
+    file_len = sprintf(file_buf,
+        "# CamelOS Filesystem Table\n"
+        "# Device    Mount    Type    Options\n"
+        "/dev/hda0   /        pfs32   defaults\n");
+    sys_fs_create("/etc/fstab", 0);
+    sys_fs_write("/etc/fstab", file_buf, file_len);
+
+    // /etc/profile - Shell profile
+    file_len = sprintf(file_buf,
+        "# CamelOS Shell Profile\n"
+        "export HOME=/Users/%s\n"
+        "export PATH=/bin:/usr/apps\n"
+        "export SHELL=/bin/sh\n",
+        g_setup.config.username);
+    sys_fs_create("/etc/profile", 0);
+    sys_fs_write("/etc/profile", file_buf, file_len);
+
+    // /Library/Preferences/com.apple.dock.plist equivalent
+    file_len = sprintf(file_buf,
+        "# Dock Configuration\n"
+        "apps=Files,Terminal,TextEdit,Browser,Settings\n"
+        "orientation=bottom\n"
+        "autohide=0\n");
+    sys_fs_create("/Library/Preferences/dock.conf", 0);
+    sys_fs_write("/Library/Preferences/dock.conf", file_buf, file_len);
+
+    // Sample file in Downloads
+    char dl_path[128];
+    strcpy(dl_path, "/Users/");
+    strcat(dl_path, g_setup.config.username);
+    strcat(dl_path, "/Downloads/README.txt");
+    file_len = sprintf(file_buf,
+        "Downloads Folder\n"
+        "================\n\n"
+        "Files downloaded from the internet appear here.\n"
+        "Use the Browser to download files, or curl:\n"
+        "  curl http://example.com/file.txt\n\n");
+    sys_fs_create(dl_path, 0);
+    sys_fs_write(dl_path, file_buf, file_len);
+
+    // Sample file in Pictures
+    char pic_path[128];
+    strcpy(pic_path, "/Users/");
+    strcat(pic_path, g_setup.config.username);
+    strcat(pic_path, "/Pictures/README.txt");
+    file_len = sprintf(file_buf,
+        "Pictures Folder\n"
+        "===============\n\n"
+        "Store your images and screenshots here.\n");
+    sys_fs_create(pic_path, 0);
+    sys_fs_write(pic_path, file_buf, file_len);
+
+    // Sample file in Music
+    char mus_path[128];
+    strcpy(mus_path, "/Users/");
+    strcat(mus_path, g_setup.config.username);
+    strcat(mus_path, "/Music/README.txt");
+    file_len = sprintf(file_buf,
+        "Music Folder\n"
+        "============\n\n"
+        "Store your audio files here.\n");
+    sys_fs_create(mus_path, 0);
+    sys_fs_write(mus_path, file_buf, file_len);
+
+    // Sample file in Movies
+    char mov_path[128];
+    strcpy(mov_path, "/Users/");
+    strcat(mov_path, g_setup.config.username);
+    strcat(mov_path, "/Movies/README.txt");
+    file_len = sprintf(file_buf,
+        "Movies Folder\n"
+        "=============\n\n"
+        "Store your video files here.\n");
+    sys_fs_create(mov_path, 0);
+    sys_fs_write(mov_path, file_buf, file_len);
+
+    // /bin directory content
+    file_len = sprintf(file_buf,
+        "CamelOS Binaries\n"
+        "================\n"
+        "This directory contains system executables.\n"
+        "Available commands: ls, cd, pwd, cat, echo, curl, open, ping\n");
+    sys_fs_create("/bin/README", 0);
+    sys_fs_write("/bin/README", file_buf, file_len);
+
+    // /sbin directory content
+    file_len = sprintf(file_buf,
+        "CamelOS System Binaries\n"
+        "=======================\n"
+        "System administration tools.\n");
+    sys_fs_create("/sbin/README", 0);
+    sys_fs_write("/sbin/README", file_buf, file_len);
+
     // CRITICAL: Flush all changes to disk so config persists across reboots
     // Double-flush to ensure data reaches persistent storage
     pfs32_sync();

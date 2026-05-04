@@ -51,9 +51,17 @@ static void te_new() {
 }
 
 static void te_open_file(const char* path) {
-    char buf[8192];
-    int len = sys_fs_read(path, buf, sizeof(buf) - 1);
+    // Allocate on heap to avoid stack overflow (kernel stack is only 16KB,
+    // and te_open_file can be called deep in the call chain from context menus)
+    #define TE_OPEN_BUFSZ 16384
+    char* buf = (char*)kmalloc(TE_OPEN_BUFSZ);
+    if (!buf) {
+        strcpy(status_msg, "Error: Out of memory");
+        return;
+    }
+    int len = sys_fs_read(path, buf, TE_OPEN_BUFSZ - 1);
     if (len <= 0) {
+        kfree(buf);
         strcpy(status_msg, "Error: Could not read file");
         return;
     }
@@ -89,15 +97,21 @@ static void te_open_file(const char* path) {
     status_msg[sizeof(status_msg) - 1] = 0;
     
     file_modified = 0;
+    kfree(buf);
 }
 
 static void te_save_file(const char* path) {
-    // Build output buffer
-    char buf[8192];
+    // Build output buffer on heap to avoid stack overflow
+    #define TE_SAVE_BUFSZ 16384
+    char* buf = (char*)kmalloc(TE_SAVE_BUFSZ);
+    if (!buf) {
+        strcpy(status_msg, "Error: Out of memory!");
+        return;
+    }
     int pos = 0;
     for (int i = 0; i < line_count; i++) {
         int len = strlen(text_lines[i]);
-        if (pos + len + 2 < (int)sizeof(buf)) {
+        if (pos + len + 2 < TE_SAVE_BUFSZ) {
             memcpy(buf + pos, text_lines[i], len);
             pos += len;
             buf[pos++] = '\n';
@@ -115,6 +129,7 @@ static void te_save_file(const char* path) {
     } else {
         strcpy(status_msg, "Error: Save failed!");
     }
+    kfree(buf);
 }
 
 static void textedit_on_paint(int x, int y, int w, int h) {
@@ -356,6 +371,16 @@ static void textedit_on_resize(int new_w, int new_h) {
 
 void init_textedit_app() {
     te_new();
+
+    // Check for launch arguments (file path passed via "Open With" or command line)
+    char launch_path[256];
+    launch_path[0] = 0;
+    extern void wrap_get_args(char* b, int m);
+    wrap_get_args(launch_path, sizeof(launch_path) - 1);
+    if (launch_path[0] && sys_fs_exists(launch_path)) {
+        te_open_file(launch_path);
+    }
+
     Window* w = fw_create_window("TextEdit", 500, 380, textedit_on_paint, textedit_on_input, textedit_on_mouse);
     w->min_w = 300;
     
