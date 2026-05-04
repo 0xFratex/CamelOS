@@ -272,8 +272,7 @@ void gfx_draw_asset_scaled(uint32_t* buffer, int x, int y, const uint32_t* data,
 }
 
 uint32_t* gfx_get_active_buffer() { return use_backbuffer ? gfx_ctx.back_ptr : (uint32_t*)gfx_ctx.vram_ptr; }
-int gfx_get_width() { return gfx_ctx.width; }
-int gfx_get_height() { return gfx_ctx.height; }
+/* gfx_get_width/gfx_get_height moved to gfx_hal.h as static inline */
 void gfx_draw_icon(int x, int y, int w, int h, const uint32_t* data) { gfx_draw_asset_scaled(0, x, y, data, w, h, w, h); }
 
 void gfx_draw_rect(int x, int y, int w, int h, uint32_t color) {

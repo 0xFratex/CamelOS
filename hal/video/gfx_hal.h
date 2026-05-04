@@ -30,8 +30,8 @@ void gfx_fill_rounded_rect(int x, int y, int w, int h, uint32_t color, int r);
 void gfx_fill_rounded_rect_aa(int x, int y, int w, int h, uint32_t color, int r);
 void gfx_stroke_rounded_rect(int x, int y, int w, int h, uint32_t color, int r, int line_width);
 uint32_t* gfx_get_active_buffer();
-int gfx_get_width();
-int gfx_get_height();
+static inline int gfx_get_width() { return gfx_ctx.width; }
+static inline int gfx_get_height() { return gfx_ctx.height; }
 void gfx_draw_asset_scaled(uint32_t* buffer, int x, int y, const uint32_t* data, int sw, int sh, int dw, int dh);
 void gfx_draw_icon(int x, int y, int w, int h, const uint32_t* data);
 
