@@ -158,14 +158,22 @@ static uint32_t* draw_target = 0;
 void gfx_set_target(uint32_t* buffer) { draw_target = buffer; }
 
 void gfx_draw_char(int x, int y, char c, uint32_t color) {
-    int idx = c - 32;
-    if (idx < 0 || idx > 95) idx = 0;
+    unsigned char uc = (unsigned char)c;
+    const uint8_t* glyph;
+    
+    if (uc >= 32 && uc <= 127) {
+        glyph = font_8x16[uc - 32];
+    } else if (uc >= 160 && uc <= 255) {
+        glyph = font_latin1_8x16[uc - 160];
+    } else {
+        glyph = font_8x16[0];
+    }
     
     // Draw 8x16 background box for readability overlay
     gfx_fill_rect(x, y, 8, 16, 0xAA000000); // Semi-transparent black
 
     for(int row=0; row<16; row++) {
-        uint8_t line = font_8x16[idx][row];
+        uint8_t line = glyph[row];
         for(int col=0; col<8; col++) {
             // Bit 7 is leftmost
             if((line << col) & 0x80) {

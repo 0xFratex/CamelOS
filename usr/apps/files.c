@@ -421,7 +421,7 @@ void files_on_input(int key) {
             }
         } else if (key == 27) { // Escape
             prompt_active = 0;
-        } else if (key >= 32 && key < 127 && prompt_len < 38) {
+        } else if (key >= 32 && key != 127 && (key <= 126 || key >= 160) && prompt_len < 38) {
             prompt_buffer[prompt_len++] = (char)key;
             prompt_buffer[prompt_len] = 0;
         }

@@ -338,18 +338,29 @@ Glyph* font_get_glyph(FontFace* font, uint32_t codepoint) {
     if (font == NULL) return NULL;
     
     // For built-in font, return pointer to bitmap data
-    if (codepoint >= 32 && codepoint < 128) {
+    if ((codepoint >= 32 && codepoint <= 127) || (codepoint >= 160 && codepoint <= 255)) {
         static Glyph glyph;
-        int idx = codepoint - 32;
+        int idx;
+        const uint8_t* bitmap_data;
+        int char_w = 8; // Default width for Latin-1 glyphs
+        
+        if (codepoint >= 32 && codepoint <= 127) {
+            idx = codepoint - 32;
+            bitmap_data = (uint8_t*)font_8x16[idx];
+            char_w = font_metrics_8x16[idx].width;
+        } else {
+            idx = codepoint - 160;
+            bitmap_data = (uint8_t*)font_latin1_8x16[idx];
+        }
         
         glyph.codepoint = codepoint;
-        glyph.width = font_metrics_8x16[idx].width;
+        glyph.width = char_w;
         glyph.height = 16;
-        glyph.advance_x = font_metrics_8x16[idx].width * 64;
+        glyph.advance_x = char_w * 64;
         glyph.advance_y = 0;
-        glyph.bearing_x = font_metrics_8x16[idx].bearing * 64;
+        glyph.bearing_x = (codepoint <= 127 ? font_metrics_8x16[codepoint - 32].bearing : 0) * 64;
         glyph.bearing_y = 12 * 64;
-        glyph.bitmap = (uint8_t*)font_8x16[idx];
+        glyph.bitmap = (uint8_t*)bitmap_data;
         glyph.grayscale = 1;
         
         return &glyph;
@@ -647,11 +658,17 @@ void font_render_glyph_fb(FontFace* font, uint32_t codepoint,
                            uint8_t* fb, int fb_w, int fb_h, int pitch,
                            int x, int y, uint32_t color) {
     if (font == NULL || fb == NULL) return;
-    if (codepoint < 32 || codepoint >= 128) return;
     
-    int idx = codepoint - 32;
-    const uint8_t* bitmap = font_8x16[idx];
-    int char_width = font->metrics.is_monospace ? 8 : font_metrics_8x16[idx].width;
+    const uint8_t* bitmap;
+    if (codepoint >= 32 && codepoint <= 127) {
+        bitmap = font_8x16[codepoint - 32];
+    } else if (codepoint >= 160 && codepoint <= 255) {
+        bitmap = font_latin1_8x16[codepoint - 160];
+    } else {
+        return; // No glyph available
+    }
+    int idx = (codepoint >= 160) ? codepoint - 160 + 96 : codepoint - 32;
+    int char_width = font->metrics.is_monospace ? 8 : 8; // Fallback width
     
     // Extract RGBA from color
     uint8_t r = (color >> 16) & 0xFF;

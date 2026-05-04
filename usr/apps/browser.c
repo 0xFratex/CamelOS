@@ -901,7 +901,7 @@ static void browser_on_input(int key) {
             }
         } else if (key == 27) {
             url_active = 0;
-        } else if (key >= 32 && key < 127 && url_cursor < 254) {
+        } else if (key >= 32 && key != 127 && (key <= 126 || key >= 160) && url_cursor < 254) {
             int len = strlen(url_buf);
             for (int i = len; i > url_cursor; i--) url_buf[i] = url_buf[i-1];
             url_buf[url_cursor++] = (char)key;

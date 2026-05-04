@@ -343,10 +343,19 @@ void sys_gfx_text_mode() {}
 void sys_gfx_rect(int x, int y, int w, int h, int color) { gfx_fill_rect(x, y, w, h, (uint32_t)color); }
 void sys_gfx_pixel(int x, int y, int color) { gfx_put_pixel(x, y, (uint32_t)color); }
 void sys_gfx_char(int x, int y, char c, int color) {
-    int index = c - 32;
-    if (index < 0 || index > 95) index = 31;
+    unsigned char uc = (unsigned char)c;
+    const uint8_t* glyph;
+    
+    if (uc >= 32 && uc <= 127) {
+        glyph = font_8x16[uc - 32];
+    } else if (uc >= 160 && uc <= 255) {
+        glyph = font_latin1_8x16[uc - 160];
+    } else {
+        glyph = font_8x16[0]; // Fallback to space
+    }
+    
     for(int row=0; row<16; row++) {
-        uint8_t line = font_8x16[index][row];
+        uint8_t line = glyph[row];
         for(int col=0; col<8; col++) {
             // Bit 7 is leftmost
             if((line << col) & 0x80) gfx_put_pixel(x + col, y + row, (uint32_t)color);

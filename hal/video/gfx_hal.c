@@ -299,9 +299,20 @@ void gfx_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
 }
 
 void gfx_draw_char_scaled(int x, int y, char c, uint32_t color, int scale) {
-    int idx = c - 32; if(idx<0) idx=0;
+    // Use unsigned char to handle Latin-1 characters (160-255) correctly
+    unsigned char uc = (unsigned char)c;
+    const uint8_t* glyph;
+    
+    if (uc >= 32 && uc <= 127) {
+        glyph = font_8x16[uc - 32];
+    } else if (uc >= 160 && uc <= 255) {
+        glyph = font_latin1_8x16[uc - 160];
+    } else {
+        glyph = font_8x16[0]; // Fallback to space
+    }
+    
     for(int row=0; row<16; row++) {
-        uint8_t line = font_8x16[idx][row];
+        uint8_t line = glyph[row];
         for(int col=0; col<8; col++) {
             // Bit 7 is leftmost
             if((line << col) & 0x80) {

@@ -108,15 +108,19 @@ static const KeyboardLayout kbd_layouts[] = {
         "Italian QWERTY"
     },
     // 6: Brazilian ABNT2
+    // Physical layout: Row3=L Ç ~(dead)  Row4=, . ; /(extra key scancode 0x73)
+    // Position 39=ç, Position 40='~'(dead key for tilde/circumflex), Position 41='
+    // Position 53=;(remapped from US '/'), Position 55=*(numpad)
+    // The extra '/' key between ; and Right Shift uses scancode 0x73 (handled separately)
     {
-        {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+        {0,  27, '\'', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, '\'', '~',
-         0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', ';', 0, '/', 0, ' '},
-        {0,  27, '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, '~', '`',
+         0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', ';', 0, '*', 0, ' '},
+        {0,  27, '"', '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', (char)199, '"', '^',
-         0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', ':', 0, '?', 0, ' '},
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', (char)199, '^', '~',
+         0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', ':', 0, '*', 0, ' '},
         "Brazilian ABNT2"
     },
     // 7: Dvorak
@@ -408,14 +412,15 @@ static const KeyboardLayout kbd_layouts[] = {
         "Canadian"
     },
     // 31: Brazilian ABNT1
+    // Similar to US QWERTY but with ç at position 39, '/' stays at position 53
     {
-        {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+        {0,  27, '\'', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, ';', '~',
+         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 231, '~', '`',
          0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' '},
-        {0,  27, '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
+        {0,  27, '"', '!', '@', '#', '$', '%', 168, '&', '*', '(', ')', '_', '+', '\b',
          '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', (char)199, ':', '^',
+         0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', (char)199, '^', '~',
          0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '},
         "Brazilian ABNT1"
     },
@@ -541,23 +546,34 @@ void keyboard_callback() {
         if (scancode == 0x57) key_out = KEY_F11;
         if (scancode == 0x58) key_out = KEY_F12;
 
+        // Handle ABNT2-specific extra key (scancode 0x73 = extra '/' between ';' and Right Shift)
+        // This scancode is only generated on Brazilian ABNT2 keyboards
+        if (scancode == 0x73) {
+            if (kbd_layout == KBD_LAYOUT_PORTBR) {
+                key_out = kbd_shift_pressed ? '?' : '/';
+            } else {
+                key_out = kbd_shift_pressed ? '?' : '/';
+            }
+        }
+
         if (key_out == 0 && scancode < 58) {
             // Use active layout tables
             const char* layout_std = kbd_layouts[kbd_layout].std;
             const char* layout_shift = kbd_layouts[kbd_layout].shift;
 
-            // Char mapping
+            // Char mapping - cast to unsigned char to prevent sign extension
+            // for Latin-1 characters > 127 (e.g., ç=231, ü=252, etc.)
             if (kbd_shift_pressed ^ kbd_caps_lock) {
                 // Handle letters specifically for Caps Lock
-                char base = layout_std[scancode];
+                unsigned char base = (unsigned char)layout_std[scancode];
                 if (base >= 'a' && base <= 'z') {
-                    key_out = layout_shift[scancode];
+                    key_out = (unsigned char)layout_shift[scancode];
                 } else {
                     // Non-letters affected by Shift only, mostly
-                    key_out = kbd_shift_pressed ? layout_shift[scancode] : layout_std[scancode];
+                    key_out = kbd_shift_pressed ? (unsigned char)layout_shift[scancode] : (unsigned char)layout_std[scancode];
                 }
             } else {
-                key_out = kbd_shift_pressed ? layout_shift[scancode] : layout_std[scancode];
+                key_out = kbd_shift_pressed ? (unsigned char)layout_shift[scancode] : (unsigned char)layout_std[scancode];
             }
         }
     }

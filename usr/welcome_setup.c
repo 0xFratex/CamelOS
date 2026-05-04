@@ -1505,7 +1505,7 @@ int welcome_setup_handle_key(int key) {
                 g_setup.password_active = 1;
                 g_setup.password_step = 0;
             }
-        } else if (key >= 0x20 && key < 0x7F && g_setup.input_cursor < SETUP_USERNAME_MAX - 1) {
+        } else if (key >= 0x20 && key != 0x7F && (key <= 0x7E || key >= 0xA0) && g_setup.input_cursor < SETUP_USERNAME_MAX - 1) {
             g_setup.input_buffer[g_setup.input_cursor] = (char)key;
             g_setup.input_cursor++;
             g_setup.input_buffer[g_setup.input_cursor] = 0;
@@ -1551,7 +1551,7 @@ int welcome_setup_handle_key(int key) {
                     g_setup.confirm_cursor = 0;
                 }
             }
-        } else if (key >= 0x20 && key < 0x7F) {
+        } else if (key >= 0x20 && key != 0x7F && (key <= 0x7E || key >= 0xA0)) {
             if (g_setup.password_step == 0 && g_setup.password_cursor < SETUP_PASSWORD_MAX - 1) {
                 g_setup.password_buffer[g_setup.password_cursor] = (char)key;
                 g_setup.password_cursor++;

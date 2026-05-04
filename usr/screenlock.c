@@ -226,7 +226,7 @@ int screenlock_handle_key(int key) {
             g_lock.entered_password[g_lock.cursor_pos] = 0;
         }
         g_lock.show_error = 0;
-    } else if (key >= 0x20 && key < 0x7F && g_lock.cursor_pos < LOCK_RAW_PASSWORD_MAX - 1) {
+    } else if (key >= 0x20 && key != 0x7F && (key <= 0x7E || key >= 0xA0) && g_lock.cursor_pos < LOCK_RAW_PASSWORD_MAX - 1) {
         // Character input
         g_lock.entered_password[g_lock.cursor_pos] = (char)key;
         g_lock.cursor_pos++;

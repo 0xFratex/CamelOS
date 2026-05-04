@@ -491,8 +491,10 @@ void term_on_input(int key) {
             term_buffer[terminal_row][terminal_col] = 0;
         }
     }
-    else if (key >= 32 && key <= 126) {
-        if(terminal_col < TERM_COLS - 1) {
+    else if (key >= 32 && key != 127) {
+        // Accept ASCII printable chars (32-126) and Latin-1 Supplement (160-255)
+        // 127=DEL is excluded, 128-159 are special keys/control chars
+        if ((key <= 126 || key >= 160) && terminal_col < TERM_COLS - 1) {
             term_buffer[terminal_row][terminal_col] = (char)key;
             term_buffer[terminal_row][terminal_col+1] = 0;
             terminal_col++;

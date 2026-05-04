@@ -1150,7 +1150,7 @@ void start_bubble_view() {
         }
 
         // Polling
-        char k = sys_get_key();
+        int k = sys_get_key();
         int click = (lb && !prev_lb);
 
         // ============================================

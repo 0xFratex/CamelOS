@@ -96,13 +96,20 @@ static void panic_draw_icon(int cx, int cy) {
 // Draw text with larger font (2x scaled)
 static void panic_draw_text_scaled(int x, int y, const char* text, uint32_t color, int scale) {
     extern const uint8_t font_8x16[96][16];
+    extern const uint8_t font_latin1_8x16[96][16];
     
     int orig_x = x;
     while (*text) {
-        char c = *text++;
-        if (c < 32 || c > 127) c = '?';
+        unsigned char c = (unsigned char)*text++;
+        const uint8_t* char_data;
         
-        const uint8_t* char_data = font_8x16[c - 32];
+        if (c >= 32 && c <= 127) {
+            char_data = font_8x16[c - 32];
+        } else if (c >= 160 && c <= 255) {
+            char_data = font_latin1_8x16[c - 160];
+        } else {
+            char_data = font_8x16['?' - 32]; // Fallback to '?'
+        }
         
         for (int row = 0; row < 16; row++) {
             uint8_t row_data = char_data[row];

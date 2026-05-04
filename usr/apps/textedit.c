@@ -230,7 +230,7 @@ static void textedit_on_input(int key) {
             prompt_active = 0;
         } else if (key == '\b') {
             if (prompt_len > 0) prompt_buf[--prompt_len] = 0;
-        } else if (key >= 32 && key < 127 && prompt_len < 126) {
+        } else if (key >= 32 && key != 127 && (key <= 126 || key >= 160) && prompt_len < 126) {
             prompt_buf[prompt_len++] = (char)key;
             prompt_buf[prompt_len] = 0;
         }
@@ -291,8 +291,8 @@ static void textedit_on_input(int key) {
             }
             file_modified = 1;
         }
-    } else if (key >= 32 && key < 127) {
-        // Insert character
+    } else if (key >= 32 && key != 127 && (key <= 126 || key >= 160)) {
+        // Insert character (ASCII printable + Latin-1 Supplement)
         int len = strlen(text_lines[cursor_line]);
         if (len < MAX_LINE_LEN - 1) {
             for (int i = len; i > cursor_col; i--) {
