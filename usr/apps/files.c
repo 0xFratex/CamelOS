@@ -14,6 +14,7 @@
 extern void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int req_w, int req_h);
 
 // ===== Layout Constants =====
+#define CHAR_W        8       // Character width in pixels
 #define ICON_SIZE     32      // Icon image size
 #define ICON_PAD_X    18      // Horizontal padding around icon
 #define ICON_PAD_Y    10      // Top padding above icon
@@ -751,7 +752,7 @@ void files_on_mouse(int x, int y, int btn) {
     // ---- Handle prompt mode - check button clicks ----
     if (prompt_active) {
         if (btn == 1) {
-            int pw = 320, ph = 130;
+            int pw = 320;
             int px_off = (win_w - pw) / 2;
             int py_off = win_h / 2 - 65;
             
