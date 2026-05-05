@@ -651,17 +651,23 @@ void render_pie_chart(int cx, int cy, int radius, pie_slice_t* slices, int slice
         }
     }
 
-    // Draw legend next to the pie chart
-    int legend_x = cx + radius + 20;
-    int legend_y = cy - (slice_count * 22) / 2;
+    // Draw legend below the pie chart (prevents overlap with adjacent UI)
+    int legend_x = cx - (slice_count > 3 ? 80 : 40);
+    int legend_y = cy + radius + 10;
+    // Use a 2-column layout if many slices
+    int col_w = 160;
+    int cols = (slice_count > 3) ? 2 : 1;
     for (int s = 0; s < slice_count; s++) {
         if (!slices[s].label) continue;
+        int c = s % cols;
+        int r = s / cols;
+        int lx = legend_x + c * col_w;
+        int ly = legend_y + r * 20;
         // Color swatch
-        gfx_fill_rounded_rect(legend_x, legend_y, 14, 14, slices[s].color, 3);
-        gfx_draw_rect(legend_x, legend_y, 14, 14, 0xFFC6C6C8);
+        gfx_fill_rounded_rect(lx, ly, 12, 12, slices[s].color, 3);
+        gfx_draw_rect(lx, ly, 12, 12, 0xFFC6C6C8);
         // Label
-        gfx_draw_string(legend_x + 20, legend_y + 1, slices[s].label, C_TEXT_DARK);
-        legend_y += 22;
+        gfx_draw_string(lx + 16, ly, slices[s].label, C_TEXT_DARK);
     }
 }
 
@@ -1595,9 +1601,9 @@ void render_disk_utility(void) {
         }
 
         if (pie_count > 0) {
-            int pie_cx = cx + 100;
-            int pie_cy = st_y + 150;
-            int pie_r = 70;
+            int pie_r = 50;  // Slightly smaller to prevent overlap
+            int pie_cx = cx + 80;
+            int pie_cy = st_y + 36 + 22 + 8 + pie_r;  // Below "DISK USAGE" label + padding
 
             // Section label
             render_section_label(cx, st_y + 36, content_w - 4, "DISK USAGE");
@@ -1605,9 +1611,12 @@ void render_disk_utility(void) {
         }
     }
 
-    // Advanced tools section
+    // Advanced tools section - position below the pie chart + legend to avoid overlap
+    // Pie chart bottom = pie_cy + pie_r, legend below = +10 + (rows * 20)
+    // With pie_r=50, 5 slices in 2 cols = 3 rows: pie_cy + 50 + 10 + 60 = pie_cy + 120
+    // pie_cy = st_y + 116 = ctrl_y + 204 => bottom ~ ctrl_y + 324
     int tools_y = (disk_has_mbr[util_drive_idx]) ?
-                   ctrl_y + 250 : ctrl_y + 88;
+                   ctrl_y + 330 : ctrl_y + 88;
 
     render_section_label(cx, tools_y, content_w - 4, "ADVANCED TOOLS");
     tools_y += 22;
