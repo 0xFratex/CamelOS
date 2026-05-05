@@ -1,6 +1,5 @@
 // core/select.c - POSIX-compatible select/poll for CamelOS
 #include "select.h"
-#include "socket.h"
 #include "net.h"
 #include "string.h"
 #include "memory.h"

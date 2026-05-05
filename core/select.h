@@ -3,6 +3,7 @@
 #define SELECT_H
 
 #include "../include/types.h"
+#include "socket.h"  // for struct timeval
 
 // ---------------------------------------------------------------------------
 // fd_set definitions
@@ -33,17 +34,6 @@ typedef struct {
 #define FD_ISSET(fd, set) \
     (((fd) >= 0 && (fd) < FD_SETSIZE) ? \
         ((set)->fds_array[(fd) / (8 * sizeof(long))] & (1L << ((fd) % (8 * sizeof(long))))) != 0 : 0)
-
-// ---------------------------------------------------------------------------
-// struct timeval (guard against redefinition from socket.h)
-// ---------------------------------------------------------------------------
-#ifndef _STRUCT_TIMEVAL_DEFINED
-#define _STRUCT_TIMEVAL_DEFINED
-struct timeval {
-    long tv_sec;
-    long tv_usec;
-};
-#endif
 
 // ---------------------------------------------------------------------------
 // poll() definitions
