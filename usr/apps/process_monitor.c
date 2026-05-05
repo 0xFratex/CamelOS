@@ -878,12 +878,9 @@ static void draw_system_tab(int x, int y, int w, int h) {
         int lx = card_x + 16;
         char num[16];
 
-        /* Count active IPC ports from the internal port table */
-        extern ipc_port_t ipc_ports[IPC_MAX_PORTS];
-        int active_ports = 0;
-        for (int i = 0; i < IPC_MAX_PORTS; i++) {
-            if (ipc_ports[i].in_use) active_ports++;
-        }
+        /* Count active IPC ports */
+        extern int ipc_get_active_port_count(void);
+        int active_ports = ipc_get_active_port_count();
         int_to_str(active_ports, num);
         draw_stat_row(lx, sy, 140, "IPC Ports:", num); sy += 22;
 

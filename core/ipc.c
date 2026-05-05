@@ -374,3 +374,11 @@ void ipc_print_status(void) {
     int_to_str(active_msgs, buf); s_printf(buf); s_printf(" msgs, ");
     int_to_str(active_shm, buf); s_printf(buf); s_printf(" shm regions\n");
 }
+
+int ipc_get_active_port_count(void) {
+    int count = 0;
+    for (int i = 0; i < IPC_MAX_PORTS; i++) {
+        if (g_ports[i].in_use) count++;
+    }
+    return count;
+}

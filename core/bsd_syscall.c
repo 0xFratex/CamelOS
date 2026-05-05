@@ -21,6 +21,10 @@ extern int  process_getpid(void);                                              /
 extern void* vmm_mmap(void* space, uint32_t addr, uint32_t length,
                        int prot, int flags, uint32_t offset);                 // mm/vmm.c
 
+// --- Forward declarations (functions defined after bsd_syscall_handler) ---
+int bsd_sigaction(int pid, int signum, void (*handler)(int));
+int bsd_sigprocmask(int pid, int how, uint32_t set);
+
 // --- State ---
 static bsd_fd_entry_t g_fd_table[BSD_MAX_FDS];
 

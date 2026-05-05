@@ -205,6 +205,11 @@ int tcp_conn_is_established(void* conn_ptr) {
     return conn && conn->state == TCP_ESTABLISHED;
 }
 
+// Forward declaration - needed because tcp_handle_incoming_syn is static and called
+// from tcp_handle_packet before its definition
+static int tcp_handle_incoming_syn(uint16_t dst_port, uint32_t src_ip, uint16_t src_port,
+                                    uint32_t dst_ip, uint32_t seq);
+
 // Process incoming TCP packet - OPTIMIZED
 void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip) {
     tcp_header_t* tcp = (tcp_header_t*)packet;

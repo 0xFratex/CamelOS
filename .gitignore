@@ -7,3 +7,10 @@
 disk.img
 nasm
 iso/
+build/**/*.o
+*.o
+*.cdl
+*.elf
+*.bin
+*.iso
+disk.img

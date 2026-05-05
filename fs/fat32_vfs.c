@@ -120,29 +120,29 @@ static int fat32_vfs_seek(int fs_handle, uint32_t offset, int whence)
 
 static int fat32_vfs_stat(const char* path, vfs_stat_t* stat)
 {
-    fat32_stat_t fat32_stat;
-    int ret = fat32_stat(path, &fat32_stat);
+    fat32_stat_t fs;
+    int ret = fat32_stat(path, &fs);
     if (ret != FAT32_OK) return -1;
 
     /* Clear the output structure */
     memset(stat, 0, sizeof(vfs_stat_t));
 
     /* Copy name */
-    strncpy(stat->name, fat32_stat.name, VFS_MAX_NAME - 1);
+    strncpy(stat->name, fs.name, VFS_MAX_NAME - 1);
     stat->name[VFS_MAX_NAME - 1] = '\0';
 
     /* Map fields */
-    stat->size         = fat32_stat.size;
-    stat->type         = fat32_attr_to_vfs_type(fat32_stat.attr);
-    stat->permissions  = fat32_attr_to_permissions(fat32_stat.attr);
+    stat->size         = fs.size;
+    stat->type         = fat32_attr_to_vfs_type(fs.attr);
+    stat->permissions  = fat32_attr_to_permissions(fs.attr);
     stat->uid          = 0;    /* FAT32 has no UID concept */
     stat->gid          = 0;    /* FAT32 has no GID concept */
-    stat->create_time  = fat32_datetime_to_timestamp(fat32_stat.create_date,
-                                                      fat32_stat.create_time);
-    stat->modify_time  = fat32_datetime_to_timestamp(fat32_stat.write_date,
-                                                      fat32_stat.write_time);
-    stat->access_time  = fat32_datetime_to_timestamp(fat32_stat.access_date, 0);
-    stat->blocks       = (fat32_stat.size + 511) / 512;
+    stat->create_time  = fat32_datetime_to_timestamp(fs.create_date,
+                                                      fs.create_time);
+    stat->modify_time  = fat32_datetime_to_timestamp(fs.write_date,
+                                                      fs.write_time);
+    stat->access_time  = fat32_datetime_to_timestamp(fs.access_date, 0);
+    stat->blocks       = (fs.size + 511) / 512;
 
     return 0;
 }

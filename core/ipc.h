@@ -130,4 +130,7 @@ void ipc_unregister_service(const char* name);
 // Debug
 void ipc_print_status(void);
 
+// Get count of active IPC ports (for process monitor)
+int ipc_get_active_port_count(void);
+
 #endif // IPC_H

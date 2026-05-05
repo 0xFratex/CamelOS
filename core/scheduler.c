@@ -303,6 +303,9 @@ void scheduler_set_priority(task_t* task, uint8_t priority) {
     s_printf("[SCHED] Task priority changed\n");
 }
 
+/* Forward declaration - scheduler_check_sleepers is defined after scheduler_tick */
+void scheduler_check_sleepers(void);
+
 /**
  * Timer tick handler
  */

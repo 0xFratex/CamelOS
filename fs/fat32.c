@@ -1269,7 +1269,7 @@ int fat32_init(uint32_t partition_start_lba) {
     fat_cache_init();
 
     /* Initialize file handles */
-    for (i = 0; i < FAT32_MAX_OPEN_FILES; i++) {
+    for (int i = 0; i < FAT32_MAX_OPEN_FILES; i++) {
         fat32_state.handles[i].in_use = 0;
     }
 
