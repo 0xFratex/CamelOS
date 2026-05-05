@@ -408,13 +408,18 @@ void handle_window_snapping(window_t* w, int mx, int my) {
 void apply_snap(window_t* w) {
     if (!snap_preview_active) return;
 
-    w->saved_x = w->x; w->saved_y = w->y;
-    w->saved_w = w->width; w->saved_h = w->height;
+    // Only save the pre-snap position if we're not already snapped/maximized
+    // so that repeated snaps don't overwrite the original saved state.
+    if (w->state != WIN_STATE_SNAPPED && w->state != WIN_STATE_MAXIMIZED) {
+        w->saved_x = w->x; w->saved_y = w->y;
+        w->saved_w = w->width; w->saved_h = w->height;
+    }
 
     w->x = snap_preview_rect.x;
     w->y = snap_preview_rect.y;
     w->width = snap_preview_rect.w;
     w->height = snap_preview_rect.h;
+    w->state = WIN_STATE_SNAPPED;  // Mark as snapped so dragging restores
 
     snap_preview_active = 0;
 }

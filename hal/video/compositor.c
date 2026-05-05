@@ -154,15 +154,15 @@ void compositor_draw_window(window_t* win) {
         gfx_draw_string(title_x, title_y, win->title, title_col);
     }
     
-    // 6. Window border stroke
+    // 6. Window border stroke (rounded to match the window body corners)
     // Focused windows get a subtle shadow/border, unfocused get a lighter border
     if (win->state != WIN_STATE_MAXIMIZED) {
         if (win->is_focused) {
-            // Focused: subtle border with slight shadow effect
-            gfx_draw_rect(win->x, win->y, win->width, win->height, 0xFFB8B8B8);
+            // Focused: subtle rounded border with slight shadow effect
+            gfx_stroke_rounded_rect(win->x, win->y, win->width, win->height, 0xFFB8B8B8, corner_radius, 1);
         } else {
-            // Unfocused: lighter border
-            gfx_draw_rect(win->x, win->y, win->width, win->height, 0xFFD0D0D0);
+            // Unfocused: lighter rounded border
+            gfx_stroke_rounded_rect(win->x, win->y, win->width, win->height, 0xFFD0D0D0, corner_radius, 1);
         }
     }
 }

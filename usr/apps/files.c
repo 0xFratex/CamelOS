@@ -103,6 +103,13 @@ static FMInstance* fm_alloc_instance(int window_id) {
             fm_instances[i].active = 1;
             fm_instances[i].window_id = window_id;
             strcpy(fm_instances[i].path, "/");
+            // Initialize history at index 0 with the root path so that
+            // fm_nav_back() can always find a valid entry at hist_pos=0.
+            // Previously history[0] was empty, causing back navigation to
+            // set path="" which fell back to "/" in files_refresh().
+            strcpy(fm_instances[i].history[0], "/");
+            fm_instances[i].hist_count = 1;
+            fm_instances[i].hist_pos = 0;
             fm_instances[i].win_w = 550;
             fm_instances[i].win_h = 400;
             return &fm_instances[i];
@@ -923,7 +930,12 @@ void init_files_app() {
     if (inst) {
         fm_cur = inst;
         strcpy(inst->path, initial_path);
-        fm_nav_push(inst, inst->path);
+        // Replace the default "/" history entry with the actual initial path
+        // so that navigating back from a subfolder returns to the starting
+        // directory (e.g. /Users/name/Desktop) instead of root "/".
+        strcpy(inst->history[0], initial_path);
+        inst->hist_pos = 0;
+        inst->hist_count = 1;
         files_refresh();
         // Store instance pointer in window user_data so callbacks can
         // resolve their instance directly without relying on active_win
