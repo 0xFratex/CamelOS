@@ -89,6 +89,11 @@ isr_common_stub:
     iret
 
 ; --- Common IRQ Handler ---
+; This handler is used for hardware interrupts (IRQ 32-47).
+; After calling isr_handler, it checks if the scheduler requests
+; a context switch (sched_context_switch_needed != 0) and if so,
+; switches to the new task's stack (sched_new_esp) before restoring
+; registers and returning via iret.
 irq_common_stub:
     pusha
     push ds
@@ -105,6 +110,26 @@ irq_common_stub:
     extern isr_handler
     call isr_handler
     
+    ; --- Preemptive Context Switch ---
+    ; Check if the scheduler requested a context switch.
+    ; The scheduler sets sched_context_switch_needed = 1 and
+    ; sched_new_esp = new task's stack pointer.
+    extern sched_context_switch_needed
+    extern sched_new_esp
+    
+    mov eax, [sched_context_switch_needed]
+    test eax, eax
+    jz .no_switch
+    
+    ; Context switch requested: switch to the new task's stack.
+    ; The new ESP points to a saved register frame that matches
+    ; the layout we pushed above (gs, fs, es, ds, pusha frame).
+    mov esp, [sched_new_esp]
+    
+    ; Clear the switch flag for next time
+    mov dword [sched_context_switch_needed], 0
+    
+.no_switch:
     pop gs
     pop fs
     pop es

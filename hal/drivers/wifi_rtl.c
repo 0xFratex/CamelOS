@@ -27,9 +27,9 @@ void wifi_rtl8188_probe(void* dev) {
     sys_delay(100);
 
     s_printf("[WIFI] Scan Results:\n");
-    s_printf("  1. SSID='CamelNet_5G'    Signal=92%  Sec=WPA2\n");
-    s_printf("  2. SSID='Office_WiFi'    Signal=65%  Sec=WPA2\n");
-    s_printf("  3. SSID='Guest'          Signal=40%  Sec=Open\n");
+    s_printf("  1. SSID='CamelNet_5G'    Signal=92%%  Sec=WPA2\n");
+    s_printf("  2. SSID='Office_WiFi'    Signal=65%%  Sec=WPA2\n");
+    s_printf("  3. SSID='Guest'          Signal=40%%  Sec=Open\n");
 
     s_printf("[WIFI] Auto-connecting to 'CamelNet_5G'...\n");
     s_printf("[WIFI] Authenticating (WPA2-PSK)...\n");

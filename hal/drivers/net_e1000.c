@@ -116,14 +116,14 @@
 #define E1000_RXD_STAT_EOP      0x02        // End of Packet
 
 // Command bits
-#define E1000_TXD_CMD_EOP       0x01000000  // End of Packet
-#define E1000_TXD_CMD_IFCS      0x02000000  // Insert FCS
-#define E1000_TXD_CMD_IC        0x04000000  // Insert Checksum
-#define E1000_TXD_CMD_RS        0x08000000  // Report Status
-#define E1000_TXD_CMD_RPS       0x10000000  // Report Packet Sent
-#define E1000_TXD_CMD_DEXT      0x20000000  // Descriptor Extension
-#define E1000_TXD_CMD_VLE       0x40000000  // VLAN Enable
-#define E1000_TXD_CMD_IDE       0x80000000  // Interrupt Delay Enable
+#define E1000_TXD_CMD_EOP       0x01  // End of Packet
+#define E1000_TXD_CMD_IFCS      0x02  // Insert FCS
+#define E1000_TXD_CMD_IC        0x04  // Insert Checksum
+#define E1000_TXD_CMD_RS        0x08  // Report Status
+#define E1000_TXD_CMD_RPS       0x10  // Report Packet Sent
+#define E1000_TXD_CMD_DEXT      0x20  // Descriptor Extension
+#define E1000_TXD_CMD_VLE       0x40  // VLAN Enable
+#define E1000_TXD_CMD_IDE       0x80  // Interrupt Delay Enable
 
 // Register offsets
 #define E1000_CTRL      0x0000  // Device Control
@@ -347,7 +347,7 @@ static void e1000_read_mac_addr(e1000_dev_t* dev) {
 // PHY FUNCTIONS
 // ============================================================================
 
-static uint16_t e1000_read_phy(e1000_dev_t* dev, uint8_t addr) {
+static uint16_t __attribute__((unused)) e1000_read_phy(e1000_dev_t* dev, uint8_t addr) {
     e1000_write_reg(dev, E1000_MDIC, addr | (1 << 23));
     
     for (int i = 0; i < 10000; i++) {
@@ -360,7 +360,7 @@ static uint16_t e1000_read_phy(e1000_dev_t* dev, uint8_t addr) {
     return 0;
 }
 
-static void e1000_write_phy(e1000_dev_t* dev, uint8_t addr, uint16_t value) {
+static void __attribute__((unused)) e1000_write_phy(e1000_dev_t* dev, uint8_t addr, uint16_t value) {
     e1000_write_reg(dev, E1000_MDIC, addr | (1 << 23) | (value << 16) | (1 << 26));
     
     for (int i = 0; i < 10000; i++) {
@@ -656,8 +656,8 @@ int e1000_init(uint16_t bus, uint16_t dev_num, uint16_t func) {
     
     // Get BARs
     uint32_t bar0 = pci_read_config_dword(bus, dev_num, func, 0x10);
-    uint32_t bar1 = pci_read_config_dword(bus, dev_num, func, 0x14);
-    uint32_t bar2 = pci_read_config_dword(bus, dev_num, func, 0x18);
+    uint32_t bar1 __attribute__((unused)) = pci_read_config_dword(bus, dev_num, func, 0x14);
+    uint32_t bar2 __attribute__((unused)) = pci_read_config_dword(bus, dev_num, func, 0x18);
     
     // Determine I/O method
     if (bar0 & 1) {

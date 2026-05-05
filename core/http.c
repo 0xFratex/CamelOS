@@ -54,9 +54,9 @@ http_loading_state_t* http_get_loading_state(void) {
 }
 
 // Draw a loading overlay on the window content area
-static void draw_loading_overlay(int x, int y, int w, int h) {
+static void __attribute__((unused)) draw_loading_overlay(int x, int y, int w, int h) {
     // Semi-transparent overlay background
-    uint32_t overlay_bg = 0x80FFFFFF;  // 50% transparent white
+    (void)0;  // overlay_bg removed
     
     // Draw overlay
     for (int py = y; py < y + h; py++) {
@@ -252,7 +252,7 @@ static char* http_get_header(const char* headers, const char* name) {
             }
         }
         if (match) {
-            char* val = p + name_len;
+            char* val = (char*)(p + name_len);
             if (!val) return NULL;  // Safety check
             while (*val == ' ' || *val == '\t') val++;
             return val;
@@ -830,6 +830,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
     if (headers_buffer) kfree(headers_buffer);
     return total_received;
     }
+    return -1; /* fallback */
 }
 
 // Simple HTTP GET with default headers

@@ -158,10 +158,10 @@ static int kbd_detect_dead_key(int ch) {
 // ============================================================
 
 typedef struct {
-    const char std[58];      // scancodes 0-57 (base/no-shift)
-    const char shift[58];    // scancodes 0-57 (shifted)
-    const char oem102_std;   // scancode 0x56 base (0 = no OEM_102 key)
-    const char oem102_shift; // scancode 0x56 shift
+    const uint16_t std[58];      // scancodes 0-57 (base/no-shift) - uint16_t for Unicode
+    const uint16_t shift[58];    // scancodes 0-57 (shifted) - uint16_t for Unicode
+    const uint16_t oem102_std;   // scancode 0x56 base (0 = no OEM_102 key)
+    const uint16_t oem102_shift; // scancode 0x56 shift
     const char* name;
 } KeyboardLayout;
 
@@ -742,8 +742,8 @@ void keyboard_callback() {
         if (scancode == 0x56 && key_out == 0) {
             const KeyboardLayout* layout = &kbd_layouts[kbd_layout];
             if (layout->oem102_std) {
-                key_out = kbd_shift_pressed ? (unsigned char)layout->oem102_shift
-                                            : (unsigned char)layout->oem102_std;
+                key_out = kbd_shift_pressed ? layout->oem102_shift
+                                            : layout->oem102_std;
             }
         }
 
@@ -761,22 +761,21 @@ void keyboard_callback() {
 
         if (key_out == 0 && scancode < 58) {
             // Use active layout tables
-            const char* layout_std = kbd_layouts[kbd_layout].std;
-            const char* layout_shift = kbd_layouts[kbd_layout].shift;
+            const uint16_t* layout_std = kbd_layouts[kbd_layout].std;
+            const uint16_t* layout_shift = kbd_layouts[kbd_layout].shift;
 
-            // Char mapping - cast to unsigned char to prevent sign extension
-            // for Latin-1 characters > 127 (e.g., ç=231, ü=252, etc.)
+            // Char mapping - uint16_t layout supports Unicode code points
             if (kbd_shift_pressed ^ kbd_caps_lock) {
                 // Handle letters specifically for Caps Lock
-                unsigned char base = (unsigned char)layout_std[scancode];
+                uint16_t base = layout_std[scancode];
                 if (base >= 'a' && base <= 'z') {
-                    key_out = (unsigned char)layout_shift[scancode];
+                    key_out = layout_shift[scancode];
                 } else {
                     // Non-letters affected by Shift only, mostly
-                    key_out = kbd_shift_pressed ? (unsigned char)layout_shift[scancode] : (unsigned char)layout_std[scancode];
+                    key_out = kbd_shift_pressed ? layout_shift[scancode] : layout_std[scancode];
                 }
             } else {
-                key_out = kbd_shift_pressed ? (unsigned char)layout_shift[scancode] : (unsigned char)layout_std[scancode];
+                key_out = kbd_shift_pressed ? layout_shift[scancode] : layout_std[scancode];
             }
 
             // --- Dead Key Detection ---

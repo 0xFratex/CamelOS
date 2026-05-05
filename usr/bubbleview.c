@@ -14,6 +14,8 @@
 #include "desktop.h" // For desktop_is_ctx_open
 #include "screenlock.h"
 #include "welcome_setup.h"
+#include "spotlight.h"
+#include "../include/input_defs.h"
 
 // Extern for destroying window
 extern void ws_destroy_window(window_t* win);
@@ -1153,6 +1155,9 @@ void start_bubble_view() {
     
     desktop_init();
     
+    // Initialize Spotlight search (Cmd+Space / Ctrl+Space)
+    spotlight_init();
+
     // Explicitly reset menu state
     g_ctx_menu.active = 0;
     frames_drawn = 0;
@@ -1352,6 +1357,26 @@ void start_bubble_view() {
         int ctrl = 0, shift = 0, alt = 0;
         sys_kbd_state(&ctrl, &shift, &alt);
 
+        // Spotlight: Cmd+Space (or Ctrl+Space) toggles spotlight search
+        // KEY_LWIN = 151 is the Windows/Command key
+        // NOTE: Full Cmd+Space detection would need tracking key-down/key-up
+        // for modifier keys. For now, Ctrl+Space is the primary shortcut.
+        if (k == ' ' && (ctrl || alt)) {
+            // Ctrl+Space or Alt+Space toggles Spotlight
+            spotlight_toggle();
+            k = 0; // Consume the key
+        }
+
+        // Spotlight key handling (consumes keys when active)
+        if (g_spotlight.active && k != 0) {
+            spotlight_handle_key(k);
+            k = 0; // Consume the key so it doesn't go to windows
+        }
+        // Spotlight mouse handling
+        if (g_spotlight.active) {
+            spotlight_handle_mouse(mx, my, click);
+        }
+
         if (ctrl) {
             if (k == '\t') app_switcher_handle_key(15, 1, shift);
         } else {
@@ -1529,6 +1554,11 @@ void start_bubble_view() {
         // Render Overlays
         if (app_switcher_is_active()) {
             app_switcher_render(1024, 768);
+        }
+
+        // Spotlight search overlay (drawn on top of everything except cursor)
+        if (g_spotlight.active) {
+            spotlight_draw();
         }
 
         // FIX: Draw cursor LAST so it's always on top of everything

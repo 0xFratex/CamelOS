@@ -4,6 +4,7 @@
 #include "../hal/drivers/pci.h"
 #include "../hal/drivers/serial.h"
 #include "../core/panic.h"
+#include "../core/scheduler.h"
 
 // External Handlers
 extern void timer_callback();
@@ -66,6 +67,10 @@ void isr_handler(registers_t r) {
 
         if (irq == 0) {
             timer_callback(&r);
+            // Note: timer_callback sends EOI itself for proper context switch ordering.
+            // The context switch globals (sched_context_switch_needed, sched_new_esp)
+            // are read by the assembly IRQ stub after this function returns.
+            return;
         }
         else if (irq == 1) {
             keyboard_callback();

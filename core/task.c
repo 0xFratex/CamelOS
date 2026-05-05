@@ -28,23 +28,39 @@ task_t* create_task(int id, uint32_t entry_point, uint32_t stack_top) {
     new_task->is_app_bundle = 0;
     new_task->name[0] = '\0';
     
-    // Setup CPU context on stack (simulating an interrupt frame)
+    // Setup CPU context on stack (must match irq_common_stub layout)
+    // The IRQ stub pushes: pusha, ds, es, fs, gs
+    // The IRQ macro pushes: err_code (0), int_no (32 for timer)
+    // The CPU pushes: eip, cs, eflags (for interrupt)
+    // Stack grows down, so we push in reverse order:
     uint32_t* top = (uint32_t*)stack_top;
     
-    // Push standard registers expected by ISR (iret)
-    *(--top) = 0x202; // EFLAGS (Interrupts enabled)
-    *(--top) = 0x08;  // CS
-    *(--top) = entry_point; // EIP
+    // CPU-saved state (for iret)
+    *(--top) = 0x202;       // EFLAGS (interrupts enabled, IF=1)
+    *(--top) = 0x08;        // CS (kernel code segment)
+    *(--top) = entry_point; // EIP (entry point)
     
-    // Pusha: eax, ecx, edx, ebx, original_esp, ebp, esi, edi
-    *(--top) = 0; *(--top) = 0; *(--top) = 0; *(--top) = 0;
-    uint32_t esp_placeholder = (uint32_t)(top + 1) + 4;  // Calculate ESP before decrement
-    *(--top) = esp_placeholder; // ESP placeholder
-    *(--top) = 0; *(--top) = 0; *(--top) = 0;
+    // IRQ macro pushes
+    *(--top) = 0;           // err_code (no error code)
+    *(--top) = 32;          // int_no (timer IRQ vector - arbitrary for initial frame)
+    
+    // pusha layout: eax, ecx, edx, ebx, esp_placeholder, ebp, esi, edi
+    *(--top) = 0;           // eax
+    *(--top) = 0;           // ecx
+    *(--top) = 0;           // edx
+    *(--top) = 0;           // ebx
+    uint32_t esp_val = (uint32_t)top; // esp (placeholder - calculated before decrement)
+    *(--top) = esp_val;
+    *(--top) = 0;           // ebp
+    *(--top) = 0;           // esi
+    *(--top) = 0;           // edi
+    
+    // Segment registers
+    *(--top) = 0x10;        // DS (kernel data segment)
+    *(--top) = 0x10;        // ES
+    *(--top) = 0x10;        // FS
+    *(--top) = 0x10;        // GS
 
-    // Segment selectors
-    *(--top) = 0x10; // DS
-    
     new_task->esp = (uint32_t)top;
     new_task->priority = 128;  // Default priority
     new_task->time_slice = 10;
@@ -68,22 +84,34 @@ void create_user_task(void (*entry)(), const char* name, int uid, int is_app) {
     uint32_t stack_size = 16384;
     uint32_t* stack = (uint32_t*)kmalloc(stack_size);
 
-    // Setup CPU context on stack (simulating an interrupt frame)
+    // Setup CPU context on stack (must match irq_common_stub layout)
     uint32_t* top = (uint32_t*)((uint8_t*)stack + stack_size);
     
-    // Push standard registers expected by ISR (iret)
-    *(--top) = 0x202; // EFLAGS (Interrupts enabled)
-    *(--top) = 0x08;  // CS
-    *(--top) = (uint32_t)entry; // EIP
+    // CPU-saved state (for iret)
+    *(--top) = 0x202;           // EFLAGS (interrupts enabled)
+    *(--top) = 0x08;            // CS (kernel code segment)
+    *(--top) = (uint32_t)entry; // EIP (entry point)
     
-    // Pusha: eax, ecx, edx, ebx, original_esp, ebp, esi, edi
-    *(--top) = 0; *(--top) = 0; *(--top) = 0; *(--top) = 0;
-    uint32_t esp_placeholder = (uint32_t)(top + 1) + 4;  // Calculate ESP before decrement
-    *(--top) = esp_placeholder; // ESP placeholder
-    *(--top) = 0; *(--top) = 0; *(--top) = 0;
-
-    // Segment selectors
-    *(--top) = 0x10; // DS
+    // IRQ macro pushes
+    *(--top) = 0;               // err_code (no error code)
+    *(--top) = 32;              // int_no (timer IRQ vector)
+    
+    // pusha layout: eax, ecx, edx, ebx, esp_placeholder, ebp, esi, edi
+    *(--top) = 0;               // eax
+    *(--top) = 0;               // ecx
+    *(--top) = 0;               // edx
+    *(--top) = 0;               // ebx
+    uint32_t esp_val2 = (uint32_t)top; // esp (placeholder)
+    *(--top) = esp_val2;
+    *(--top) = 0;               // ebp
+    *(--top) = 0;               // esi
+    *(--top) = 0;               // edi
+    
+    // Segment registers
+    *(--top) = 0x10;            // DS
+    *(--top) = 0x10;            // ES
+    *(--top) = 0x10;            // FS
+    *(--top) = 0x10;            // GS
     
     new_task->esp = (uint32_t)top;
     

@@ -155,4 +155,8 @@ void scheduler_dump_state(void);
 /* Assembly context switch function */
 extern void context_switch_asm(uint32_t* old_esp_ptr, uint32_t new_esp);
 
+/* Context switch globals - read by assembly IRQ stub after isr_handler returns */
+extern uint32_t sched_context_switch_needed;
+extern uint32_t sched_new_esp;
+
 #endif /* SCHEDULER_H */

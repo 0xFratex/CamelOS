@@ -342,7 +342,7 @@ typedef struct {
 } __attribute__((packed)) vbe_mode_info_t;
 
 // BIOS interrupt for VBE
-static int vbe_int10(uint32_t function, uint32_t ebx, uint32_t* out_eax, uint32_t* out_ebx) {
+static int __attribute__((unused)) vbe_int10(uint32_t function, uint32_t ebx, uint32_t* out_eax, uint32_t* out_ebx) {
     // In a real OS, this would use real mode or V86 mode
     // For QEMU, we can use the Bochs VBE extensions via I/O ports
     return -1; // Not implemented in protected mode

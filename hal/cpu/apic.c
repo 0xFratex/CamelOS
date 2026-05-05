@@ -45,7 +45,7 @@ static void cpu_get_msr(uint32_t msr, uint32_t *lo, uint32_t *hi) {
     asm volatile("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
 }
 
-static uint32_t lapic_read(uint32_t reg) {
+static uint32_t __attribute__((unused)) lapic_read(uint32_t reg) {
     return *((volatile uint32_t*)(LAPIC_BASE + reg));
 }
 
@@ -54,7 +54,7 @@ static void lapic_write(uint32_t reg, uint32_t value) {
 }
 
 // IO-APIC access is indirect via (Index, Data) registers
-static uint32_t ioapic_read(uint32_t reg) {
+static uint32_t __attribute__((unused)) ioapic_read(uint32_t reg) {
     volatile uint32_t* io_reg = (volatile uint32_t*)IOAPIC_BASE;
     volatile uint32_t* io_data = (volatile uint32_t*)(IOAPIC_BASE + 0x10);
     *io_reg = reg;

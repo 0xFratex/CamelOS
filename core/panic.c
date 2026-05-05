@@ -98,7 +98,6 @@ static void panic_draw_text_scaled(int x, int y, const char* text, uint32_t colo
     extern const uint8_t font_8x16[96][16];
     extern const uint8_t font_latin1_8x16[96][16];
     
-    int orig_x = x;
     while (*text) {
         unsigned char c = (unsigned char)*text++;
         const uint8_t* char_data;

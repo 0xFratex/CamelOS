@@ -402,10 +402,11 @@ void gfx_draw_string_centered(int cx, int y, const char* str, uint32_t color, in
 
 // Rounded Rect Fill (Updated to use blend_fast for edges)
 void gfx_fill_rounded_rect(int x, int y, int w, int h, uint32_t color, int r) {
-    if (w < 2*r) r = w/2; if (h < 2*r) r = h/2;
+    if (w < 2*r) r = w/2;
+    if (h < 2*r) r = h/2;
     
-    // Extract alpha from color
-    uint32_t col_alpha = (color >> 24) & 0xFF;
+    // Alpha extracted from color (used for future blend optimization)
+    (void)0; /* col_alpha removed */
     
     // Center Body
     gfx_fill_rect(x + r, y, w - 2*r, h, color);

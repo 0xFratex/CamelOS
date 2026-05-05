@@ -36,7 +36,7 @@ id objc_msgSendSuper(struct objc_super* super, SEL op, ...) {
     if (!super || !super->receiver) return 0;
     
     // Start lookup from the superclass specified in the super struct
-    Class super_class = super->class_ptr;
+    Class super_class = super->class;
     IMP imp = objc_lookupMethod(super_class, op);
     
     if (!imp) return 0;

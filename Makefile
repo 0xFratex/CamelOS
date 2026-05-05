@@ -53,7 +53,7 @@ HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/seri
 CORE_SRC        =       core/kernel.c   core/panic.c    sys/api.c       core/string.c   core/memory.c   core/task.c     core/cdl_loader.c       core/window_server.c    core/net.c      core/net_if.c   core/net_dhcp.c core/socket.c   core/tcp.c      core/http.c     core/tls.c      core/tls13.c    core/http2.c    core/tls_ca_store.c     core/app_switcher.c     core/dns.c      core/debug.c    core/arp.c      core/scheduler.c        core/firewall.c  core/sha256.c   core/objc_runtime.c    core/macho_loader.c    core/foundation_stub.c    core/app_bundle.c    core/dmg_mount.c      core/zlib_inflate.c    core/app_installer.c     core/dyld.c     core/foundation_extra.c        core/appkit_compat.c   core/appkit_extra.c    core/bsd_syscall.c      core/framework_stubs.c     core/tls_client.c       core/vmm.c      core/klog.c     core/signal.c   core/pipe.c     core/notification.c     core/process.c  core/crash.c       core/ipc.c       core/disk_tools_stub.c
 ASSETS_SRC      =       kernel/assets.c
 FS_SRC  =       fs/pfs32.c      fs/disk.c       fs/vfs.c        fs/fat32.c      fs/fat32_vfs.c
-USR_SRC =       usr/shell.c     usr/bubbleview.c        usr/desktop.c   usr/framework.c usr/dock.c      usr/clipboard.c usr/screenlock.c        usr/welcome_setup.c     usr/lib/camel_framework.c       usr/lib/camel_ui.c      usr/apps/files.c        usr/apps/terminal.c     usr/apps/textedit.c     usr/apps/settings.c    usr/apps/browser.c     usr/apps/mujs_min.c     usr/apps/mactest.c     usr/apps/calculator.c  usr/apps/console.c     usr/apps/disk_utility.c        usr/apps/process_monitor.c     usr/libs/browser_dom.c        lib/libc_compat.c
+USR_SRC =       usr/shell.c     usr/bubbleview.c        usr/desktop.c   usr/framework.c usr/dock.c      usr/clipboard.c usr/screenlock.c        usr/welcome_setup.c     usr/spotlight.c usr/lib/camel_framework.c       usr/lib/camel_ui.c      usr/apps/files.c        usr/apps/terminal.c     usr/apps/textedit.c     usr/apps/settings.c    usr/apps/browser.c     usr/apps/mujs_min.c     usr/apps/mactest.c     usr/apps/calculator.c  usr/apps/console.c     usr/apps/disk_utility.c        usr/apps/process_monitor.c     usr/libs/browser_dom.c        lib/libc_compat.c
 
 #       NOTE:   files.c and terminal.c are compiled into the kernel as built-in apps
 #       They are launched via the kernel_launch_builtin_app() dispatch mechanism
@@ -74,21 +74,21 @@ QEMU_AUDIO      =       -audiodev       sdl,id=snd0     -machine        pcspk-au
 all:    disk.img        camel_install.iso
 
 mbr.bin:        boot/mbr.asm
-	$(AS)   -f      bin     $<      -o      $@
+        $(AS)   -f      bin     $<      -o      $@
 
 system/entry.o: boot/system_entry.asm
-	mkdir   -p      system
-	$(AS)   -f      elf32   $<      -o      $@
+        mkdir   -p      system
+        $(AS)   -f      elf32   $<      -o      $@
 
 core/objc_msgSend.o: core/objc_msgSend.S
-	gcc     -m32    -c      $<      -o      $@
+        gcc     -m32    -c      $<      -o      $@
 
 lib/setjmp.o: lib/setjmp.s
-	gcc     -m32    -c      $<      -o      $@
+        gcc     -m32    -c      $<      -o      $@
 
 system.bin:     $(KERNEL_OBJ)
-	$(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L/usr/lib/gcc/x86_64-linux-gnu/14/32   
-	objcopy -O      binary  system.elf      system.bin
+        $(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L/usr/lib/gcc/x86_64-linux-gnu/14/32   
+        objcopy -O      binary  system.elf      system.bin
 
 #       ---     APP     COMPILATION     (Hybrid: .cdl legacy + .dmg/.app macOS)       ---
 #       Legacy .cdl apps use ELF shared objects (CDL format)
@@ -99,36 +99,36 @@ system.bin:     $(KERNEL_OBJ)
 
 #       Math    Lib
 math.cdl:       usr/lib/math.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/math.c  -o      math.o
-	$(LD)   $(CDL_LDFLAGS)  -o      math.cdl        math.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/math.c  -o      math.o
+        $(LD)   $(CDL_LDFLAGS)  -o      math.cdl        math.o
 
 usr32.cdl:      usr/lib/usr32.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/usr32.c -o      usr32.o
-	$(LD)   $(CDL_LDFLAGS)  -o      usr32.cdl       usr32.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/usr32.c -o      usr32.o
+        $(LD)   $(CDL_LDFLAGS)  -o      usr32.cdl       usr32.o
 
 syskernel.cdl:  usr/lib/syskernel.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/syskernel.c     -o      syskernel.o
-	$(LD)   $(CDL_LDFLAGS)  -o      syskernel.cdl   syskernel.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/syskernel.c     -o      syskernel.o
+        $(LD)   $(CDL_LDFLAGS)  -o      syskernel.cdl   syskernel.o
 
 proc.cdl:       usr/lib/proc.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/proc.c  -o      proc.o
-	$(LD)   $(CDL_LDFLAGS)  -o      proc.cdl        proc.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/proc.c  -o      proc.o
+        $(LD)   $(CDL_LDFLAGS)  -o      proc.cdl        proc.o
 
 timer.cdl:      usr/lib/timer.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/timer.c -o      timer.o
-	$(LD)   $(CDL_LDFLAGS)  -o      timer.cdl       timer.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/timer.c -o      timer.o
+        $(LD)   $(CDL_LDFLAGS)  -o      timer.cdl       timer.o
 
 gui.cdl:        usr/lib/gui.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/gui.c   -o      gui.o
-	$(LD)   $(CDL_LDFLAGS)  -o      gui.cdl gui.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/gui.c   -o      gui.o
+        $(LD)   $(CDL_LDFLAGS)  -o      gui.cdl gui.o
 
 sysmon.cdl:     usr/lib/sysmon.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/sysmon.c        -o      sysmon.o
-	$(LD)   $(CDL_LDFLAGS)  -o      sysmon.cdl      sysmon.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/sysmon.c        -o      sysmon.o
+        $(LD)   $(CDL_LDFLAGS)  -o      sysmon.cdl      sysmon.o
 
 jsengine.cdl:   usr/libs/js_engine.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/libs/js_engine.c    -o      jsengine.o
-	$(LD)   $(CDL_LDFLAGS)  -o      jsengine.cdl    jsengine.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/libs/js_engine.c    -o      jsengine.o
+        $(LD)   $(CDL_LDFLAGS)  -o      jsengine.cdl    jsengine.o
 
 #       ---     HYBRID APP TARGETS (legacy .cdl apps, now loaded via .app bundles)     ---
 #       These create .cdl binaries that the .app bundle system can discover
@@ -136,46 +136,46 @@ jsengine.cdl:   usr/libs/js_engine.c
 
 #       Network Diagnostic App
 netdiag.cdl:    usr/apps/netdiag.c      usr/lib/camel_framework.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/apps/netdiag.c      -o      netdiag.o
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-	$(LD)   $(CDL_LDFLAGS)  -o      netdiag.cdl     netdiag.o       camel_framework.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/netdiag.c      -o      netdiag.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
+        $(LD)   $(CDL_LDFLAGS)  -o      netdiag.cdl     netdiag.o       camel_framework.o
 
 #       ---     INSTALLER       ---
 
 installer/entry.o:      boot/multiboot.asm
-	$(AS)   -f      elf32   $<      -o      $@
+        $(AS)   -f      elf32   $<      -o      $@
 
 installer/panic_framework.o:    installer/panic_framework.c
-	$(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
+        $(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
 
 #       Add     ALL     CDL     files   to      payload (hybrid: legacy libs + hybrid apps)
 installer/payload.o:    installer/payload.asm   system.bin      mbr.bin math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl
-	$(AS)   -f      elf32   $<      -o      $@
+        $(AS)   -f      elf32   $<      -o      $@
 
 installer.elf:  $(INSTALLER_OBJ)        math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl
-	$(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L/usr/lib/gcc/x86_64-linux-gnu/14/32
+        $(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L/usr/lib/gcc/x86_64-linux-gnu/14/32
 
 camel_install.iso:      installer.elf
-	mkdir   -p      iso/boot/grub
-	cp      installer.elf   iso/boot/installer.elf
-	printf  'set    timeout=0\nmenuentry    "Camel  OS      Installer"      {\n     multiboot       /boot/installer.elf\n   boot\n}'        >       iso/boot/grub/grub.cfg
-	grub-mkrescue   -o      camel_install.iso       iso
-	rm      -rf     iso
+        mkdir   -p      iso/boot/grub
+        cp      installer.elf   iso/boot/installer.elf
+        printf  'set    timeout=0\nmenuentry    "Camel  OS      Installer"      {\n     multiboot       /boot/installer.elf\n   boot\n}'        >       iso/boot/grub/grub.cfg
+        grub-mkrescue   -o      camel_install.iso       iso
+        rm      -rf     iso
 
 disk.img:
-	dd      if=/dev/zero    of=disk.img     bs=1M   count=256
+        dd      if=/dev/zero    of=disk.img     bs=1M   count=256
 
 #       ---     COMMANDS        ---
 
 clean:
-	rm      -f      *.bin   *.elf   *.o     *.iso   *.cdl   disk.img
-	find    .       -name   "*.o"   -type   f       -delete
+        rm      -f      *.bin   *.elf   *.o     *.iso   *.cdl   disk.img
+        find    .       -name   "*.o"   -type   f       -delete
 
 #       Add     this    target  or      run     it      manually
 rebuild:        clean   all
 
 install:        camel_install.iso       disk.img
-	qemu-system-i386        -m      512     -cdrom  camel_install.iso       -drive  file=disk.img,format=raw,index=0,media=disk     -boot   d       -serial stdio   $(QEMU_AUDIO)
+        qemu-system-i386        -m      512     -cdrom  camel_install.iso       -drive  file=disk.img,format=raw,index=0,media=disk     -boot   d       -serial stdio   $(QEMU_AUDIO)
 
 #       Enhanced        QEMU    networking
 QEMU_NET        =       -netdev user,id=net0,net=10.0.2.0/24,host=10.0.2.2,dhcpstart=10.0.2.15  \
@@ -188,39 +188,39 @@ QEMU_DEBUG      =       -s      -S
 QEMU_NET_SIMPLE =       -net    nic,model=rtl8139       -net    user
 
 run:    disk.img
-	qemu-system-i386        -m      512     -drive  file=disk.img,format=raw,index=0,media=disk     \
-	-vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
+        qemu-system-i386        -m      512     -drive  file=disk.img,format=raw,index=0,media=disk     \
+        -vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
 
 #       Explicit        compilation     rules   to      handle  different       flags
 sys/api.o:      sys/api.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 sys/api_installer.o:    sys/api.c
-	$(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
+        $(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
 
 installer/%.o:  installer/%.c
-	$(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
+        $(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
 
 #       For     all     other   .c      files,  use     kernel  flags   by      default
 %.o:    %.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       Socket  compilation     rule
 core/socket.o:  core/socket.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       RTL8169 driver  compilation     rule
 hal/drivers/net_rtl8169.o:      hal/drivers/net_rtl8169.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       E1000   driver  compilation     rule
 hal/drivers/net_e1000.o:        hal/drivers/net_e1000.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       AHCI    driver  compilation     rule
 hal/drivers/ahci.o:     hal/drivers/ahci.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       TLS     CA      store   compilation     rule
 core/tls_ca_store.o:    core/tls_ca_store.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@

@@ -22,6 +22,12 @@ static task_t* priority_tails[NUM_PRIORITIES];   /* Tail pointers for O(1) inser
 static uint8_t highest_ready_priority = 255;     /* Track highest priority with ready tasks */
 static int scheduler_initialized = 0;
 
+/* Context switch flag - read by assembly IRQ stub after isr_handler returns.
+ * If non-zero, the assembly stub switches ESP to sched_new_esp before popa+iret.
+ * This must be a global symbol visible to assembly. */
+uint32_t sched_context_switch_needed = 0;
+uint32_t sched_new_esp = 0;
+
 /* Statistics */
 static sched_stats_t stats = {0, 0, 0, 0};
 
@@ -325,8 +331,15 @@ void scheduler_tick(void) {
 /**
  * Main scheduling function
  * Called from timer ISR
+ *
+ * Sets sched_context_switch_needed and sched_new_esp globals
+ * which are read by the assembly IRQ stub to perform the
+ * actual stack switch after this function returns.
  */
 uint32_t scheduler_schedule(registers_t* regs) {
+    /* Clear context switch flag at the start of each tick */
+    sched_context_switch_needed = 0;
+
     if (!scheduler_initialized) return regs->esp;
     
     /* Check if we need to schedule */
@@ -387,7 +400,7 @@ uint32_t scheduler_schedule(registers_t* regs) {
     stats.context_switches++;
     
     /* Switch address space if the new task has a different one */
-    if (next->address_space != old->address_space) {
+    if (next->address_space && next->address_space != old->address_space) {
         extern void vmm_switch_address_space(void*);
         vmm_switch_address_space(next->address_space);
     }
@@ -396,7 +409,13 @@ uint32_t scheduler_schedule(registers_t* regs) {
     extern void tss_set_kernel_stack(uint32_t);
     tss_set_kernel_stack(next->esp);
     
-    /* Return new ESP for context switch */
+    /* Signal to the assembly IRQ stub that a context switch is needed.
+     * The stub will set ESP = sched_new_esp before doing popa+iret,
+     * which restores the new task's register state and returns to it. */
+    sched_context_switch_needed = 1;
+    sched_new_esp = current_running->esp;
+    
+    /* Return new ESP (for compatibility; the assembly stub uses the globals) */
     return current_running->esp;
 }
 

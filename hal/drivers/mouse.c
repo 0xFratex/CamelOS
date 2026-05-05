@@ -118,7 +118,7 @@ void init_mouse() {
     mouse_has_wheel = 0;
 
     uint8_t _status;
-    uint8_t ack;
+    uint8_t ack __attribute__((unused));
 
     mouse_wait(1);
     outb(0x64, 0xA8); // Enable Aux

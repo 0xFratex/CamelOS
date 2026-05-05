@@ -1407,7 +1407,7 @@ int pfs32_write_handle(int handle, const void* buffer, uint32_t len) {
     if (!(handles[handle].flags & 1)) return PFS_ERR_ACCESS; // Not opened for write
 
     uint32_t written = 0;
-    uint32_t available = len; // Can write up to len
+    (void)0; /* available removed */
 
     const uint8_t* ptr = (const uint8_t*)buffer;
 

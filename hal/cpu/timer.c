@@ -72,7 +72,7 @@ void apic_timer_calibrate() {
 
     // Spin wait until PIT wraps (Output bit in 0x61 goes high? No, read back)
     // Simplified spin: standard IO wait
-    uint32_t start_pit = 0;
+    // start_pit removed - simplified calibration uses loop approximation
     // We can't easily read PIT progress without complex logic. 
     // Approximation loop for bare metal calibration:
     for(volatile int i=0; i<1000000; i++); 

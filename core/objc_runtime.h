@@ -69,10 +69,16 @@ struct objc_protocol {
     Method optional_methods;
 };
 
+// objc_super - used by objc_msgSendSuper
+struct objc_super {
+    id receiver;        // The object that received the message
+    Class class;        // The superclass to start searching from
+};
+
 // --- ObjC Message Sending ---
 // The core of ObjC - message dispatch
 id objc_msgSend(id self, SEL op, ...);
-id objc_msgSendSuper(id self, Class super_class, SEL op, ...);
+id objc_msgSendSuper(struct objc_super* super, SEL op, ...);
 
 // --- Class Operations ---
 Class objc_getClass(const char* name);
@@ -105,12 +111,6 @@ id class_createInstance(Class cls, size_t extraBytes);
 void object_dispose(id obj);
 Class object_getClass(id obj);
 const char* object_getClassName(id obj);
-
-// --- Message Sending ---
-struct objc_super {
-    id receiver;        // The object that received the message
-    Class class;        // The superclass to start searching from
-};
 
 IMP objc_lookupMethod(Class cls, SEL op);   // Called by assembly objc_msgSend
 id objc_msgSend_c(id self, SEL op, ...);    // C fallback (assembly version preferred)
