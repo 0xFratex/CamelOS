@@ -352,6 +352,9 @@ kernel_api_t g_kernel_api = {
     .cdl_sym = wrap_cdl_sym
 };
 
+// Global pointer for kernel-compiled modules that use 'sys' (spotlight, menubar, welcome_setup)
+kernel_api_t* sys = &g_kernel_api;
+
 // ... (ELF Loader implementation remains the same) ...
 #define MAX_LOADED_LIBS 16
 typedef struct { char name[32]; void* base_addr; uint32_t size; cdl_exports_t* exports; int active; } loaded_cdl_t;
