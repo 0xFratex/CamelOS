@@ -264,6 +264,11 @@ static int resolve_and_load(const char* path) {
 }
 
 int wrap_exec(const char* path) {
+    // Clear stale launch args so that launching an app via wrap_exec()
+    // (e.g., from the dock) doesn't inherit args from a previous
+    // wrap_exec_with_args() call (which would cause the Files app to
+    // navigate to a stale folder path instead of "/")
+    sys_set_launch_args(NULL);
     return resolve_and_load(path);
 }
 extern void int_to_str(int, char*);

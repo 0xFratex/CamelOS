@@ -107,7 +107,7 @@ extern int desk_count;
 #define HEADER_HEIGHT 28
 #define RESIZE_MARGIN 16
 #define SNAP_MARGIN 20 // Distance to edge to trigger snap
-#define SNAP_PREVIEW_COLOR 0x30007AFF // Semi-transparent blue (subtle macOS-style tint)
+#define SNAP_PREVIEW_COLOR 0x18007AFF // Very subtle blue tint (less opaque to avoid "blue background" bleeding through window AA corners)
 
 // Animation Constants
 #define ANIM_SPEED 10
@@ -135,6 +135,12 @@ static int menu_rect_h = 0;
 // Snapping State
 static int snap_preview_active = 0;
 static rect_t snap_preview_rect = {0,0,0,0};
+// Snap escape cooldown: after restoring a snapped window on drag-start,
+// we suppress snap detection for a few pixels of mouse movement so the
+// window can actually "escape" the snap zone without immediately re-snapping.
+// Set to 1 when a snap-restore happens, cleared once the mouse has moved
+// far enough from the screen edge (>2x SNAP_MARGIN).
+static int snap_escape_cooldown = 0;
 
 // Auto Refresh
 static uint32_t last_fs_gen = 0;
@@ -398,20 +404,48 @@ void handle_window_snapping(window_t* w, int mx, int my) {
     // Only show snap preview when actually dragging a window
     if (!w) return;
 
-    // Check edges based on mouse pointer, not just window rect
-    if (mx < SNAP_MARGIN) {
+    // Snap escape cooldown: after restoring a snapped window, don't
+    // re-activate snap until the mouse has moved well away from any edge.
+    // This prevents the "window immediately re-snaps" bug.
+    if (snap_escape_cooldown) {
+        int far_from_edge = (mx > SNAP_MARGIN * 3 && mx < screen_w - SNAP_MARGIN * 3 &&
+                             my > HEADER_HEIGHT + SNAP_MARGIN * 3);
+        if (far_from_edge) {
+            snap_escape_cooldown = 0;  // Mouse escaped, re-enable snapping
+        }
+        return;  // Suppress snap detection while in cooldown
+    }
+
+    // Corner snap zones: top-left, top-right (quarter-screen)
+    int near_left   = (mx < SNAP_MARGIN);
+    int near_right  = (mx > screen_w - SNAP_MARGIN);
+    int near_top    = (my < SNAP_MARGIN + HEADER_HEIGHT && my > HEADER_HEIGHT);
+
+    if (near_left && near_top) {
+        // Top-Left Quarter
+        snap_preview_active = 1;
+        snap_preview_rect.x = 0; snap_preview_rect.y = HEADER_HEIGHT;
+        snap_preview_rect.w = screen_w/2; snap_preview_rect.h = (screen_h - HEADER_HEIGHT - 70) / 2;
+    }
+    else if (near_right && near_top) {
+        // Top-Right Quarter
+        snap_preview_active = 1;
+        snap_preview_rect.x = screen_w/2; snap_preview_rect.y = HEADER_HEIGHT;
+        snap_preview_rect.w = screen_w/2; snap_preview_rect.h = (screen_h - HEADER_HEIGHT - 70) / 2;
+    }
+    else if (near_left) {
         // Left Half
         snap_preview_active = 1;
         snap_preview_rect.x = 0; snap_preview_rect.y = HEADER_HEIGHT;
         snap_preview_rect.w = screen_w/2; snap_preview_rect.h = screen_h - HEADER_HEIGHT - 70;
     }
-    else if (mx > screen_w - SNAP_MARGIN) {
+    else if (near_right) {
         // Right Half
         snap_preview_active = 1;
         snap_preview_rect.x = screen_w/2; snap_preview_rect.y = HEADER_HEIGHT;
         snap_preview_rect.w = screen_w/2; snap_preview_rect.h = screen_h - HEADER_HEIGHT - 70;
     }
-    else if (my < SNAP_MARGIN + HEADER_HEIGHT && my > HEADER_HEIGHT) {
+    else if (near_top) {
         // Top Edge -> Maximize
         snap_preview_active = 1;
         snap_preview_rect.x = 0; snap_preview_rect.y = HEADER_HEIGHT;
@@ -1031,6 +1065,7 @@ void handle_input(int mx, int my, int lb, int rb) {
             drag_just_released = 1;
             drag_win = 0;
             snap_preview_active = 0;
+            snap_escape_cooldown = 0;
         }
     }
 
@@ -1074,6 +1109,10 @@ void handle_input(int mx, int my, int lb, int rb) {
                         // Recalculate drag offset since window moved under mouse
                         lx = mx - w->x;
                         ly = my - w->y;
+                        // Activate snap escape cooldown so the window doesn't
+                        // immediately re-snap because the mouse is still near
+                        // the screen edge where it was when the snap occurred
+                        snap_escape_cooldown = 1;
                     }
                     drag_win = w;
                     drag_off_x = lx;

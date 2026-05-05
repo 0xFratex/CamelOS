@@ -1055,6 +1055,11 @@ void init_files_app() {
     extern void wrap_get_args(char* b, int m);
     char args[256] = {0};
     wrap_get_args(args, sizeof(args) - 1);
+    // Clear stale launch args immediately after reading to prevent
+    // leaking the folder path into the next Files.app launch (e.g.,
+    // from the dock, which calls wrap_exec() without args)
+    extern void sys_set_launch_args(const char*);
+    sys_set_launch_args(NULL);
     
     char initial_path[FM_PATH_MAX];
     if (args[0] == '/') {

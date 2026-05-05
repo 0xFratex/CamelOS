@@ -111,9 +111,9 @@ void compositor_draw_window(window_t* win) {
                         for (int iter = 0; iter < 3; iter++) {
                             est = (est + sq / est) / 2;
                         }
-                        inset = corner_radius - est;
+                        inset = corner_radius - 1 - est;
                     } else {
-                        inset = corner_radius;
+                        inset = corner_radius - 1;
                     }
                 }
             }
