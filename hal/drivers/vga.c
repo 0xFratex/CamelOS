@@ -199,7 +199,7 @@ void vga_text_print(const char* str) {
 
 // === FIXED: High-Resolution Console Output ===
 void vga_print(const char* str) {
-    extern void s_printf(const char*);
+    extern void s_printf(const char* fmt, ...);
     s_printf(str); // Always log to serial for debugging
 
     // If GUI logging is suppressed (vga_mute_log(1) called), skip screen rendering
@@ -374,7 +374,7 @@ int vbe_get_current_mode(void) {
 
 void vbe_list_modes(void) {
     // Print available VBE modes to debug output
-    extern void s_printf(const char*);
+    extern void s_printf(const char* fmt, ...);
     s_printf("[VBE] Available modes:\n");
     s_printf("  0x145: 640x480x32\n");
     s_printf("  0x15C: 800x600x32\n");

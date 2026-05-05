@@ -140,6 +140,8 @@ int wrap_recvfrom(int s, void* b, unsigned long l, int f, void* sa, int* al) { r
 int wrap_send(int s, const void* b, unsigned long l, int f) { return k_sendto(s, b, l, f, 0); }
 int wrap_recv(int s, void* b, unsigned long l, int f) { return k_recvfrom(s, b, l, f, 0); }
 int wrap_close(int fd) { return k_close(fd); }
+int wrap_listen(int s, int backlog) { return k_listen(s, backlog); }
+int wrap_accept(int s, void* addr, int* addrlen) { (void)addrlen; return k_accept(s, (sockaddr_in_t*)addr); }
 
 // DNS Wrapper
 int wrap_dns_resolve(const char* hostname, char* ip_out, int max_len) {
@@ -341,6 +343,7 @@ kernel_api_t g_kernel_api = {
     .ping = wrap_ping,
     .socket = wrap_socket, .bind = wrap_bind, .connect = wrap_connect, .sendto = wrap_sendto,
     .send = wrap_send, .recvfrom = wrap_recvfrom, .recv = wrap_recv, .close = wrap_close,
+    .listen = wrap_listen, .accept = wrap_accept,
     .net_get_interface_info = wrap_net_get_if_info, .dns_resolve = wrap_dns_resolve,
     .http_get = http_get,
     .process_events = wrap_process_events,

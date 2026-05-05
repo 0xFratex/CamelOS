@@ -1459,3 +1459,131 @@ void vmm_dump_address_space(address_space_t* space)
 
     VMM_LOG("=== End Address Space ===\n");
 }
+
+/* ========================================================================
+ * Copy-on-Write Operations
+ * ======================================================================== */
+
+int vmm_cow_duplicate_page(address_space_t* space, uint32_t virt)
+{
+    page_directory_t* dir = get_dir(space);
+    if (!dir) return -1;
+
+    uint32_t page_addr = page_floor(virt);
+    uint32_t old_pte = pt_get_entry(dir, page_addr);
+    if (!(old_pte & VMM_FLAG_PRESENT)) {
+        VMM_ERR("cow_duplicate: page 0x%x not present\n", virt);
+        return -1;
+    }
+
+    uint32_t old_phys = old_pte & 0xFFFFF000;
+
+    /* Allocate a new physical frame */
+    uint32_t new_phys = pmm_alloc_frame();
+    if (!new_phys) {
+        VMM_ERR("cow_duplicate: out of frames for 0x%x\n", virt);
+        return -1;
+    }
+
+    /* Copy the old page content to the new frame */
+    memcpy((void*)new_phys, (void*)old_phys, PAGE_SIZE);
+
+    /* Decrement the old frame's COW reference count */
+    cow_ref_dec(old_phys);
+
+    /* Map the virtual address to the new frame with writable + no COW */
+    uint32_t new_flags = (old_pte & 0xFFF);
+    new_flags &= ~VMM_FLAG_COW;
+    new_flags |= VMM_FLAG_WRITABLE;
+
+    if (pt_set_entry(dir, page_addr, new_phys, new_flags) != 0) {
+        VMM_ERR("cow_duplicate: failed to remap 0x%x\n", virt);
+        pmm_free_frame(new_phys);
+        return -1;
+    }
+
+    /* Set COW ref count for the new frame to 1 */
+    if (cow_ref_counts) {
+        cow_ref_counts[frame_index(new_phys)] = 1;
+    }
+
+    return 0;
+}
+
+void vmm_cow_mark_range(address_space_t* space, uint32_t start, uint32_t end)
+{
+    if (!space) return;
+
+    page_directory_t* dir = get_dir(space);
+    if (!dir) return;
+
+    uint32_t addr = page_floor(start);
+    uint32_t end_aligned = page_ceil(end);
+
+    while (addr < end_aligned) {
+        uint32_t pte = pt_get_entry(dir, addr);
+        if (pte & VMM_FLAG_PRESENT) {
+            uint32_t phys = pte & 0xFFFFF000;
+            uint32_t flags = pte & 0xFFF;
+
+            /* Mark as read-only + COW */
+            flags &= ~VMM_FLAG_WRITABLE;
+            flags |= VMM_FLAG_COW;
+            pt_set_entry(dir, addr, phys, flags);
+
+            /* Increment COW reference count */
+            cow_ref_inc(phys);
+        }
+        addr += PAGE_SIZE;
+    }
+
+    /* Flush TLB by reloading CR3 */
+    if (current_directory == dir) {
+        switch_page_directory(dir);
+    }
+}
+
+/* ========================================================================
+ * Utilities
+ * ======================================================================== */
+
+frame_stats_t* vmm_get_frame_stats(void)
+{
+    pmm_stats.total_frames    = pmm_total_frames;
+    pmm_stats.used_frames     = pmm_used_frames;
+    pmm_stats.free_frames     = pmm_total_frames - pmm_used_frames;
+    pmm_stats.reserved_frames = pmm_reserved;
+    return &pmm_stats;
+}
+
+void vmm_dump_address_space(address_space_t* space)
+{
+    if (!space) {
+        VMM_LOG("Address space: NULL\n");
+        return;
+    }
+
+    VMM_LOG("=== Address Space 0x%x ===\n", (uint32_t)space);
+    VMM_LOG("  Page dir: 0x%x (phys 0x%x)\n",
+            (uint32_t)space->page_dir,
+            space->page_dir ? space->page_dir->physicalAddr : 0);
+    VMM_LOG("  brk: 0x%x  stack_top: 0x%x\n", space->brk, space->stack_top);
+    VMM_LOG("  code: 0x%x - 0x%x  ref_count: %d\n",
+            space->code_start, space->code_end, space->ref_count);
+
+    vma_t* vma = space->vma_list;
+    int i = 0;
+    while (vma) {
+        VMM_LOG("  VMA %d: 0x%x - 0x%x type=%d flags=0x%x %s\n",
+                i, vma->start, vma->end, vma->type, vma->flags,
+                vma->name ? vma->name : "");
+        vma = vma->next;
+        i++;
+    }
+
+    frame_stats_t* stats = vmm_get_frame_stats();
+    VMM_LOG("  PMM: %d total, %d used, %d free, %d reserved\n",
+            stats->total_frames, stats->used_frames,
+            stats->free_frames, stats->reserved_frames);
+    VMM_LOG("===========================\n");
+}

@@ -2,6 +2,15 @@
 
 #define PORT 0x3f8 // COM1
 
+// Variadic support for s_printf
+#define va_start(v,l)   __builtin_va_start(v,l)
+#define va_end(v)       __builtin_va_end(v)
+#define va_arg(v,l)     __builtin_va_arg(v,l)
+typedef __builtin_va_list va_list;
+
+// Forward declaration of vsprintf from core/string.c
+extern int vsprintf(char* buf, const char* fmt, va_list args);
+
 int init_serial() {
    outb(PORT + 1, 0x00);    // Disable all interrupts
    outb(PORT + 3, 0x80);    // Enable DLAB (set baud rate divisor)
@@ -22,9 +31,14 @@ void write_serial(char a) {
    outb(PORT, a);
 }
 
-void s_printf(const char* str) {
-    for(int i=0; str[i] != 0; i++) {
-        write_serial(str[i]);
+void s_printf(const char* fmt, ...) {
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsprintf(buf, fmt, args);
+    va_end(args);
+    for (int i = 0; buf[i] != 0; i++) {
+        write_serial(buf[i]);
     }
 }
 

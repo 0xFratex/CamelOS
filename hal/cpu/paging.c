@@ -32,10 +32,8 @@ void page_fault_handler(registers_t regs) {
     }
 
     // VMM could not handle it — this is a genuine fatal page fault
-    s_printf("\n[PAGING] Page Fault at 0x");
-    char* chars = "0123456789ABCDEF";
-    for (int i = 28; i >= 0; i -= 4) write_serial(chars[(faulting_address >> i) & 0xF]);
-    s_printf(" (present=%d rw=%d us=%d reserved=%d)\n", present, rw, us, reserved);
+    s_printf("\n[PAGING] Page Fault at 0x%x (present=%d rw=%d us=%d reserved=%d)\n",
+             faulting_address, present, rw, us, reserved);
 
     // UNMUTE LOGS SO WE CAN SEE THE PANIC ON SCREEN
     vga_mute_log(0);
@@ -73,7 +71,6 @@ void init_paging() {
     s_printf("[PAGING] Initializing...\n");
 
     // Allocate a page directory (aligned 4K)
-    uint32_t phys;
     kernel_directory = (page_directory_t*)kmalloc_a(sizeof(page_directory_t));
     memset(kernel_directory, 0, sizeof(page_directory_t));
 

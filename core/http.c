@@ -27,7 +27,7 @@
 // External references for event processing
 extern void rtl8139_poll(void);
 extern window_t* active_win;  // From window_server.c
-extern void s_printf(const char*);
+extern void s_printf(const char* fmt, ...);
 
 // TLS session for HTTPS connections
 static tls_session_t* current_tls_session = NULL;

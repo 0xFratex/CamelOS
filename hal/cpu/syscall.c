@@ -182,6 +182,14 @@ void syscall_handler(syscall_regs_t* regs) {
             result = g_kernel_api.ping((const char*)arg1, (char*)arg2, (int)arg3);
             break;
             
+        case SYS_LISTEN:
+            result = g_kernel_api.listen((int)arg1, (int)arg2);
+            break;
+            
+        case SYS_ACCEPT:
+            result = g_kernel_api.accept((int)arg1, (void*)arg2, (int*)arg3);
+            break;
+            
         case SYS_PROCESS_EVENTS:
             g_kernel_api.process_events();
             result = 0;

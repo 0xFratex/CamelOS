@@ -8,7 +8,7 @@
 #include "../../hal/video/gfx_hal.h"
 
 // Debug output via serial
-extern void s_printf(const char *str);
+extern void s_printf(const char *fmt, ...);
 
 // ============================================================================
 // INTERNAL HELPERS - MINI STRING UTILITIES

@@ -314,6 +314,9 @@ void scheduler_tick(void) {
         current_running->time_slice--;
         current_running->time_used++;
     }
+    
+    /* Check for sleeping tasks that should wake up */
+    scheduler_check_sleepers();
 }
 
 /**
@@ -380,6 +383,16 @@ uint32_t scheduler_schedule(registers_t* regs) {
     
     stats.context_switches++;
     
+    /* Switch address space if the new task has a different one */
+    if (next->address_space != old->address_space) {
+        extern void vmm_switch_address_space(void*);
+        vmm_switch_address_space(next->address_space);
+    }
+    
+    /* Update TSS kernel stack pointer for Ring 3 transitions */
+    extern void tss_set_kernel_stack(uint32_t);
+    tss_set_kernel_stack(next->esp);
+    
     /* Return new ESP for context switch */
     return current_running->esp;
 }
@@ -427,9 +440,24 @@ void scheduler_wakeup(task_t* task) {
 void scheduler_check_sleepers(void) {
     extern volatile uint32_t ticks;
     
-    /* This would require iterating all sleeping tasks */
-    /* For efficiency, we could maintain a separate sleeping list */
-    /* For now, this is a placeholder */
+    /* Scan all priority queues for sleeping tasks that should wake up */
+    for (int i = 0; i < NUM_PRIORITIES; i++) {
+        task_t* task = priority_queues[i];
+        while (task) {
+            if (task->state == TASK_STATE_SLEEPING && task->sleep_until != 0) {
+                if (ticks >= task->sleep_until) {
+                    task->state = TASK_STATE_READY;
+                    task->sleep_until = 0;
+                    task->block_reason = 0;
+                    /* Update highest priority */
+                    if (task->priority < highest_ready_priority) {
+                        highest_ready_priority = task->priority;
+                    }
+                }
+            }
+            task = task->next;
+        }
+    }
 }
 
 /**

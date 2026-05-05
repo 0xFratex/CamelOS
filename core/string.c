@@ -158,36 +158,117 @@ void int_to_hex(uint32_t n, char* buf) {
     buf[10] = 0;
 }
 
-// vsprintf
+// vsprintf - enhanced with %x, %X, %u, %p, %% support
 int vsprintf(char* buf, const char* fmt, va_list args) {
     char* orig_buf = buf;
-    
+    const char* hex_chars_lower = "0123456789abcdef";
+    const char* hex_chars_upper = "0123456789ABCDEF";
+
     while (*fmt) {
         if (*fmt == '%') {
             fmt++;
+            // Handle %%
+            if (*fmt == '%') {
+                *buf++ = '%';
+                fmt++;
+                continue;
+            }
+            // Handle %s
             if (*fmt == 's') {
                 fmt++;
                 const char* str = va_arg(args, const char*);
                 if(!str) str = "(null)";
                 while (*str) *buf++ = *str++;
-            } else if (*fmt == 'd') {
+            }
+            // Handle %d (signed decimal)
+            else if (*fmt == 'd') {
                 fmt++;
                 int val = va_arg(args, int);
                 char tmp[32];
                 int_to_str(val, tmp);
                 char* p = tmp;
                 while(*p) *buf++ = *p++;
-            } else if (*fmt == '0' && *(fmt+1) == '2' && *(fmt+2) == 'X') {
+            }
+            // Handle %u (unsigned decimal)
+            else if (*fmt == 'u') {
+                fmt++;
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[32];
+                int i = 0;
+                if (val == 0) {
+                    *buf++ = '0';
+                } else {
+                    while (val != 0) {
+                        tmp[i++] = '0' + (val % 10);
+                        val /= 10;
+                    }
+                    // Reverse
+                    for (int j = 0; j < i / 2; j++) {
+                        char t = tmp[j];
+                        tmp[j] = tmp[i - 1 - j];
+                        tmp[i - 1 - j] = t;
+                    }
+                    for (int j = 0; j < i; j++) *buf++ = tmp[j];
+                }
+            }
+            // Handle %x (lowercase hex)
+            else if (*fmt == 'x') {
+                fmt++;
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[11]; // "0x" + 8 hex digits + null
+                int i = 0;
+                if (val == 0) {
+                    *buf++ = '0';
+                } else {
+                    while (val != 0) {
+                        tmp[i++] = hex_chars_lower[val & 0xF];
+                        val >>= 4;
+                    }
+                    // Reverse
+                    for (int j = i - 1; j >= 0; j--) *buf++ = tmp[j];
+                }
+            }
+            // Handle %X (uppercase hex)
+            else if (*fmt == 'X') {
+                fmt++;
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[11];
+                int i = 0;
+                if (val == 0) {
+                    *buf++ = '0';
+                } else {
+                    while (val != 0) {
+                        tmp[i++] = hex_chars_upper[val & 0xF];
+                        val >>= 4;
+                    }
+                    // Reverse
+                    for (int j = i - 1; j >= 0; j--) *buf++ = tmp[j];
+                }
+            }
+            // Handle %p (pointer - 0x prefixed hex)
+            else if (*fmt == 'p') {
+                fmt++;
+                unsigned int val = (unsigned int)va_arg(args, void*);
+                *buf++ = '0';
+                *buf++ = 'x';
+                for (int i = 7; i >= 0; i--) {
+                    *buf++ = hex_chars_lower[(val >> (i * 4)) & 0xF];
+                }
+            }
+            // Handle %02X (2-digit uppercase hex)
+            else if (*fmt == '0' && *(fmt+1) == '2' && *(fmt+2) == 'X') {
                 fmt += 3;
                 int val = va_arg(args, int);
-                char hex[] = "0123456789ABCDEF";
-                *buf++ = hex[(val >> 4) & 0xF];
-                *buf++ = hex[val & 0xF];
-            } else if (*fmt == 'c') {
+                *buf++ = hex_chars_upper[(val >> 4) & 0xF];
+                *buf++ = hex_chars_upper[val & 0xF];
+            }
+            // Handle %c (character)
+            else if (*fmt == 'c') {
                 fmt++;
                 char c = (char)va_arg(args, int);
                 *buf++ = c;
-            } else {
+            }
+            else {
                 *buf++ = *fmt++;
             }
         } else {
@@ -254,6 +335,6 @@ void printk(const char* fmt, ...) {
     va_start(args, fmt);
     vsprintf(buf, fmt, args);
     va_end(args);
-    extern void s_printf(const char*); // From serial
+    extern void s_printf(const char* fmt, ...); // From serial (variadic)
     s_printf(buf);
 }

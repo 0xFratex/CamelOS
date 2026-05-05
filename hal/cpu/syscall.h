@@ -57,6 +57,8 @@
 #define SYS_HTTP_GET    59   // int http_get(const char* url, char* resp, int size, const char** hdrs, int hcount)
 #define SYS_NET_INFO    60   // int net_get_interface_info(char* name, char* ip, char* mac)
 #define SYS_PING        61   // int ping(const char* ip, char* buf, int len)
+#define SYS_LISTEN      62   // int listen(int fd, int backlog)
+#define SYS_ACCEPT      63   // int accept(int fd, void* addr, int* addrlen)
 
 #define SYS_PROCESS_EVENTS 70 // void process_events()
 

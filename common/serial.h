@@ -7,7 +7,7 @@
 int init_serial();
 int is_transmit_empty();
 void write_serial(char a);
-void s_printf(const char* str);
+void s_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 void serial_write_string(const char* str);
 

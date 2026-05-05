@@ -84,7 +84,7 @@ void init_heap(uint32_t start_address, uint32_t size) {
     used_mem_size = 0;
     
     // Logging (assumes s_printf exists)
-    extern void s_printf(const char*);
+    extern void s_printf(const char* fmt, ...);
     s_printf("[MEM] Enhanced Heap Initialized (Guard Bytes Enabled)\n");
 }
 
@@ -180,7 +180,7 @@ void kfree(void* ptr) {
 
     // 1. Header Corruption Check
     if (block->magic != MEM_MAGIC) {
-        extern void s_printf(const char*);
+        extern void s_printf(const char* fmt, ...);
         s_printf("[MEM] CRITICAL: Header corruption detected in kfree!\n");
         return; 
     }
@@ -188,7 +188,7 @@ void kfree(void* ptr) {
     // 2. Guard Byte Check
     mem_guard_t* guard = (mem_guard_t*)((uint8_t*)ptr + block->size);
     if (guard->guard != GUARD_MAGIC) {
-        extern void s_printf(const char*);
+        extern void s_printf(const char* fmt, ...);
         s_printf("[MEM] CRITICAL: Buffer Overflow detected (Guard corrupted)!\n");
         // In a real OS, this might panic the specific process
     }

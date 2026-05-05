@@ -47,6 +47,7 @@ typedef struct {
 
     // TCP state
     tcp_connection_t* tcp_conn;
+    int listener_id;        // TCP listener slot ID (-1 if not listening)
 
     // Blocking/non-blocking
     int blocking;
@@ -75,6 +76,7 @@ static socket_t* socket_alloc() {
             sockets[i].fd = next_fd++;
             sockets[i].blocking = 1;
             sockets[i].timeout = SOCKET_TIMEOUT;
+            sockets[i].listener_id = -1;
 
             // Allocate default buffers
             sockets[i].recv_buffer_size = 32768 + 16;
@@ -359,6 +361,12 @@ int k_close(int fd) {
     socket_t* sock = socket_get(fd);
     if (!sock) return -1;
 
+    // If this is a listening socket, close the listener
+    if (sock->listener_id >= 0) {
+        tcp_close_listener(sock->listener_id);
+        sock->listener_id = -1;
+    }
+
     // For TCP, properly close the connection
     if (sock->type == SOCK_STREAM && sock->tcp_conn) {
         tcp_connection_t* conn = sock->tcp_conn;
@@ -462,6 +470,116 @@ int socket_process_packet(uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t
         }
     }
     return -1;  // No matching socket
+}
+
+// listen() function - set socket to LISTEN state
+int k_listen(int fd, int backlog) {
+    (void)backlog;
+    socket_t* sock = socket_get(fd);
+    if (!sock) return -1;
+
+    // Only TCP sockets can listen
+    if (sock->type != SOCK_STREAM) return -1;
+
+    // Must be bound to a port
+    if (sock->local_port == 0) return -1;
+
+    // Call the TCP layer to start listening
+    int listener_id = tcp_listen(sock->local_port, sock->local_ip);
+    if (listener_id < 0) return -1;
+
+    sock->listener_id = listener_id;
+    sock->state = SOCKET_CONNECTED;  // Mark as listening/active
+
+    s_printf("[SOCKET] Listening on port %d (listener_id=%d)\n", sock->local_port, listener_id);
+    return 0;
+}
+
+// accept() function - accept an incoming connection on a listening socket
+int k_accept(int fd, sockaddr_in_t* addr) {
+    socket_t* sock = socket_get(fd);
+    if (!sock) return -1;
+
+    // Must be a listening socket
+    if (sock->listener_id < 0) return -1;
+
+    // Process listeners to move pending connections to established queue
+    tcp_process_listeners();
+
+    // Poll the network to catch any pending SYN-ACK completions
+    for (int i = 0; i < POLL_BATCH_SIZE; i++) {
+        rtl8139_poll();
+    }
+    tcp_process_listeners();
+
+    // Try to accept a connection from the TCP layer
+    tcp_connection_t* new_conn = NULL;
+    if (tcp_accept(sock->listener_id, &new_conn) != 0) {
+        // No connection ready
+        if (sock->blocking) {
+            // Block until a connection arrives or timeout
+            uint32_t start = get_tick_count();
+            uint32_t timeout_ticks = sock->timeout / 10;
+
+            while (1) {
+                for (int i = 0; i < POLL_BATCH_SIZE; i++) {
+                    rtl8139_poll();
+                }
+                tcp_process_listeners();
+
+                if (tcp_accept(sock->listener_id, &new_conn) == 0) {
+                    break;  // Got a connection!
+                }
+
+                uint32_t elapsed = get_tick_count() - start;
+                if (elapsed > timeout_ticks) {
+                    return -1;  // Timeout
+                }
+
+                // Process GUI events to prevent system freeze
+                extern void http_process_events(void);
+                http_process_events();
+            }
+        } else {
+            return -1;  // Non-blocking, no connection ready
+        }
+    }
+
+    if (!new_conn) return -1;
+
+    // Create a new socket for the accepted connection
+    socket_t* new_sock = socket_alloc();
+    if (!new_sock) {
+        // No free sockets - reject the connection
+        new_conn->state = TCP_CLOSED;
+        return -1;
+    }
+
+    new_sock->type = SOCK_STREAM;
+    new_sock->protocol = IPPROTO_TCP;
+    new_sock->tcp_conn = new_conn;
+    new_sock->listener_id = -1;
+    new_sock->local_ip = new_conn->local_ip;
+    new_sock->local_port = new_conn->local_port;
+    new_sock->remote_ip = new_conn->remote_ip;
+    new_sock->remote_port = new_conn->remote_port;
+    new_sock->state = SOCKET_CONNECTED;
+
+    // Set up TCP callbacks for the new socket
+    socket_setup_tcp_callbacks(new_sock->fd);
+
+    // Fill in the peer address if requested
+    if (addr) {
+        addr->sin_family = AF_INET;
+        addr->sin_addr = new_conn->remote_ip;
+        addr->sin_port = htons(new_conn->remote_port);
+    }
+
+    s_printf("[SOCKET] Accepted connection fd=%d from ", new_sock->fd);
+    // Print remote IP/port info would go here
+    s_printf("\n");
+
+    return new_sock->fd;
 }
 
 // getsockname() function

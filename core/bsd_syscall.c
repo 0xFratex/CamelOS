@@ -13,6 +13,14 @@
 // Kernel API
 extern kernel_api_t g_kernel_api;
 
+// --- External subsystem wiring ---
+extern int  pipe_create(int* fd_out);                                          // core/pipe.c
+extern int  signal_sigaction(int pid, int signum, void (*handler)(int));       // core/signal.c
+extern int  signal_sigprocmask(int pid, int how, uint32_t set);               // core/signal.c
+extern int  process_getpid(void);                                              // core/process.c
+extern void* vmm_mmap(void* space, uint32_t addr, uint32_t length,
+                       int prot, int flags, uint32_t offset);                 // mm/vmm.c
+
 // --- State ---
 static bsd_fd_entry_t g_fd_table[BSD_MAX_FDS];
 
@@ -153,10 +161,11 @@ int32_t bsd_syscall_handler(uint32_t syscall_num,
         case SYS_BSD_fcntl:
             return bsd_fcntl((int)arg1, (int)arg2, (int)arg3);
 
-        // Signals - stub out
+        // Signals
         case SYS_BSD_sigaction:
+            return bsd_sigaction((int)arg1, (int)arg2, (void(*)(int))arg3);
         case SYS_BSD_sigprocmask:
-            return 0;
+            return bsd_sigprocmask((int)arg1, (int)arg2, (uint32_t)arg3);
 
         default:
             s_printf("[BSD] Unhandled syscall: ");
@@ -346,14 +355,13 @@ int bsd_chdir(const char* path) {
 // --- Memory ---
 
 void* bsd_mmap(void* addr, uint32_t length, int prot, int flags, int fd, uint32_t offset) {
-    (void)prot; (void)offset;
-
+    // Wire to VMM's vmm_mmap() for proper virtual memory management
     // MAP_ANONYMOUS (flags & 0x1000) - allocate without file backing
     if (flags & 0x1000 || fd < 0) {
-        void* mem = kmalloc(length);
-        if (mem && addr) {
-            // If addr is a hint and we got a different address, that's OK
-            // In CamelOS's flat memory model, we just allocate
+        void* mem = vmm_mmap(0, (uint32_t)addr, length, prot, flags, 0);
+        if (mem == (void*)-1) {
+            // VMM not fully available yet; fall back to kmalloc
+            mem = kmalloc(length);
         }
         return mem;
     }
@@ -362,8 +370,12 @@ void* bsd_mmap(void* addr, uint32_t length, int prot, int flags, int fd, uint32_
     bsd_fd_entry_t* entry = bsd_get_fd(fd);
     if (!entry) return (void*)-1;
 
-    void* mem = kmalloc(length);
-    if (!mem) return (void*)-1;
+    void* mem = vmm_mmap(0, (uint32_t)addr, length, prot, flags, offset);
+    if (mem == (void*)-1) {
+        // VMM fallback to kmalloc
+        mem = kmalloc(length);
+    }
+    if (!mem || mem == (void*)-1) return (void*)-1;
 
     // Read file into mapped memory
     char temp[4096];
@@ -383,16 +395,34 @@ int bsd_munmap(void* addr, uint32_t length) {
 }
 
 int bsd_mprotect(void* addr, uint32_t length, int prot) {
+    // TODO: Wire to vmm_mprotect() once VMM supports page-level protection changes.
+    // For now, CamelOS runs in a flat memory model without per-page protection,
+    // so mprotect is a safe no-op.
     (void)addr; (void)length; (void)prot;
-    // CamelOS doesn't have memory protection yet
     return 0;
 }
 
 // --- Process ---
 
-int bsd_getpid(void)  { return 1; }
+int bsd_getpid(void)  {
+    // Wire to process.c / scheduler
+    int pid = process_getpid();
+    return pid > 0 ? pid : 1;  // fallback to 1 if not in a real task
+}
 int bsd_getuid(void)  { return 0; }
 int bsd_getgid(void)  { return 0; }
+
+// --- Signals ---
+
+int bsd_sigaction(int pid, int signum, void (*handler)(int)) {
+    // Wire to signal.c's signal_sigaction()
+    return signal_sigaction(pid, signum, handler);
+}
+
+int bsd_sigprocmask(int pid, int how, uint32_t set) {
+    // Wire to signal.c's signal_sigprocmask()
+    return signal_sigprocmask(pid, how, set);
+}
 
 // --- Networking ---
 
@@ -416,19 +446,22 @@ int bsd_connect(int sockfd, const void* addr, uint32_t addrlen) {
 }
 
 int bsd_listen(int sockfd, int backlog) {
-    (void)backlog;
     bsd_fd_entry_t* entry = bsd_get_fd(sockfd);
     if (!entry || entry->type != FD_TYPE_SOCKET) return -1;
-    // CamelOS doesn't have listen() yet
-    return 0;
+    return g_kernel_api.listen(entry->kernel_handle, backlog);
 }
 
 int bsd_accept(int sockfd, void* addr, uint32_t* addrlen) {
-    (void)addr; (void)addrlen;
     bsd_fd_entry_t* entry = bsd_get_fd(sockfd);
     if (!entry || entry->type != FD_TYPE_SOCKET) return -1;
-    // CamelOS doesn't have accept() yet
-    return -1;
+
+    // Accept a new connection - returns a kernel socket fd
+    int new_kfd = g_kernel_api.accept(entry->kernel_handle, addr, (int*)addrlen);
+    if (new_kfd < 0) return -1;
+
+    // Wrap the new kernel fd in a BSD fd table entry
+    int new_fd = bsd_alloc_fd(FD_TYPE_SOCKET, new_kfd, 0, BSD_O_RDWR);
+    return new_fd;
 }
 
 int bsd_send(int sockfd, const void* buf, uint32_t len, int flags) {
@@ -514,10 +547,14 @@ int bsd_dup2(int oldfd, int newfd) {
 }
 
 int bsd_pipe(int pipefd[2]) {
-    // CamelOS doesn't have real pipes yet
-    // Create two FDs that point to a shared buffer
-    pipefd[0] = bsd_alloc_fd(FD_TYPE_PIPE, -1, 0, BSD_O_RDONLY);
-    pipefd[1] = bsd_alloc_fd(FD_TYPE_PIPE, -1, 0, BSD_O_WRONLY);
+    // Wire to pipe_create() from pipe.c
+    int kern_fds[2];
+    int result = pipe_create(kern_fds);
+    if (result != 0) return -1;
+
+    // Register the kernel pipe FDs into the BSD fd table
+    pipefd[0] = bsd_alloc_fd(FD_TYPE_PIPE, kern_fds[0], 0, BSD_O_RDONLY);
+    pipefd[1] = bsd_alloc_fd(FD_TYPE_PIPE, kern_fds[1], 0, BSD_O_WRONLY);
     if (pipefd[0] < 0 || pipefd[1] < 0) return -1;
     return 0;
 }
