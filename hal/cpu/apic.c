@@ -11,6 +11,12 @@
 #define LAPIC_BASE      0xFEE00000
 #define IOAPIC_BASE     0xFEC00000
 
+// MMIO page flags: Present + RW + PCD + PWT (uncacheable, supervisor)
+// PCD (bit 4 = 0x10) = Page-level Cache Disable
+// PWT (bit 3 = 0x08) = Page-level Write-Through
+// Both set = uncacheable (strong uncacheable UC) — required for MMIO
+#define APIC_MMIO_FLAGS 0x1B  // Present(0x01) + RW(0x02) + PWT(0x08) + PCD(0x10)
+
 // --- Local APIC Registers ---
 #define LAPIC_ID        0x0020
 #define LAPIC_VER       0x0030
@@ -92,7 +98,11 @@ void ioapic_set_gsi_redirect(uint8_t gsi, uint8_t vector, uint8_t cpu_apic_id, i
     s_printf(" -> Vector "); int_to_str(vector, buf); s_printf(buf); s_printf("\n");
 }
 
+// Track whether APIC has been initialized (guard for EOI)
+static int apic_initialized = 0;
+
 void apic_send_eoi() {
+    if (!apic_initialized) return;  // Safety: don't write to unmapped APIC
     lapic_write(LAPIC_EOI, 0);
 }
 
@@ -103,8 +113,9 @@ void init_apic() {
 
     // 1. Map MMIO Pages (Important!)
     // We explicitly map the 4KB pages for LAPIC and IOAPIC
-    paging_map_region(LAPIC_BASE, LAPIC_BASE, 4096, 0x03); // RW, Supervisor
-    paging_map_region(IOAPIC_BASE, IOAPIC_BASE, 4096, 0x03);
+    // Using PCD+PWT for uncacheable MMIO access
+    paging_map_region(LAPIC_BASE, LAPIC_BASE, 4096, APIC_MMIO_FLAGS);
+    paging_map_region(IOAPIC_BASE, IOAPIC_BASE, 4096, APIC_MMIO_FLAGS);
 
     // 2. Disable Legacy PIC
     outb(0x21, 0xFF);
@@ -145,4 +156,5 @@ void init_apic() {
     ioapic_set_gsi_redirect(1, 33, 0, 0, 0);
 
     s_printf("[APIC] Initialization Complete.\n");
+    apic_initialized = 1;  // Mark as initialized so EOI writes are safe
 }

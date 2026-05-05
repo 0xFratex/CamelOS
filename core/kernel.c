@@ -65,7 +65,19 @@ void kernel_init_hal() {
     vmm_init();
     s_printf("[KERNEL] Virtual Memory Manager Initialized.\n");
 
+    // --- APIC: Must be initialized BEFORE scheduler enables interrupts ---
+    // The APIC maps MMIO pages at 0xFEE00000 and 0xFEC00000.
+    // ISR handlers call apic_send_eoi() which writes to 0xFEE000B0.
+    // If APIC is not initialized first, any interrupt causes a page fault.
+    init_apic();
+    s_printf("[KERNEL] APIC Initialized.\n");
+
+    // --- Timer: Must be initialized right after APIC ---
+    init_timer(50);
+    s_printf("[KERNEL] Timer Initialized.\n");
+
     // --- Scheduler: Initialize preemptive multitasking ---
+    // Now safe: APIC is mapped, EOI works, timer is ticking
     scheduler_init();
     s_printf("[KERNEL] Preemptive Scheduler Initialized.\n");
 
@@ -82,9 +94,6 @@ void kernel_init_hal() {
     // --- Kernel Logger ---
     klog_init();
     s_printf("[KERNEL] Kernel Logger Initialized.\n");
-
-    init_apic();
-    init_timer(50);
 }
 
 // Add this function to test RTL8139 basic functionality
