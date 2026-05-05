@@ -169,9 +169,9 @@ int tls_client_handshake(void* conn) {
         tls_set_hostname(session, ctx->hostname);
     }
     
-    // Skip strict cert verification for broader compatibility
-    // (our CA store is limited)
-    tls_set_verify(session, 0);
+    // Enable certificate verification for security
+    // This checks hostname matching and CA chain if available
+    tls_set_verify(session, 1);
 
     // Step 7: Perform the TLS handshake
     int result = tls_connect(session, ctx->hostname[0] ? ctx->hostname : "", remote_port);
@@ -225,8 +225,9 @@ tls_session_t* tls_client_handshake_fd(int sockfd, const char* hostname, uint16_
         tls_set_hostname(session, hostname);
     }
     
-    // Skip strict cert verification
-    tls_set_verify(session, 0);
+    // Enable certificate verification for security
+    // This checks hostname matching and CA chain if available
+    tls_set_verify(session, 1);
 
     // Perform the TLS handshake
     int result = tls_connect(session, hostname ? hostname : "", port);
@@ -277,8 +278,9 @@ int tls_client_send(void* conn, const char* data, int len) {
 
     tls_client_ctx_t* ctx = find_existing_ctx(conn);
     if (!ctx || !ctx->session) {
-        // No TLS session - fall through to raw TCP
-        return tcp_conn_send(conn, data, len);
+        // No TLS session - this is an error, don't fall back to unencrypted
+        s_printf("[TLS_CLIENT] ERROR: send called without TLS session - refusing plaintext\n");
+        return -1;
     }
 
     int result = tls_write(ctx->session, data, (size_t)len);
@@ -305,15 +307,16 @@ int tls_client_recv(void* conn, char* buf, int len) {
 
     tls_client_ctx_t* ctx = find_existing_ctx(conn);
     if (!ctx || !ctx->session) {
-        // No TLS session means this isn't a TLS connection
-        // Fall through to raw TCP receive
-        return tcp_conn_recv(conn, buf, len);
+        // No TLS session - this is an error, don't fall back to unencrypted
+        s_printf("[TLS_CLIENT] ERROR: recv called without TLS session - refusing plaintext\n");
+        return -1;
     }
 
     int result = tls_read(ctx->session, buf, (size_t)len);
     if (result < 0) {
-        // TLS read failed - try raw TCP as fallback
-        return tcp_conn_recv(conn, buf, len);
+        // TLS read failed - don't fall back to unencrypted
+        s_printf("[TLS_CLIENT] TLS read failed, refusing plaintext fallback\n");
+        return result;
     }
     return result;
 }

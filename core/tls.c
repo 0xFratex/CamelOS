@@ -161,26 +161,172 @@ const char* tls_error_string(tls_error_t err) {
 
 // ============================================================================
 // RANDOM NUMBER GENERATION
-// ============================================================================
+// Hash-DRBG based on SHA-256 (NIST SP 800-90A style)
+// Much stronger than simple LCG - uses SHA-256 as a cryptographic primitive
+
+static uint8_t drbg_state[32];     // V: internal state
+static uint8_t drbg_constant[32];  // C: reseed constant
+static int drbg_initialized = 0;
+static uint64_t drbg_reseed_counter = 0;
+
+// Internal: update the DRBG state with provided data
+static void drbg_update(const uint8_t *provided_data, int data_len) {
+    // Step 1: V = V + 1
+    // Increment V as a big-endian integer
+    int carry = 1;
+    for (int i = 31; i >= 0 && carry; i--) {
+        int sum = drbg_state[i] + carry;
+        drbg_state[i] = sum & 0xFF;
+        carry = sum >> 8;
+    }
+
+    // Step 2: H = V || provided_data
+    // Step 3: V = H
+    {
+        uint8_t hash_input[64];
+        int input_len = 32;
+        memcpy(hash_input, drbg_state, 32);
+        if (provided_data && data_len > 0) {
+            int copy_len = data_len;
+            if (copy_len > 32) copy_len = 32;
+            memcpy(hash_input + 32, provided_data, copy_len);
+            input_len = 32 + copy_len;
+        }
+        sha256_hash(hash_input, input_len, drbg_state);
+    }
+
+    // Step 4: H = V || C || provided_data
+    // Step 5: C = H
+    {
+        uint8_t hash_input[96];
+        int input_len = 64;
+        memcpy(hash_input, drbg_state, 32);
+        memcpy(hash_input + 32, drbg_constant, 32);
+        if (provided_data && data_len > 0) {
+            int copy_len = data_len;
+            if (copy_len > 32) copy_len = 32;
+            memcpy(hash_input + 64, provided_data, copy_len);
+            input_len = 64 + copy_len;
+        }
+        sha256_hash(hash_input, input_len, drbg_constant);
+    }
+}
+
+// Collect entropy from multiple system sources
+static void collect_entropy(uint8_t *buf, int len) {
+    // Mix multiple entropy sources from the kernel environment
+    // Using timer variations, cycle counter, and memory addresses as entropy
+    uint8_t seed_material[64];
+    memset(seed_material, 0, sizeof(seed_material));
+
+    // Collect timer variations (8 samples with delays for variation)
+    for (int i = 0; i < 8; i++) {
+        uint32_t t = get_tick_count();
+        seed_material[i * 4 + 0] = (t >> 24) & 0xFF;
+        seed_material[i * 4 + 1] = (t >> 16) & 0xFF;
+        seed_material[i * 4 + 2] = (t >> 8) & 0xFF;
+        seed_material[i * 4 + 3] = t & 0xFF;
+        // Small delay to get different timer values
+        for (volatile int d = 0; d < 1000; d++);
+    }
+
+    // Mix in heap and stack addresses (ASLR-like entropy)
+    uint32_t heap_addr = (uint32_t)kmalloc(1);
+    seed_material[32] = (heap_addr >> 24) & 0xFF;
+    seed_material[33] = (heap_addr >> 16) & 0xFF;
+    seed_material[34] = (heap_addr >> 8) & 0xFF;
+    seed_material[35] = heap_addr & 0xFF;
+    if (heap_addr) kfree((void*)heap_addr);
+
+    uint32_t stack_var_addr = 0;
+    uint8_t stack_var = 0;
+    stack_var_addr = (uint32_t)&stack_var;
+    seed_material[36] = (stack_var_addr >> 24) & 0xFF;
+    seed_material[37] = (stack_var_addr >> 16) & 0xFF;
+    seed_material[38] = (stack_var_addr >> 8) & 0xFF;
+    seed_material[39] = stack_var_addr & 0xFF;
+
+    // Mix in more timer readings with different timing
+    for (int i = 0; i < 4; i++) {
+        uint32_t t = get_tick_count();
+        seed_material[40 + i * 4 + 0] = (t >> 24) & 0xFF;
+        seed_material[40 + i * 4 + 1] = (t >> 16) & 0xFF;
+        seed_material[40 + i * 4 + 2] = (t >> 8) & 0xFF;
+        seed_material[40 + i * 4 + 3] = t & 0xFF;
+        for (volatile int d = 0; d < 500; d++);
+    }
+
+    // Hash the seed material to condense entropy
+    sha256_hash(seed_material, 56, buf);
+    if (len > 32) {
+        sha256_hash(buf, 32, buf + 32);
+    }
+}
+
+static void drbg_initialize(void) {
+    if (drbg_initialized) return;
+
+    // Collect entropy for initial state
+    uint8_t seed_material[64];
+    collect_entropy(seed_material, 64);
+
+    // Initialize V from seed
+    memcpy(drbg_state, seed_material, 32);
+
+    // Initialize C = SHA-256(0x00 || V)
+    uint8_t c_input[33];
+    c_input[0] = 0x00;
+    memcpy(c_input + 1, drbg_state, 32);
+    sha256_hash(c_input, 33, drbg_constant);
+
+    drbg_reseed_counter = 1;
+    drbg_initialized = 1;
+}
+
+static void drbg_reseed(void) {
+    uint8_t seed_material[64];
+    collect_entropy(seed_material, 64);
+
+    // V = SHA-256(0x01 || V || seed_material)
+    uint8_t reseed_input[97];
+    reseed_input[0] = 0x01;
+    memcpy(reseed_input + 1, drbg_state, 32);
+    memcpy(reseed_input + 33, seed_material, 64);
+    sha256_hash(reseed_input, 97, drbg_state);
+
+    // C = SHA-256(0x00 || V)
+    uint8_t c_input[33];
+    c_input[0] = 0x00;
+    memcpy(c_input + 1, drbg_state, 32);
+    sha256_hash(c_input, 33, drbg_constant);
+
+    drbg_reseed_counter = 1;
+}
 
 void tls_get_random(uint8_t* buffer, size_t len) {
-    // Use system timer and other entropy sources
-    static uint32_t seed = 0;
-    
-    if (seed == 0) {
-        seed = get_tick_count();
+    if (!drbg_initialized) {
+        drbg_initialize();
     }
-    
-    for (size_t i = 0; i < len; i++) {
-        // Simple LCG with XOR mixing
-        seed = seed * 1103515245 + 12345;
-        uint32_t val = (seed >> 16) ^ (seed & 0xFFFF);
-        
-        // Mix in timer value
-        val ^= get_tick_count();
-        
-        buffer[i] = val & 0xFF;
+
+    // Reseed every 2^16 requests for forward secrecy
+    if (drbg_reseed_counter > 65536) {
+        drbg_reseed();
     }
+
+    size_t generated = 0;
+    while (generated < len) {
+        // Generate 32 bytes at a time
+        drbg_update(NULL, 0);
+
+        int copy_len = 32;
+        if (generated + copy_len > len) {
+            copy_len = len - generated;
+        }
+        memcpy(buffer + generated, drbg_state, copy_len);
+        generated += copy_len;
+    }
+
+    drbg_reseed_counter++;
 }
 
 // Get a single random byte
@@ -516,10 +662,9 @@ int aes_gcm_encrypt(aes_gcm_ctx_t* ctx, const uint8_t* plaintext, size_t pt_len,
                     uint8_t* ciphertext, uint8_t* tag) {
     uint8_t counter[16];
     uint8_t eky[16];
-    uint8_t ghash_input[1024];
+    uint8_t* ghash_input = (uint8_t*)kmalloc(pt_len + aad_len + 64);
+    if (!ghash_input) return -1;
     size_t ghash_len = 0;
-    
-    // Copy J0 to counter
     memcpy(counter, ctx->gcm_j0, 16);
     
     // Encrypt plaintext
@@ -570,6 +715,7 @@ int aes_gcm_encrypt(aes_gcm_ctx_t* ctx, const uint8_t* plaintext, size_t pt_len,
         tag[i] = ghash_result[i] ^ eky[i];
     }
     
+    kfree(ghash_input);
     return 0;
 }
 
@@ -578,7 +724,8 @@ int aes_gcm_decrypt(aes_gcm_ctx_t* ctx, const uint8_t* ciphertext, size_t ct_len
                     const uint8_t* tag, uint8_t* plaintext) {
     uint8_t counter[16];
     uint8_t eky[16];
-    uint8_t ghash_input[1024];
+    uint8_t* ghash_input = (uint8_t*)kmalloc(ct_len + aad_len + 64);
+    if (!ghash_input) return -1;
     size_t ghash_len = 0;
     uint8_t computed_tag[16];
     
@@ -610,6 +757,10 @@ int aes_gcm_decrypt(aes_gcm_ctx_t* ctx, const uint8_t* ciphertext, size_t ct_len
     // Compute GHASH
     uint8_t ghash_result[16];
     ghash(ctx, ghash_input, ghash_len, ghash_result);
+    
+    // Clean up GHASH input buffer
+    kfree(ghash_input);
+    ghash_input = NULL;
     
     // Compute tag
     aes_encrypt_block(ctx, ctx->gcm_j0, eky);
@@ -683,10 +834,18 @@ int tls_prf(const uint8_t* secret, size_t secret_len,
             const uint8_t* seed, size_t seed_len,
             uint8_t* output, size_t output_len) {
     // Build seed: label || seed
-    uint8_t full_seed[256];
     size_t label_len = strlen((char*)label);
     size_t full_seed_len = label_len + seed_len;
-    
+
+    // Bounds check to prevent stack overflow
+    if (full_seed_len > 240) {
+        // Truncate to fit - extremely unlikely in practice
+        full_seed_len = 240;
+        if (label_len > full_seed_len) label_len = full_seed_len;
+        seed_len = full_seed_len - label_len;
+    }
+
+    uint8_t full_seed[256];
     memcpy(full_seed, label, label_len);
     memcpy(full_seed + label_len, seed, seed_len);
     
@@ -914,14 +1073,14 @@ int rsa_verify_pkcs1(rsa_key_t* key, const uint8_t* signature, size_t sig_len,
         if (i + sizeof(sha256_prefix) + hash_len > key->modulus_len) {
             return TLS_ERR_SIGNATURE;
         }
-        if (memcmp(decrypted + i, sha256_prefix, sizeof(sha256_prefix)) != 0) {
+        if (tls_constant_time_memcmp(decrypted + i, sha256_prefix, sizeof(sha256_prefix)) != 0) {
             return TLS_ERR_SIGNATURE;
         }
         i += sizeof(sha256_prefix);
     }
     
-    // Compare hash
-    if (memcmp(decrypted + i, hash, hash_len) != 0) {
+    // Compare hash using constant-time comparison to prevent timing attacks
+    if (tls_constant_time_memcmp(decrypted + i, hash, hash_len) != 0) {
         return TLS_ERR_SIGNATURE;
     }
     

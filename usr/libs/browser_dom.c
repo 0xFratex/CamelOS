@@ -2053,41 +2053,59 @@ static void layout_node(dom_document_t *doc, dom_node_t *node, layout_ctx_t *ctx
 static void layout_block(dom_document_t *doc, dom_node_t *node, layout_ctx_t *ctx) {
     dom_style_t *s = &node->computed_style;
 
-    // Compute width
-    int box_width;
+    // === CSS Box Model ===
+    // CSS width/height are "content-box" dimensions by default
+    // The box model from outside-in is: margin -> border -> padding -> content
+
+    // Compute content width
+    int content_width;
     if (s->width > 0) {
-        box_width = s->width;
+        // Explicit width: treat as content-box width (CSS standard)
+        content_width = s->width;
     } else if (s->width_pct >= 0) {
-        box_width = (ctx->viewport_w * s->width_pct) / 100;
+        // Percentage width: relative to containing block
+        content_width = (ctx->viewport_w * s->width_pct) / 100 -
+                        s->border[1].width - s->border[3].width -
+                        s->padding[1] - s->padding[3];
     } else {
-        box_width = ctx->viewport_w - s->margin[1] - s->margin[3] -
-                    s->border[1].width - s->border[3].width -
-                    s->padding[1] - s->padding[3];
+        // Auto width: fill remaining space
+        content_width = ctx->viewport_w - s->margin[1] - s->margin[3] -
+                        s->border[1].width - s->border[3].width -
+                        s->padding[1] - s->padding[3];
     }
-    if (box_width < 0) box_width = 0;
+
+    // Apply min/max width constraints
+    if (s->min_width >= 0 && content_width < s->min_width)
+        content_width = s->min_width;
+    if (s->max_width >= 0 && content_width > s->max_width)
+        content_width = s->max_width;
+    if (content_width < 0) content_width = 0;
+
+    // Border-box dimensions (what background/border fill)
+    int border_box_w = content_width + s->padding[1] + s->padding[3] +
+                       s->border[1].width + s->border[3].width;
+    int margin_box_w = border_box_w + s->margin[1] + s->margin[3];
 
     // Position: block elements start on a new line
-    int x = s->margin[3] + s->border[3].width + s->padding[3];
-    int y = ctx->cursor_y + s->margin[0];
-
+    // layout_x/layout_y are relative to parent, in margin-box coordinates
     s->layout_x = s->margin[3];
-    s->layout_y = y;
-    s->layout_w = box_width + s->margin[1] + s->margin[3] +
-                  s->border[1].width + s->border[3].width +
-                  s->padding[1] + s->padding[3];
-    s->content_x = x;
-    s->content_y = y + s->border[0].width + s->padding[0];
-    s->content_w = box_width - s->padding[1] - s->padding[3] -
-                   s->border[1].width - s->border[3].width;
-    if (s->content_w < 0) s->content_w = 0;
+    s->layout_y = ctx->cursor_y + s->margin[0];
+
+    // Store box dimensions
+    s->layout_w = margin_box_w;
+
+    // Content position relative to the margin-box origin
+    s->content_x = s->margin[3] + s->border[3].width + s->padding[3];
+    s->content_y = s->border[0].width + s->padding[0];
+    s->content_w = content_width;
 
     // Layout children within this block
     layout_ctx_t child_ctx;
-    child_ctx.viewport_w = s->content_w;
+    child_ctx.viewport_w = content_width;
     child_ctx.viewport_h = ctx->viewport_h;
     child_ctx.cursor_x = 0;
     child_ctx.cursor_y = 0;
-    child_ctx.max_x = s->content_w;
+    child_ctx.max_x = content_width;
     child_ctx.line_height = s->font_size;
 
     dom_node_t *child = node->first_child;
@@ -2096,26 +2114,42 @@ static void layout_block(dom_document_t *doc, dom_node_t *node, layout_ctx_t *ct
         child = child->next_sibling;
     }
 
-    // Compute total height
+    // Compute content height
     int content_height = child_ctx.cursor_y;
     if (s->height > 0) {
-        content_height = s->height - s->border[0].width - s->border[2].width -
-                         s->padding[0] - s->padding[2];
+        // Explicit height: treat as content-box height
+        if (content_height < s->height)
+            content_height = s->height;
     } else if (s->height_pct >= 0) {
-        content_height = (ctx->viewport_h * s->height_pct) / 100 -
+        int pct_height = (ctx->viewport_h * s->height_pct) / 100 -
                          s->border[0].width - s->border[2].width -
                          s->padding[0] - s->padding[2];
+        if (content_height < pct_height)
+            content_height = pct_height;
     }
-    if (content_height < child_ctx.cursor_y) {
-        content_height = child_ctx.cursor_y;
+
+    // Apply min/max height constraints
+    if (s->min_height >= 0 && content_height < s->min_height)
+        content_height = s->min_height;
+    if (s->max_height >= 0 && content_height > s->max_height)
+        content_height = s->max_height;
+
+    // Apply line-height if set
+    if (s->line_height > 0 && content_height < s->line_height) {
+        content_height = s->line_height;
     }
 
     s->content_h = content_height;
-    s->layout_h = content_height + s->border[0].width + s->border[2].width +
-                  s->padding[0] + s->padding[2] + s->margin[0] + s->margin[2];
 
-    // Advance the parent cursor past this block
-    ctx->cursor_y = s->layout_y + s->layout_h - s->margin[0];
+    // Border-box height
+    int border_box_h = content_height + s->padding[0] + s->padding[2] +
+                       s->border[0].width + s->border[2].width;
+
+    // Margin-box height (total space this element occupies)
+    s->layout_h = border_box_h + s->margin[0] + s->margin[2];
+
+    // Advance the parent cursor past this block's margin box
+    ctx->cursor_y = s->layout_y + border_box_h + s->margin[2];
 }
 
 // Layout an inline element (or text node)
@@ -2337,54 +2371,64 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
 
     // Element node: draw background, border, then recurse into children
     if (node->type == DOM_NODE_ELEMENT) {
-        int box_w = s->layout_w;
-        int box_h = s->layout_h;
+        // === CSS Box Model rendering ===
+        // layout_x = margin[3], layout_y includes margin[0]
+        // So abs_x/abs_y is at the margin-box origin
+        //
+        // From outside to inside:
+        //   margin-box -> border-box -> padding-box -> content-box
+        //
+        // Background paints the border-box area (CSS standard).
+        // Border paints on top of background at border-box edges.
 
-        // Draw background (only if not transparent)
-        // abs_x already includes margin[3] offset (layout_x = margin[3]),
-        // so background starts at abs_x (border-box edge), not abs_x + margin[3]
-        if (s->background_color != DOM_COLOR_TRANSPARENT && box_w > 0 && box_h > 0) {
-            int bg_x = abs_x;
-            int bg_y = abs_y;
-            int bg_w = box_w - s->margin[1] - s->margin[3];
-            int bg_h = s->content_h + s->padding[0] + s->padding[2] +
-                       s->border[0].width + s->border[2].width;
+        int margin_box_w = s->layout_w;
+        int margin_box_h = s->layout_h;
 
-            if (bg_w > 0 && bg_h > 0) {
-                gfx_fill_rect(bg_x, bg_y, bg_w, bg_h, s->background_color);
-            }
+        // Border-box position and size (background/border fill area)
+        int bb_x = abs_x;
+        int bb_y = abs_y;
+        int bb_w = margin_box_w - s->margin[1] - s->margin[3];
+        int bb_h = margin_box_h - s->margin[0] - s->margin[2];
+
+        if (bb_w < 0) bb_w = 0;
+        if (bb_h < 0) bb_h = 0;
+
+        // Draw background (fills the border-box area)
+        if (s->background_color != DOM_COLOR_TRANSPARENT && bb_w > 0 && bb_h > 0) {
+            gfx_fill_rect(bb_x, bb_y, bb_w, bb_h, s->background_color);
         }
 
-        // Draw border
-        if (s->border[0].width > 0 && s->border[0].style != DOM_BORDER_STYLE_NONE) {
+        // Draw borders (on top of background)
+        if ((s->border[0].width > 0 || s->border[1].width > 0 ||
+             s->border[2].width > 0 || s->border[3].width) &&
+            (s->border[0].style != DOM_BORDER_STYLE_NONE ||
+             s->border[1].style != DOM_BORDER_STYLE_NONE ||
+             s->border[2].style != DOM_BORDER_STYLE_NONE ||
+             s->border[3].style != DOM_BORDER_STYLE_NONE)) {
+
             int bw_top    = s->border[0].width;
             int bw_right  = s->border[1].width;
             int bw_bottom = s->border[2].width;
             int bw_left   = s->border[3].width;
 
-            int inner_x = abs_x;
-            int inner_y = abs_y;
-            int inner_w = box_w - s->margin[1] - s->margin[3];
-            int inner_h = s->content_h + s->padding[0] + s->padding[2] +
-                          bw_top + bw_bottom;
-
-            // Top border
-            if (bw_top > 0) {
-                gfx_fill_rect(inner_x, inner_y, inner_w, bw_top, s->border[0].color);
+            // Top border (full width of border-box, height = border-top)
+            if (bw_top > 0 && s->border[0].style != DOM_BORDER_STYLE_NONE) {
+                gfx_fill_rect(bb_x, bb_y, bb_w, bw_top, s->border[0].color);
             }
             // Bottom border
-            if (bw_bottom > 0) {
-                gfx_fill_rect(inner_x, inner_y + inner_h - bw_bottom,
-                              inner_w, bw_bottom, s->border[2].color);
+            if (bw_bottom > 0 && s->border[2].style != DOM_BORDER_STYLE_NONE) {
+                gfx_fill_rect(bb_x, bb_y + bb_h - bw_bottom,
+                              bb_w, bw_bottom, s->border[2].color);
             }
-            // Left border
-            if (bw_left > 0) {
-                gfx_fill_rect(inner_x, inner_y, bw_left, inner_h, s->border[3].color);
+            // Left border (between top and bottom borders)
+            if (bw_left > 0 && s->border[3].style != DOM_BORDER_STYLE_NONE) {
+                gfx_fill_rect(bb_x, bb_y + bw_top,
+                              bw_left, bb_h - bw_top - bw_bottom, s->border[3].color);
             }
             // Right border
-            if (bw_right > 0) {
-                gfx_fill_rect(inner_x + inner_w - bw_right, inner_y,
-                              bw_right, inner_h, s->border[1].color);
+            if (bw_right > 0 && s->border[1].style != DOM_BORDER_STYLE_NONE) {
+                gfx_fill_rect(bb_x + bb_w - bw_right, bb_y + bw_top,
+                              bw_right, bb_h - bw_top - bw_bottom, s->border[1].color);
             }
         }
 
