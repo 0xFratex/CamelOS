@@ -32,7 +32,7 @@
 #include "disk_tools.h"
 #include "disk_health.h"
 #include "sys_requirements.h"
-#include "../include/math.h"
+// No floating-point in installer — all math is integer/fixed-point
 
 // Multiboot structures for memory detection
 typedef struct {
@@ -450,14 +450,100 @@ void render_section_label(int x, int y, int w, const char* label) {
     gfx_draw_rect(x, y + 14, w, 1, C_BORDER);
 }
 
+// --- Integer-only trig & angle utilities (no floating-point, no libgcc) ---
+// Angles represented as "milliturns": 0..1000 = 0..1 full turn (0..360 degrees)
+// 0 = right (3 o'clock), increases clockwise
+
+// 256-entry sin lookup table: sin(i * 2*PI/256) * 1024, i=0..63
+// Full table derived by symmetry: sin[0..63], sin[64..127], sin[128..191], sin[192..255]
+static const int16_t sin_table[64] = {
+       0,  25,  50,  75, 100, 125, 150, 174,
+     198, 222, 245, 268, 290, 312, 334, 355,
+     376, 396, 415, 434, 452, 469, 486, 502,
+     517, 531, 544, 557, 569, 580, 590, 599,
+     608, 616, 623, 629, 634, 639, 642, 645,
+     647, 649, 650, 650, 649, 648, 646, 643,
+     639, 634, 628, 622, 615, 608, 600, 591,
+     582, 572, 561, 550, 538, 526, 513, 500
+};
+
+// sin(angle_in_milliturns) * 1024 / 1000 — returns value scaled by ~1024/1000
+static int isin(int mt) {
+    // Normalize to 0..999
+    mt = mt % 1000;
+    if (mt < 0) mt += 1000;
+    // Convert milliturns to table index (0..255)
+    int idx = (mt * 256 + 500) / 1000;  // round
+    int quadrant = (idx >> 6) & 3;
+    int i = idx & 63;
+    int val;
+    switch (quadrant) {
+        case 0: val =  sin_table[i]; break;
+        case 1: val =  sin_table[63 - i]; break;
+        case 2: val = -sin_table[i]; break;
+        case 3: val = -sin_table[63 - i]; break;
+        default: val = 0; break;
+    }
+    return val;
+}
+
+// cos(milliturns) — same scale as isin
+static int icos(int mt) {
+    return isin(mt + 250);  // cos(x) = sin(x + 90deg) = sin(x + 250 milliturns)
+}
+
+// Integer atan2: returns angle in milliturns (0..999), 0=right, clockwise positive
+static int i_atan2(int dy, int dx) {
+    if (dx == 0 && dy == 0) return 0;
+    // Compute angle using octant-based approximation
+    // Returns 0..999 for a full turn
+    int abs_dx = dx < 0 ? -dx : dx;
+    int abs_dy = dy < 0 ? -dy : dy;
+    int angle;
+    if (abs_dx >= abs_dy) {
+        // Mostly horizontal: use atan(y/x) * 250 for 0..250 range (0..90deg)
+        if (abs_dx == 0) { angle = 0; }
+        else {
+            // Approximate atan(ratio) where ratio = abs_dy/abs_dx
+            // Using a simple rational approximation:
+            // atan(r) ≈ r / (1 + 0.28*r) in units of PI/2
+            // We work with ratio = abs_dy*1000/abs_dx
+            int ratio = (abs_dy * 1000) / abs_dx;
+            angle = (ratio * 1000) / (1000 + 280 * ratio / 1000);
+            // angle is now 0..250 for 0..90deg (in milliturns)
+        }
+    } else {
+        // Mostly vertical: use atan2 as PI/2 - atan(dx/dy)
+        int ratio = (abs_dx * 1000) / abs_dy;
+        angle = 250 - (ratio * 1000) / (1000 + 280 * ratio / 1000);
+    }
+    // Now angle is in 0..250 (first octant-ish, 0..90deg)
+    // Map to full circle based on quadrant
+    // We want: 0=right, clockwise positive
+    // dx>=0,dy<=0 -> Q0 (0..250)
+    // dx<0, dy<=0 -> Q1 (250..500)
+    // dx<0, dy>0  -> Q2 (500..750)
+    // dx>=0,dy>0  -> Q3 (750..1000)
+    if (dx >= 0 && dy <= 0) {
+        // Q0: already correct (0..250)
+    } else if (dx < 0 && dy <= 0) {
+        angle = 500 - angle;
+    } else if (dx < 0 && dy > 0) {
+        angle = 500 + angle;
+    } else {
+        angle = 1000 - angle;
+    }
+    if (angle < 0) angle += 1000;
+    if (angle >= 1000) angle -= 1000;
+    return angle;
+}
+
 // --- Pizza/Pie Chart (disk usage visualization) ---
 // Draws a macOS-style pie chart with colored slices and a legend.
-// slices: array of {fraction 0.0-1.0, color, label}
-// slice_count: number of slices
-// cx, cy: center of the pie chart
-// radius: radius of the pie chart
+// Uses integer-only math (no floating-point) for bare-metal compatibility.
+// fraction_permil: 0..1000 = portion of the total pie (0.0..1.0)
 typedef struct {
-    float fraction;       // 0.0 to 1.0 — portion of the total pie
+    int fraction_permil;  // 0 to 1000 — portion of the total pie
     uint32_t color;       // Fill color for this slice
     const char* label;    // Label for the legend
 } pie_slice_t;
@@ -482,11 +568,11 @@ void render_pie_chart(int cx, int cy, int radius, pie_slice_t* slices, int slice
         }
     }
 
-    // Draw each slice
-    double angle = 0.0; // Current angle in "turns" (0.0 = right, going clockwise)
+    // Draw each slice — angles in milliturns (0..1000)
+    int angle = 0; // Current angle in milliturns
     for (int s = 0; s < slice_count; s++) {
-        if (slices[s].fraction <= 0.0f) continue;
-        double end_angle = angle + (double)slices[s].fraction;
+        if (slices[s].fraction_permil <= 0) continue;
+        int end_angle = angle + slices[s].fraction_permil;
 
         // Draw filled slice using scanline approach
         for (int dy = -radius; dy <= radius; dy++) {
@@ -495,24 +581,22 @@ void render_pie_chart(int cx, int cy, int radius, pie_slice_t* slices, int slice
                 if (dist_sq > radius * radius) continue;
 
                 // Compute angle of this pixel relative to center
-                // 0 = right, going clockwise
-                double px_angle;
+                // 0 = right, going clockwise (milliturns)
+                int px_angle;
                 if (dx == 0 && dy == 0) {
-                    px_angle = 0.0;
+                    px_angle = 0;
                 } else {
-                    // atan2 gives angle in radians, convert to 0..1 range
-                    double a = -atan2((double)dy, (double)dx); // clockwise from right
-                    if (a < 0) a += 2.0 * M_PI;
-                    px_angle = a / (2.0 * M_PI);
+                    // i_atan2 returns 0..999 clockwise from right
+                    px_angle = i_atan2(-dy, dx); // negate dy for clockwise
                 }
 
                 // Check if this pixel's angle falls within the current slice
                 int in_slice = 0;
-                if (end_angle <= 1.0) {
+                if (end_angle <= 1000) {
                     in_slice = (px_angle >= angle && px_angle < end_angle);
                 } else {
                     // Wraps around
-                    in_slice = (px_angle >= angle || px_angle < (end_angle - 1.0));
+                    in_slice = (px_angle >= angle || px_angle < (end_angle - 1000));
                 }
 
                 if (in_slice) {
@@ -527,8 +611,10 @@ void render_pie_chart(int cx, int cy, int radius, pie_slice_t* slices, int slice
 
         // Draw slice separator line
         {
-            int sx = cx + (int)(radius * cos(angle * 2.0 * M_PI));
-            int sy = cy - (int)(radius * sin(angle * 2.0 * M_PI));
+            // angle milliturns -> sin/cos scaled by radius
+            // isin returns ~sin*1024/1000, multiply by radius then divide by 1000
+            int sx = cx + (icos(angle) * radius + 500) / 1000;
+            int sy = cy - (isin(angle) * radius + 500) / 1000;
             gfx_draw_line(cx, cy, sx, sy, 0xFFFFFFFF);
         }
 
@@ -1485,7 +1571,7 @@ void render_disk_utility(void) {
         for (int k = 0; k < 4; k++) {
             mbr_entry_t* part = &disk_mbr[util_drive_idx].partitions[k];
             if (part->type == 0) continue;
-            float frac = (total_sectors > 0) ? (float)part->lba_length / (float)total_sectors : 0.0f;
+            int frac_permil = (total_sectors > 0) ? (int)((uint64_t)part->lba_length * 1000 / total_sectors) : 0;
             char tn[16]; get_part_type_name(part->type, tn);
             // Build label: "PFS32 2.1 GB" etc.
             static char part_labels[4][48];
@@ -1493,7 +1579,7 @@ void render_disk_utility(void) {
             strcpy(part_labels[k], tn);
             strcat(part_labels[k], " ");
             strcat(part_labels[k], ps);
-            pie_slices[pie_count].fraction = frac;
+            pie_slices[pie_count].fraction_permil = frac_permil;
             pie_slices[pie_count].color = get_part_color(part->type);
             pie_slices[pie_count].label = part_labels[k];
             pie_count++;
@@ -1501,8 +1587,8 @@ void render_disk_utility(void) {
 
         // Add free space slice
         if (used < dev->sectors) {
-            float free_frac = (total_sectors > 0) ? (float)(dev->sectors - used) / (float)total_sectors : 0.0f;
-            pie_slices[pie_count].fraction = free_frac;
+            int free_frac_permil = (total_sectors > 0) ? (int)((uint64_t)(dev->sectors - used) * 1000 / total_sectors) : 0;
+            pie_slices[pie_count].fraction_permil = free_frac_permil;
             pie_slices[pie_count].color = C_PART_FREE;
             pie_slices[pie_count].label = "Free Space";
             pie_count++;
