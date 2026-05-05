@@ -1024,60 +1024,197 @@ void CGImageDestroy(CGImageRef image) {
 CGImageRef CGImageLoadPNG(const char* path) {
     // Read file
     extern int sys_fs_read(const char* path, char* buf, int max_len);
-    
+    extern int zlib_inflate(const uint8_t* src, uint32_t src_len, uint8_t* dst, uint32_t dst_cap);
+
     // Allocate a large buffer for the PNG data
     int buf_size = 1024 * 1024;  // 1MB max
     uint8_t* buf = (uint8_t*)kmalloc(buf_size);
     if (!buf) return NULL;
-    
+
     int len = sys_fs_read(path, (char*)buf, buf_size);
     if (len <= 0) {
         kfree(buf);
         return NULL;
     }
-    
-    // Parse PNG header to get dimensions
-    // PNG header: 8 bytes signature, then IHDR chunk
-    // IHDR: 4 bytes width, 4 bytes height, 1 byte bit depth, 1 byte color type, ...
-    if (len < 24) {
+
+    // Verify PNG signature: 89 50 4E 47 0D 0A 1A 0A
+    if (len < 24 || buf[0] != 0x89 || buf[1] != 'P' || buf[2] != 'N' || buf[3] != 'G') {
         kfree(buf);
         return NULL;
     }
-    
-    // Verify PNG signature
-    if (buf[0] != 0x89 || buf[1] != 'P' || buf[2] != 'N' || buf[3] != 'G') {
+
+    // Parse IHDR chunk (should be first chunk after signature)
+    // Chunk layout: 4 bytes length, 4 bytes type, data, 4 bytes CRC
+    // IHDR data: 4B width, 4B height, 1B bit_depth, 1B color_type, 1B compression, 1B filter, 1B interlace
+    int offset = 8;  // Skip PNG signature
+    int width = 0, height = 0;
+    int bit_depth = 0, color_type = 0;
+    int ihdr_found = 0;
+
+    // Collect all IDAT chunk data
+    uint8_t* idat_data = (uint8_t*)kmalloc(buf_size);
+    uint32_t idat_total = 0;
+    if (!idat_data) { kfree(buf); return NULL; }
+
+    while (offset + 12 <= len) {
+        // Read chunk length (big-endian)
+        uint32_t chunk_len = (buf[offset] << 24) | (buf[offset+1] << 16) |
+                             (buf[offset+2] << 8) | buf[offset+3];
+        // Read chunk type
+        uint8_t ct[4];
+        ct[0] = buf[offset+4]; ct[1] = buf[offset+5];
+        ct[2] = buf[offset+6]; ct[3] = buf[offset+7];
+
+        if (ct[0] == 'I' && ct[1] == 'H' && ct[2] == 'D' && ct[3] == 'R') {
+            // Parse IHDR
+            if (chunk_len < 13 || offset + 12 + 13 > (uint32_t)len) break;
+            uint8_t* d = &buf[offset + 8];
+            width  = (d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3];
+            height = (d[4] << 24) | (d[5] << 16) | (d[6] << 8) | d[7];
+            bit_depth  = d[8];
+            color_type = d[9];
+            ihdr_found = 1;
+        } else if (ct[0] == 'I' && ct[1] == 'D' && ct[2] == 'A' && ct[3] == 'T') {
+            // Accumulate IDAT data
+            if (offset + 12 + chunk_len <= (uint32_t)len && idat_total + chunk_len < (uint32_t)buf_size) {
+                memcpy(idat_data + idat_total, &buf[offset + 8], chunk_len);
+                idat_total += chunk_len;
+            }
+        } else if (ct[0] == 'I' && ct[1] == 'E' && ct[2] == 'N' && ct[3] == 'D') {
+            break;  // End of image
+        }
+
+        offset += 12 + chunk_len;  // 4(len) + 4(type) + data + 4(CRC)
+    }
+
+    if (!ihdr_found || width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+        kfree(idat_data);
         kfree(buf);
         return NULL;
     }
-    
-    // Extract dimensions from IHDR (big-endian)
-    int width = (buf[16] << 24) | (buf[17] << 16) | (buf[18] << 8) | buf[19];
-    int height = (buf[20] << 24) | (buf[21] << 16) | (buf[22] << 8) | buf[23];
-    
-    if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
-        kfree(buf);
-        return NULL;
-    }
-    
-    // TODO: Full PNG decoding requires zlib inflate + filtering
-    // For now, create a placeholder image
+
+    // Create the output image
     CGImageRef image = CGImageCreate(width, height);
     if (!image) {
+        kfree(idat_data);
         kfree(buf);
         return NULL;
     }
-    
-    // Fill with a placeholder pattern (checkerboard)
+
+    // Only support 8-bit RGBA (color_type=6) and RGB (color_type=2) for now
+    int channels = (color_type == 6) ? 4 : (color_type == 2) ? 3 : 0;
+    if (channels == 0 || bit_depth != 8) {
+        // Unsupported format — return placeholder
+        for (int i = 0; i < width * height; i++)
+            image->pixel_data[i] = 0xFFE0E0E0;
+        kfree(idat_data);
+        kfree(buf);
+        return image;
+    }
+
+    // Decompress IDAT data using zlib
+    uint32_t raw_stride = width * channels + 1;  // +1 for filter byte per row
+    uint32_t raw_size = raw_stride * height;
+    uint8_t* raw_data = (uint8_t*)kmalloc(raw_size + 16);
+    if (!raw_data) {
+        kfree(idat_data);
+        kfree(buf);
+        return image;
+    }
+
+    int inflate_result = zlib_inflate(idat_data, idat_total, raw_data, raw_size);
+
+    if (inflate_result <= 0) {
+        // Decompression failed — return placeholder with correct dimensions
+        for (int i = 0; i < width * height; i++)
+            image->pixel_data[i] = 0xFFE0E0E0;
+        kfree(raw_data);
+        kfree(idat_data);
+        kfree(buf);
+        return image;
+    }
+
+    // Reconstruct filtered scanlines and convert to 32-bit ARGB
+    // PNG filter types: 0=None, 1=Sub, 2=Up, 3=Average, 4=Paeth
+    uint8_t* prev_row = (uint8_t*)kmalloc(width * channels + 1);
+    if (!prev_row) {
+        kfree(raw_data);
+        kfree(idat_data);
+        kfree(buf);
+        return image;
+    }
+    memset(prev_row, 0, width * channels + 1);
+
     for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            if ((x / 8 + y / 8) % 2 == 0) {
-                image->pixel_data[y * width + x] = 0xFFE0E0E0;
-            } else {
-                image->pixel_data[y * width + x] = 0xFFC0C0C0;
+        uint8_t* row = raw_data + y * raw_stride;
+        uint8_t filter = row[0];
+
+        // Apply filter reconstruction
+        for (int x = 0; x < width * channels; x++) {
+            uint8_t raw = row[x + 1];
+            uint8_t a = (x >= channels) ? row[x + 1 - channels] : 0;  // Left (Sub)
+            uint8_t b = prev_row[x + 1];                                 // Up
+            uint8_t c = (x >= channels) ? prev_row[x + 1 - channels] : 0; // Up-Left
+
+            switch (filter) {
+                case 0: // None
+                    row[x + 1] = raw;
+                    break;
+                case 1: // Sub
+                    row[x + 1] = raw + a;
+                    break;
+                case 2: // Up
+                    row[x + 1] = raw + b;
+                    break;
+                case 3: // Average
+                    row[x + 1] = raw + ((a + b) / 2);
+                    break;
+                case 4: { // Paeth
+                    int p = a + b - c;
+                    int pa = p - a; if (pa < 0) pa = -pa;
+                    int pb = p - b; if (pb < 0) pb = -pb;
+                    int pc = p - c; if (pc < 0) pc = -pc;
+                    uint8_t pr;
+                    if (pa <= pb && pa <= pc) pr = a;
+                    else if (pb <= pc) pr = b;
+                    else pr = c;
+                    row[x + 1] = raw + pr;
+                    break;
+                }
+                default:
+                    row[x + 1] = raw;
+                    break;
             }
         }
+
+        // Convert scanline to 32-bit ARGB pixels
+        for (int x = 0; x < width; x++) {
+            uint8_t r, g, b2, a2;
+            if (channels == 4) {  // RGBA
+                r = row[1 + x * 4 + 0];
+                g = row[1 + x * 4 + 1];
+                b2 = row[1 + x * 4 + 2];
+                a2 = row[1 + x * 4 + 3];
+            } else {  // RGB
+                r = row[1 + x * 3 + 0];
+                g = row[1 + x * 3 + 1];
+                b2 = row[1 + x * 3 + 2];
+                a2 = 0xFF;
+            }
+            // Pack as ARGB (0xAARRGGBB) for CamelOS framebuffer
+            image->pixel_data[y * width + x] = ((uint32_t)a2 << 24) |
+                                                 ((uint32_t)r << 16) |
+                                                 ((uint32_t)g << 8) |
+                                                 (uint32_t)b2;
+        }
+
+        // Save current row for next iteration's "Up" filter
+        memcpy(prev_row, row, width * channels + 1);
     }
-    
+
+    kfree(prev_row);
+    kfree(raw_data);
+    kfree(idat_data);
     kfree(buf);
     return image;
 }

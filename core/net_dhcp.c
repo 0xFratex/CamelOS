@@ -195,7 +195,7 @@ void dhcp_process_packet(uint8_t* payload, uint32_t len) {
 
     // Check if it's for us
     if(dhcp->xid != dhcp_xid) return;
-    if(memcmp(dhcp->chaddr, default_if->mac, 6) != 0) return;
+    if(!default_if || memcmp(dhcp->chaddr, default_if->mac, 6) != 0) return;
 
     // Check message type in options
     uint8_t* opts = dhcp->options;
@@ -215,4 +215,54 @@ void dhcp_process_packet(uint8_t* payload, uint32_t len) {
     } else if(msg_type == 5) { // ACK
         dhcp_handle_ack(dhcp);
     }
+}
+
+// ============================================================================
+// High-level DHCP auto-configure function
+// Attempts the full DORA sequence (Discover-Offer-Request-Ack)
+// Returns 0 on success (IP configured), -1 on failure (use static fallback)
+// ============================================================================
+
+int dhcp_auto_configure(void) {
+    extern void rtl8139_poll(void);
+
+    s_printf("[DHCP] Starting auto-configuration...\n");
+
+    // Send Discover
+    if (dhcp_discover() != 0) {
+        s_printf("[DHCP] Failed to send discover\n");
+        return -1;
+    }
+
+    // Wait for Offer + Request + ACK with timeout
+    // The DORA sequence: Discover -> (wait) Offer -> Request -> (wait) ACK
+    // We poll the network and let the DHCP packet handler process responses
+    uint32_t start = 0;
+    extern uint32_t get_tick_count(void);
+    start = get_tick_count();
+
+    // Wait up to ~5 seconds for the full DORA sequence
+    // dhcp_state: 0=idle, 1=discovering, 2=requesting, 3=bound
+    while (dhcp_state != 3) {
+        // Poll network to receive DHCP responses
+        rtl8139_poll();
+
+        // Check for timeout (5 seconds = 500 ticks at 100Hz, or 250 at 50Hz)
+        uint32_t elapsed = get_tick_count() - start;
+        if (elapsed > 500) {
+            s_printf("[DHCP] Auto-configuration timed out\n");
+            dhcp_state = 0;  // Reset state
+            return -1;
+        }
+
+        // Small delay to avoid busy-wait
+        for (volatile int i = 0; i < 1000; i++) asm volatile("pause");
+    }
+
+    if (dhcp_state == 3) {
+        s_printf("[DHCP] Auto-configuration successful\n");
+        return 0;
+    }
+
+    return -1;
 }

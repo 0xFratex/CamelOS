@@ -389,34 +389,46 @@ void kernel_main(void* mboot_ptr) {
     // Test RTL8139 basic functionality
     rtl8139_test_loopback();
 
-    // MANUAL GATEWAY SETUP FOR QEMU
-    // rtl8139_init() now handles the IP configuration
+    // === Try DHCP auto-configuration first ===
+    // If a DHCP server is available (e.g., QEMU's built-in DHCP), we get an IP automatically.
+    // Falls back to static QEMU configuration if DHCP times out.
+    extern int dhcp_auto_configure(void);
+    int dhcp_ok = dhcp_auto_configure();
 
-    // === FIX 1: Correct IP Endianness for QEMU Gateway/DNS ===
-    // CRITICAL: IP addresses must be in HOST byte order (little-endian on x86)
-    // Use ip_parse() to ensure correct byte order conversion
-    uint8_t qemu_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
-    
-    // Gateway: 10.0.2.2
-    extern uint32_t ip_parse(const char* str);
-    net_add_static_arp(ip_parse("10.0.2.2"), qemu_mac);
-    
-    // DNS: 10.0.2.3
-    net_add_static_arp(ip_parse("10.0.2.3"), qemu_mac);
+    if (dhcp_ok == 0) {
+        s_printf("[KERNEL] Network configured via DHCP\n");
+    } else {
+        s_printf("[KERNEL] DHCP failed, using static QEMU configuration\n");
 
-    // === FIX: Actually configure the interface IP ===
-    // Use ip_parse() for correct byte order
-    extern void rtl8139_configure_ip(uint32_t, uint32_t, uint32_t);
-    rtl8139_configure_ip(ip_parse("10.0.2.15"), ip_parse("10.0.2.2"), ip_parse("255.255.255.0"));
+        // MANUAL GATEWAY SETUP FOR QEMU
+        // rtl8139_init() now handles the IP configuration
 
-    // Update legacy global variables
-    extern void net_update_globals();
-    net_update_globals();
+        // === FIX 1: Correct IP Endianness for QEMU Gateway/DNS ===
+        // CRITICAL: IP addresses must be in HOST byte order (little-endian on x86)
+        // Use ip_parse() to ensure correct byte order conversion
+        uint8_t qemu_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+        
+        // Gateway: 10.0.2.2
+        extern uint32_t ip_parse(const char* str);
+        net_add_static_arp(ip_parse("10.0.2.2"), qemu_mac);
+        
+        // DNS: 10.0.2.3
+        net_add_static_arp(ip_parse("10.0.2.3"), qemu_mac);
 
-    s_printf("[KERNEL] Network configured for QEMU\n");
-    s_printf("  IP:      10.0.2.15\n");
-    s_printf("  Gateway: 10.0.2.2\n");
-    s_printf("  DNS:     10.0.2.3\n");
+        // === FIX: Actually configure the interface IP ===
+        // Use ip_parse() for correct byte order
+        extern void rtl8139_configure_ip(uint32_t, uint32_t, uint32_t);
+        rtl8139_configure_ip(ip_parse("10.0.2.15"), ip_parse("10.0.2.2"), ip_parse("255.255.255.0"));
+
+        // Update legacy global variables
+        extern void net_update_globals();
+        net_update_globals();
+
+        s_printf("[KERNEL] Network configured for QEMU\n");
+        s_printf("  IP:      10.0.2.15\n");
+        s_printf("  Gateway: 10.0.2.2\n");
+        s_printf("  DNS:     10.0.2.3\n");
+    }
 
     // === FIX 2: Ensure RTL8139 is Active (Fixing CMD: 0x13 Reset State) ===
     // The previous log showed CMD=0x13 (RST bit set, RX/TX disabled).

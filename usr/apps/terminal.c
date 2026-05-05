@@ -7,15 +7,26 @@
 
 #define TERM_COLS 80
 #define TERM_ROWS 24
+#define SCROLLBACK_ROWS 200  // 200 lines of scrollback history
+#define HISTORY_MAX 50       // 50 commands in history
 #define CHAR_W 8
 #define CHAR_H 16
 #define PAD 8
 
 char term_buffer[TERM_ROWS][TERM_COLS + 1];
+char scrollback[SCROLLBACK_ROWS][TERM_COLS + 1];  // Scrollback buffer
+int scrollback_count = 0;    // Number of lines in scrollback
+int scrollback_pos = 0;      // Current scroll position (0 = bottom/latest)
 int terminal_row = 0;
 int terminal_col = 0;
 char current_term_path[64] = "/";
 int term_fg_color = 0xFFCCCCCC;  // Light gray on black (modern terminal look)
+
+// Command history
+static char cmd_history[HISTORY_MAX][TERM_COLS + 1];
+static int cmd_history_count = 0;
+static int cmd_history_idx = 0;  // Current position when navigating (0 = newest)
+static char cmd_line_backup[TERM_COLS + 1];  // Save current line when navigating history
 
 void term_reset() {
     for(int y=0; y<TERM_ROWS; y++) {
@@ -35,6 +46,20 @@ void term_reset() {
 }
 
 void term_scroll() {
+    // Push the top line into scrollback buffer
+    if (scrollback_count < SCROLLBACK_ROWS) {
+        memcpy(scrollback[scrollback_count], term_buffer[0], TERM_COLS + 1);
+        scrollback_count++;
+    } else {
+        // Shift scrollback up (oldest line lost)
+        for (int i = 0; i < SCROLLBACK_ROWS - 1; i++) {
+            memcpy(scrollback[i], scrollback[i + 1], TERM_COLS + 1);
+        }
+        memcpy(scrollback[SCROLLBACK_ROWS - 1], term_buffer[0], TERM_COLS + 1);
+    }
+    // Reset scroll position to bottom when new content arrives
+    scrollback_pos = 0;
+
     for(int r=0; r < TERM_ROWS-1; r++) {
         memcpy(term_buffer[r], term_buffer[r+1], TERM_COLS + 1);
     }
@@ -94,8 +119,31 @@ void term_on_paint(window_t* win, int x, int y, int w, int h) {
     if (max_cols > TERM_COLS) max_cols = TERM_COLS;
     if (max_rows > TERM_ROWS) max_rows = TERM_ROWS;
 
-    // Draw text first (behind cursor)
-    for(int r=0; r<max_rows && r<TERM_ROWS; r++) {
+    // If scrolled into history, show scrollback lines at the top
+    int start_row = 0;
+    if (scrollback_pos > 0 && scrollback_count > 0) {
+        // How many scrollback lines to show (limited by visible rows)
+        int scroll_lines = scrollback_pos;
+        if (scroll_lines > max_rows) scroll_lines = max_rows;
+        
+        // Draw scrollback lines at the top
+        for (int r = 0; r < scroll_lines; r++) {
+            int sb_idx = scrollback_count - scrollback_pos + r;
+            if (sb_idx >= 0 && sb_idx < scrollback_count && scrollback[sb_idx][0] != 0) {
+                int len = 0;
+                while (scrollback[sb_idx][len] && len < max_cols) len++;
+                for (int c = 0; c < len; c++) {
+                    gfx_draw_char_scaled(x + PAD + c * CHAR_W,
+                                         y + PAD + r * CHAR_H,
+                                         scrollback[sb_idx][c], 0xFF888888, 1); // Dimmer for history
+                }
+            }
+        }
+        start_row = scroll_lines;
+    }
+
+    // Draw text (behind cursor)
+    for(int r=0; r + start_row < max_rows && r < TERM_ROWS; r++) {
         if(term_buffer[r][0] != 0) {
             int len = 0;
             while(term_buffer[r][len] && len < max_cols) len++;
@@ -104,8 +152,6 @@ void term_on_paint(window_t* win, int x, int y, int w, int h) {
                 uint32_t ch_color = term_fg_color; // default gray for output
                 if (r == terminal_row) {
                     // Current input line - find where prompt ends
-                    // Format: "camelos: /path $ command"
-                    // Everything up to and including "$ " is prompt
                     char* dollar = strchr(term_buffer[r], '$');
                     if (dollar) {
                         int prompt_end = (int)(dollar - term_buffer[r]) + 2; // Include "$ "
@@ -114,7 +160,7 @@ void term_on_paint(window_t* win, int x, int y, int w, int h) {
                     }
                 }
                 gfx_draw_char_scaled(x + PAD + c * CHAR_W, 
-                                     y + PAD + r * CHAR_H, 
+                                     y + PAD + (r + start_row) * CHAR_H, 
                                      term_buffer[r][c], ch_color, 1);
             }
         }
@@ -122,13 +168,24 @@ void term_on_paint(window_t* win, int x, int y, int w, int h) {
 
     // Blinking cursor (drawn after text so it overlays)
     static int blink = 0; blink++;
-    if(blink % 60 < 30) {
+    if(blink % 60 < 30 && scrollback_pos == 0) {
         if (terminal_row < max_rows && terminal_col < max_cols) {
             // Use a semi-transparent block cursor
             gfx_fill_rect(x + PAD + terminal_col * CHAR_W, 
                           y + PAD + terminal_row * CHAR_H, 
                           CHAR_W, CHAR_H, 0xFF89B4FA); // Purple cursor matching prompt
         }
+    }
+
+    // Scrollback indicator
+    if (scrollback_pos > 0) {
+        char indicator[32];
+        strcpy(indicator, ":scrollback ");
+        char num[8];
+        extern void int_to_str(int, char*);
+        int_to_str(scrollback_pos, num);
+        strcat(indicator, num);
+        gfx_draw_string(x + w - strlen(indicator) * 8 - 8, y + h - 18, indicator, 0xFF888888);
     }
 }
 
@@ -152,6 +209,29 @@ void execute_term_cmd() {
         if(j<63) arg[j++] = cmd_ptr[i];
         i++;
     }
+
+    // Save command to history (skip empty commands)
+    if (cmd[0] != 0) {
+        if (cmd_history_count < HISTORY_MAX) {
+            strcpy(cmd_history[cmd_history_count], cmd);
+            if (arg[0]) {
+                strcat(cmd_history[cmd_history_count], " ");
+                strcat(cmd_history[cmd_history_count], arg);
+            }
+            cmd_history_count++;
+        } else {
+            // Shift history, oldest lost
+            for (int h = 0; h < HISTORY_MAX - 1; h++) {
+                strcpy(cmd_history[h], cmd_history[h + 1]);
+            }
+            strcpy(cmd_history[HISTORY_MAX - 1], cmd);
+            if (arg[0]) {
+                strcat(cmd_history[HISTORY_MAX - 1], " ");
+                strcat(cmd_history[HISTORY_MAX - 1], arg);
+            }
+        }
+    }
+    cmd_history_idx = 0;  // Reset history navigation
 
     terminal_row++;
     if (terminal_row >= TERM_ROWS) term_scroll();
@@ -496,9 +576,52 @@ void term_on_input(window_t* win, int key) {
             term_buffer[terminal_row][terminal_col] = 0;
         }
     }
-    // Arrow keys for terminal
-    else if (key == 128) { /* KEY_UP - future: command history */ }
-    else if (key == 129) { /* KEY_DOWN - future: command history */ }
+    // Arrow keys for terminal — command history
+    else if (key == 128) { /* KEY_UP — navigate history backward */
+        if (cmd_history_count > 0 && cmd_history_idx < cmd_history_count) {
+            // Save current line on first history access
+            if (cmd_history_idx == 0) {
+                int prompt_len = 11 + strlen(current_term_path);
+                memset(cmd_line_backup, 0, TERM_COLS + 1);
+                for (int c = prompt_len; c < terminal_col && c < TERM_COLS; c++) {
+                    cmd_line_backup[c - prompt_len] = term_buffer[terminal_row][c];
+                }
+            }
+            cmd_history_idx++;
+            // Clear current input line and replace with history entry
+            int prompt_len = 11 + strlen(current_term_path);
+            for (int c = prompt_len; c < TERM_COLS; c++) term_buffer[terminal_row][c] = 0;
+            int hist_idx = cmd_history_count - cmd_history_idx;
+            if (hist_idx >= 0 && hist_idx < cmd_history_count) {
+                for (int c = 0; cmd_history[hist_idx][c] && (prompt_len + c) < TERM_COLS; c++) {
+                    term_buffer[terminal_row][prompt_len + c] = cmd_history[hist_idx][c];
+                }
+                terminal_col = prompt_len + strlen(cmd_history[hist_idx]);
+            }
+        }
+    }
+    else if (key == 129) { /* KEY_DOWN — navigate history forward */
+        int prompt_len = 11 + strlen(current_term_path);
+        if (cmd_history_idx > 0) {
+            cmd_history_idx--;
+            for (int c = prompt_len; c < TERM_COLS; c++) term_buffer[terminal_row][c] = 0;
+            if (cmd_history_idx == 0) {
+                // Restore the backup line
+                for (int c = 0; cmd_line_backup[c] && (prompt_len + c) < TERM_COLS; c++) {
+                    term_buffer[terminal_row][prompt_len + c] = cmd_line_backup[c];
+                }
+                terminal_col = prompt_len + strlen(cmd_line_backup);
+            } else {
+                int hist_idx = cmd_history_count - cmd_history_idx;
+                if (hist_idx >= 0 && hist_idx < cmd_history_count) {
+                    for (int c = 0; cmd_history[hist_idx][c] && (prompt_len + c) < TERM_COLS; c++) {
+                        term_buffer[terminal_row][prompt_len + c] = cmd_history[hist_idx][c];
+                    }
+                    terminal_col = prompt_len + strlen(cmd_history[hist_idx]);
+                }
+            }
+        }
+    }
     else if (key == 130) { /* KEY_LEFT */
         int prompt_len = 11 + strlen(current_term_path);
         if(terminal_col > prompt_len) terminal_col--;
@@ -527,15 +650,16 @@ void term_on_input(window_t* win, int key) {
 }
 
 void term_on_scroll(window_t* win, int delta) {
-    // Scroll the terminal buffer
-    for (int i = 0; i < (delta > 0 ? delta : -delta); i++) {
-        if (delta > 0) {
-            // Scroll up - show older content (we can't go back, so just move viewport)
-            // For now, treat scroll up as no-op since we don't have scrollback buffer
-        } else {
-            // Scroll down - just add a blank line at bottom
-            term_scroll();
-        }
+    // Scroll the terminal viewport through scrollback history
+    if (delta > 0) {
+        // Scroll up — view older content
+        scrollback_pos += delta;
+        int max_scroll = scrollback_count;
+        if (scrollback_pos > max_scroll) scrollback_pos = max_scroll;
+    } else {
+        // Scroll down — view newer content
+        scrollback_pos += delta;  // delta is negative
+        if (scrollback_pos < 0) scrollback_pos = 0;
     }
 }
 

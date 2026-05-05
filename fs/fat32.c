@@ -26,13 +26,28 @@ static fat32_state_t fat32_state;
  * ======================================================================== */
 
 static uint16_t fat32_date_now(void) {
-    /* FIXME: Integrate with RTC. Return a fixed date for now. */
-    return ((2025 - 1980) << 9) | (1 << 5) | 1;  /* 2025-01-01 */
+    /* Read actual date from RTC */
+    extern void sys_get_date(int* year, int* month, int* day);
+    int year = 2025, month = 1, day = 1;
+    sys_get_date(&year, &month, &day);
+    if (year < 1980) year = 1980;
+    if (year > 2107) year = 2107;  /* FAT date max */
+    if (month < 1) month = 1;
+    if (month > 12) month = 12;
+    if (day < 1) day = 1;
+    if (day > 31) day = 31;
+    return ((year - 1980) << 9) | (month << 5) | day;
 }
 
 static uint16_t fat32_time_now(void) {
-    /* FIXME: Integrate with RTC. Return midnight for now. */
-    return 0;
+    /* Read actual time from RTC */
+    extern void sys_get_time(int* h, int* m, int* s);
+    int h = 0, m = 0, s = 0;
+    sys_get_time(&h, &m, &s);
+    if (h < 0 || h > 23) h = 0;
+    if (m < 0 || m > 59) m = 0;
+    if (s < 0 || s > 59) s = 0;
+    return (h << 11) | (m << 5) | (s / 2);  /* FAT time: 2-second resolution */
 }
 
 /* ========================================================================

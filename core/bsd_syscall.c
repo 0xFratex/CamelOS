@@ -598,7 +598,103 @@ int bsd_fcntl(int fd, int cmd, int arg) {
 }
 
 int bsd_select(int nfds, void* readfds, void* writefds, void* exceptfds, const void* timeout) {
-    (void)nfds; (void)readfds; (void)writefds; (void)exceptfds; (void)timeout;
-    // Stub - return 0 (no FDs ready)
-    return 0;
+    // Simple select() implementation for socket and FD readiness
+    // readfds/writefds/exceptfds are bitsets (fd_set) — we treat them as uint8_t arrays
+    (void)writefds;
+    (void)exceptfds;
+
+    if (nfds <= 0) return 0;
+
+    // Calculate byte count for fd_sets (round up to 8)
+    int bytes = (nfds + 7) / 8;
+    uint8_t* rfds = (uint8_t*)readfds;
+    int ready_count = 0;
+
+    // Default timeout: 0 (poll, no block)
+    uint32_t timeout_ms = 0;
+    if (timeout) {
+        // struct timeval: tv_sec (4 bytes), tv_usec (4 bytes)
+        const uint32_t* tv = (const uint32_t*)timeout;
+        timeout_ms = tv[0] * 1000 + tv[1] / 1000;
+    }
+
+    extern uint32_t get_tick_count(void);
+    uint32_t start = get_tick_count();
+
+    // Poll loop
+    while (1) {
+        // Check each FD in readfds
+        if (rfds) {
+            for (int fd = 0; fd < nfds && fd < BSD_MAX_FDS; fd++) {
+                int byte_idx = fd / 8;
+                int bit_idx = fd % 8;
+                if (!(rfds[byte_idx] & (1 << bit_idx))) continue;
+
+                bsd_fd_entry_t* entry = bsd_get_fd(fd);
+                if (!entry) continue;
+
+                int is_ready = 0;
+
+                switch (entry->type) {
+                    case FD_TYPE_SOCKET: {
+                        // Check if socket has data in its receive buffer
+                        // For now, use a simple heuristic: if the socket has data available
+                        extern int k_socket_has_data(int fd);
+                        if (entry->kernel_handle >= 0) {
+                            is_ready = k_socket_has_data(entry->kernel_handle);
+                        }
+                        // Listening sockets are always "readable" if they have pending connections
+                        if (!is_ready) {
+                            extern int k_socket_is_listening(int fd);
+                            if (entry->kernel_handle >= 0 && k_socket_is_listening(entry->kernel_handle)) {
+                                is_ready = 1;  // Acceptable (may have pending connections)
+                            }
+                        }
+                        break;
+                    }
+                    case FD_TYPE_FILE: {
+                        // File is always readable if offset < file size
+                        if (entry->offset == 0) is_ready = 1;
+                        break;
+                    }
+                    case FD_TYPE_STDIN: {
+                        // Check if keyboard has input
+                        extern int sys_get_key(void);
+                        int key = sys_get_key();
+                        if (key > 0) {
+                            is_ready = 1;
+                            // Put key back — we can't, so just mark ready
+                        }
+                        break;
+                    }
+                    case FD_TYPE_PIPE: {
+                        // Pipes: check if data is available
+                        // For simplicity, always report as ready
+                        is_ready = 1;
+                        break;
+                    }
+                    default:
+                        break;
+                }
+
+                if (is_ready) {
+                    ready_count++;
+                } else {
+                    // Clear the bit — this FD is not ready
+                    rfds[byte_idx] &= ~(1 << bit_idx);
+                }
+            }
+        }
+
+        if (ready_count > 0) return ready_count;
+
+        // Check timeout
+        if (timeout_ms == 0) return 0;  // No-block poll
+
+        uint32_t elapsed = (get_tick_count() - start) * 10;  // Ticks to ms (approx)
+        if (elapsed >= timeout_ms) return 0;  // Timeout
+
+        // Brief pause before retrying
+        for (volatile int i = 0; i < 100; i++) asm volatile("pause");
+    }
 }

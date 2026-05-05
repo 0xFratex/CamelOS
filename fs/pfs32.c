@@ -59,8 +59,32 @@ static int clone_count = 0;
 static uint32_t current_transaction = 0;
 
 // --- Helper Prototypes ---
-uint32_t get_current_gid() { return 0; } // Placeholder: Hook into task/OS
-uint32_t pfs32_time_now() { return 0; }  // Placeholder: Hook into RTC
+uint32_t get_current_gid() { return 0; } // Single-user OS: group 0
+
+uint32_t pfs32_time_now() {
+    // Return Unix-style timestamp from RTC
+    extern void sys_get_date(int* year, int* month, int* day);
+    extern void sys_get_time(int* h, int* m, int* s);
+    int year = 2025, month = 1, day = 1;
+    int h = 0, m = 0, sec = 0;
+    sys_get_date(&year, &month, &day);
+    sys_get_time(&h, &m, &sec);
+
+    // Simple Unix timestamp calculation (seconds since 2000-01-01 00:00)
+    // This is a compact epoch for an embedded OS
+    int yrs = year - 2000;
+    if (yrs < 0) yrs = 0;
+    // Days in prior years (rough, ignores leap years for simplicity)
+    uint32_t days = yrs * 365 + (yrs / 4);
+    // Days in prior months of this year (rough)
+    int mdays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+    if (month >= 1 && month <= 12) days += mdays[month - 1];
+    days += day - 1;
+    // Add leap day if after Feb in a leap year
+    if (month > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) days++;
+
+    return days * 86400 + h * 3600 + m * 60 + sec;
+}
 
 // Simple integer to string conversion
 void pfs_int_to_str(int num, char* buf) {

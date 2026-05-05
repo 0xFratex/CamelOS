@@ -605,3 +605,28 @@ int k_getpeername(int fd, sockaddr_in_t* addr) {
     
     return 0;
 }
+
+// Check if a socket has data available in its receive buffer
+// Returns 1 if data is available, 0 if not, -1 on error
+int k_socket_has_data(int fd) {
+    socket_t* sock = socket_get(fd);
+    if (!sock) return -1;
+
+    // Calculate available data
+    uint32_t available;
+    if (sock->recv_tail >= sock->recv_head) {
+        available = sock->recv_tail - sock->recv_head;
+    } else {
+        available = sock->recv_buffer_size - sock->recv_head + sock->recv_tail;
+    }
+
+    return (available > 0) ? 1 : 0;
+}
+
+// Check if a socket is in listening state
+// Returns 1 if listening, 0 if not, -1 on error
+int k_socket_is_listening(int fd) {
+    socket_t* sock = socket_get(fd);
+    if (!sock) return -1;
+    return (sock->listener_id >= 0) ? 1 : 0;
+}

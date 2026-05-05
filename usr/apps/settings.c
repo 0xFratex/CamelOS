@@ -19,12 +19,26 @@
 
 static int current_tab = TAB_ABOUT;
 static int settings_scroll_y = 0;
+static int settings_win_w = 500;
 
 // Config data (loaded from system.conf)
 static char cfg_username[64] = "(not set)";
 static char cfg_computer[64] = "CamelOS";
 static char cfg_theme[32] = "Aqua";
 static char cfg_timezone[32] = "UTC";
+static int cfg_theme_idx = 0;  // Theme index for persistence
+
+// Swatch hit-test region (computed during paint, used by mouse handler)
+static int swatch_y_start = 0;
+static int swatch_y_end = 0;
+static int swatch_x_start[5];
+static int swatch_x_end[5];
+
+// Save button region
+static int save_btn_x = 0, save_btn_y = 0, save_btn_w = 100, save_btn_h = 32;
+static int save_btn_hover = 0;
+static int save_feedback_timer = 0;  // Ticks remaining for "Saved!" feedback
+static char save_feedback_text[32] = "";
 
 // System info
 static char sys_mem_str[32] = "";
@@ -284,9 +298,14 @@ static void draw_display_tab(int x, int y, int w, int h) {
     const char* theme_names[] = {"Aqua", "Graphite", "Sunset", "Ocean", "Forest"};
     uint32_t theme_colors[] = {0xFF007AFF, 0xFF8E8E93, 0xFFFF9500, 0xFF00C7BE, 0xFF34C759};
     
+    swatch_y_start = cy;
     for (int i = 0; i < 5; i++) {
         int bx = x + 20 + i * 90;
         int is_current = (strcmp(cfg_theme, theme_names[i]) == 0);
+        
+        // Store hit-test region
+        swatch_x_start[i] = bx;
+        swatch_x_end[i] = bx + 70;
         
         // Color swatch
         gfx_fill_rounded_rect(bx, cy, 70, 40, theme_colors[i], 8);
@@ -298,6 +317,7 @@ static void draw_display_tab(int x, int y, int w, int h) {
         gfx_draw_string(bx + (70 - strlen(theme_names[i]) * 8) / 2, cy + 48, theme_names[i], 
                        is_current ? 0xFF007AFF : 0xFF666666);
     }
+    swatch_y_end = cy + 65;
     cy += 80;
     
     gfx_draw_rect(x + 20, cy, w - 40, 1, 0xFFE0E0E0);
@@ -317,6 +337,19 @@ static void draw_display_tab(int x, int y, int w, int h) {
     
     gfx_draw_string(x + 20, cy, "Color Depth:", 0xFF888888);
     gfx_draw_string(x + 200, cy, "32-bit (ARGB)", 0xFF333333);
+    cy += 40;
+
+    // Save button
+    save_btn_x = x + w - 130;
+    save_btn_y = cy;
+    uint32_t btn_bg = save_btn_hover ? 0xFF0051D5 : 0xFF007AFF;
+    gfx_fill_rounded_rect(save_btn_x, save_btn_y, save_btn_w, save_btn_h, btn_bg, 6);
+    gfx_draw_string(save_btn_x + 25, save_btn_y + 8, "Apply", 0xFFFFFFFF);
+
+    // Save feedback (e.g., "Saved!")
+    if (save_feedback_timer > 0) {
+        gfx_draw_string(save_btn_x - 60, save_btn_y + 8, save_feedback_text, 0xFF34C759);
+    }
 }
 
 static void draw_hardware_tab(int x, int y, int w, int h) {
@@ -519,9 +552,59 @@ static void settings_on_paint(window_t* win, int x, int y, int w, int h) {
 }
 
 // Current window dimensions (updated on resize)
-static int settings_win_w = 500;
+
+static void settings_save_config(void) {
+    // Map theme name back to index
+    const char* theme_names[] = {"Aqua", "Graphite", "Sunset", "Ocean", "Forest"};
+    int theme_idx = 0;
+    for (int i = 0; i < 5; i++) {
+        if (strcmp(cfg_theme, theme_names[i]) == 0) {
+            theme_idx = i;
+            break;
+        }
+    }
+    cfg_theme_idx = theme_idx;
+
+    // Build the config file content
+    char buf[1024];
+    int pos = 0;
+    pos += sprintf(buf + pos, "# CamelOS System Configuration\n");
+    pos += sprintf(buf + pos, "username=%s\n", cfg_username);
+    pos += sprintf(buf + pos, "computer=%s\n", cfg_computer);
+    pos += sprintf(buf + pos, "theme=%d\n", theme_idx);
+    pos += sprintf(buf + pos, "timezone=%s\n", cfg_timezone);
+    pos += sprintf(buf + pos, "auto_lock=1\n");
+    pos += sprintf(buf + pos, "lock_timeout=10\n");
+    pos += sprintf(buf + pos, "kbd_layout=0\n");
+    pos += sprintf(buf + pos, "configured=1\n");
+
+    // Write to the primary path
+    extern void sys_fs_create(const char*, int);
+    sys_fs_create("/Library", 1);
+    sys_fs_create("/Library/Preferences", 1);
+
+    int result = sys_fs_write("/Library/Preferences/system.conf", buf, pos);
+
+    // Also write to legacy path
+    sys_fs_create("/etc", 1);
+    sys_fs_write("/etc/system.conf", buf, pos);
+
+    if (result > 0) {
+        strcpy(save_feedback_text, "Saved!");
+        save_feedback_timer = 60;  // Show for ~60 ticks (about 1.2 seconds)
+        s_printf("[SETTINGS] Configuration saved (theme=%d)\n", theme_idx);
+    } else {
+        strcpy(save_feedback_text, "Failed!");
+        save_feedback_timer = 60;
+        s_printf("[SETTINGS] ERROR: Failed to save configuration\n");
+    }
+}
 
 static void settings_on_mouse(window_t* win, int x, int y, int btn) {
+    // Track hover for save button
+    save_btn_hover = (x >= save_btn_x && x <= save_btn_x + save_btn_w &&
+                      y >= save_btn_y && y <= save_btn_y + save_btn_h);
+
     if (btn != 1) return;
     
     // Tab clicks - use dynamic width from actual window size
@@ -532,6 +615,27 @@ static void settings_on_mouse(window_t* win, int x, int y, int btn) {
             current_tab = tab;
             settings_scroll_y = 0;  // Reset scroll when switching tabs
         }
+        return;
+    }
+
+    // Theme swatch clicks on Display tab
+    if (current_tab == TAB_DISPLAY && y >= swatch_y_start && y <= swatch_y_end) {
+        const char* theme_names[] = {"Aqua", "Graphite", "Sunset", "Ocean", "Forest"};
+        for (int i = 0; i < 5; i++) {
+            if (x >= swatch_x_start[i] && x <= swatch_x_end[i]) {
+                strcpy(cfg_theme, theme_names[i]);
+                cfg_theme_idx = i;
+                s_printf("[SETTINGS] Theme changed to: %s\n", theme_names[i]);
+                break;
+            }
+        }
+    }
+
+    // Save button click on Display tab
+    if (current_tab == TAB_DISPLAY &&
+        x >= save_btn_x && x <= save_btn_x + save_btn_w &&
+        y >= save_btn_y && y <= save_btn_y + save_btn_h) {
+        settings_save_config();
     }
 }
 
