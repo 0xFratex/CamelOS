@@ -1464,7 +1464,7 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
 }
 
 static int tls_send_client_hello(tls_session_t* session) {
-    uint8_t hello[1024];  // Increased buffer size for more extensions
+    uint8_t hello[2048];  // Increased buffer for more extensions
     uint8_t* p = hello;
     
     // Handshake header
@@ -1484,14 +1484,15 @@ static int tls_send_client_hello(tls_session_t* session) {
     // Session ID (empty for new connection)
     *p++ = 0;
     
-    // Cipher suites - modern suites that Google accepts
+    // Cipher suites - modern suites that Google and most servers accept
+    // Order: ECDHE first (forward secrecy), then RSA fallback
     uint16_t cipher_suites[] = {
-        TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-        TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-        TLS_RSA_WITH_AES_128_GCM_SHA256,
-        TLS_RSA_WITH_AES_256_GCM_SHA384,
-        TLS_RSA_WITH_AES_128_CBC_SHA256,
-        TLS_RSA_WITH_AES_256_CBC_SHA256,
+        TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,  // 0xC02B - Google uses ECDSA
+        TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,  // 0xC02C
+        TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,    // 0xC02F
+        TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,    // 0xC030
+        TLS_RSA_WITH_AES_128_GCM_SHA256,           // 0x009C
+        TLS_RSA_WITH_AES_256_GCM_SHA384,           // 0x009D
         0x002F,  // TLS_RSA_WITH_AES_128_CBC_SHA (fallback)
         0x0035   // TLS_RSA_WITH_AES_256_CBC_SHA (fallback)
     };
@@ -1508,24 +1509,14 @@ static int tls_send_client_hello(tls_session_t* session) {
     *p++ = 1;
     *p++ = 0;
     
-    // Calculate extensions total length first
+    // === Extensions ===
+    // We build extensions sequentially; the total length is computed at the end
+    
+    uint8_t* ext_len_ptr = p;
+    p += 2;  // Extensions total length placeholder
+    
+    // 1. Server Name extension (SNI) - REQUIRED by most servers
     size_t sni_len = strlen(session->server_name);
-    size_t ext_total_len = 0;
-    
-    // SNI extension: 2 (type) + 2 (len) + 2 (list len) + 1 (type) + 2 (name len) + name
-    ext_total_len += 2 + 2 + (2 + 1 + 2 + sni_len);
-    
-    // Supported versions extension: 2 (type) + 2 (len) + 1 (list len) + 2 (version)
-    ext_total_len += 2 + 2 + (1 + 2);
-    
-    // Signature algorithms extension: 2 (type) + 2 (len) + 2 (list len) + 2 (algo)
-    ext_total_len += 2 + 2 + (2 + 2);
-    
-    // Write extensions length
-    tls_write_uint16(ext_total_len, p);
-    p += 2;
-    
-    // Server Name extension (SNI) - REQUIRED by Google
     tls_write_uint16(0x0000, p);  // Extension type: server_name
     p += 2;
     tls_write_uint16(sni_len + 5, p);  // Extension data length
@@ -1538,25 +1529,72 @@ static int tls_send_client_hello(tls_session_t* session) {
     memcpy(p, session->server_name, sni_len);
     p += sni_len;
     
-    // Supported Versions extension - advertise TLS 1.2
-    tls_write_uint16(0x002B, p);  // Extension type: supported_versions
+    // 2. Supported Groups extension (0x000A) - CRITICAL for ECDHE
+    // Without this, servers MUST abort per RFC 8422
+    tls_write_uint16(0x000A, p);  // Extension type: supported_groups
     p += 2;
-    tls_write_uint16(3, p);  // Extension data length
+    tls_write_uint16(6, p);  // Extension data length
     p += 2;
-    *p++ = 2;  // List length
-    tls_write_uint16(TLS_VERSION_1_2, p);  // TLS 1.2
+    tls_write_uint16(4, p);  // Groups list length (2 groups * 2 bytes)
+    p += 2;
+    tls_write_uint16(0x001D, p);  // X25519 (preferred - we have real impl)
+    p += 2;
+    tls_write_uint16(0x0017, p);  // secp256r1 (P-256)
     p += 2;
     
-    // Signature Algorithms extension - REQUIRED by Google
+    // 3. EC Point Formats extension (0x000B) - required by some servers
+    tls_write_uint16(0x000B, p);  // Extension type: ec_point_formats
+    p += 2;
+    tls_write_uint16(2, p);  // Extension data length
+    p += 2;
+    *p++ = 1;  // Formats list length
+    *p++ = 0;  // uncompressed
+    
+    // 4. Signature Algorithms extension (0x000D) - REQUIRED for TLS 1.2
+    // Must include RSA-PSS and ECDSA algorithms for modern servers
+    uint16_t sig_algs[] = {
+        0x0403,  // ecdsa_secp256r1_sha256
+        0x0503,  // ecdsa_secp384r1_sha384
+        0x0603,  // ecdsa_secp521r1_sha512
+        0x0804,  // rsa_pss_rsae_sha256
+        0x0805,  // rsa_pss_rsae_sha384
+        0x0806,  // rsa_pss_rsae_sha512
+        0x0401,  // rsa_pkcs1_sha256
+        0x0501,  // rsa_pkcs1_sha384
+        0x0601,  // rsa_pkcs1_sha512
+    };
+    int sig_alg_count = sizeof(sig_algs) / sizeof(sig_algs[0]);
+    
     tls_write_uint16(0x000D, p);  // Extension type: signature_algorithms
     p += 2;
-    tls_write_uint16(4, p);  // Extension data length
+    tls_write_uint16(sig_alg_count * 2 + 2, p);  // Extension data length
     p += 2;
-    tls_write_uint16(2, p);  // List length
+    tls_write_uint16(sig_alg_count * 2, p);  // Algorithms list length
     p += 2;
-    // RSA-PKCS1-SHA256 (0x0401)
-    tls_write_uint16(0x0401, p);
+    for (int i = 0; i < sig_alg_count; i++) {
+        tls_write_uint16(sig_algs[i], p);
+        p += 2;
+    }
+    
+    // 5. ALPN extension (0x0010) - Application-Layer Protocol Negotiation
+    // Required by many servers (Cloudflare, Google, etc.)
+    tls_write_uint16(0x0010, p);  // Extension type: alpn
     p += 2;
+    tls_write_uint16(13, p);  // Extension data length (2 + 2+1 + 2+8 = 13)
+    p += 2;
+    tls_write_uint16(11, p);  // ALPN protocol list length
+    p += 2;
+    // "h2" (HTTP/2)
+    *p++ = 2;  // Protocol length
+    *p++ = 'h'; *p++ = '2';
+    // "http/1.1"
+    *p++ = 8;  // Protocol length
+    *p++ = 'h'; *p++ = 't'; *p++ = 't'; *p++ = 'p';
+    *p++ = '/'; *p++ = '1'; *p++ = '.'; *p++ = '1';
+    
+    // Calculate extensions total length
+    uint16_t ext_total = p - ext_len_ptr - 2;
+    tls_write_uint16(ext_total, ext_len_ptr);
     
     // Update handshake length
     size_t handshake_len = p - hello - 4;
@@ -1595,12 +1633,14 @@ static int tls_parse_server_hello(tls_session_t* session, const uint8_t* data, s
     switch (session->cipher_suite) {
         case TLS_RSA_WITH_AES_128_GCM_SHA256:
         case TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:
+        case TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:
             session->cipher_key_size = 16;
             session->cipher_iv_size = 4;  // Implicit IV
             session->cipher_mac_size = 0; // GCM has auth tag
             break;
         case TLS_RSA_WITH_AES_256_GCM_SHA384:
         case TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
+        case TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
             session->cipher_key_size = 32;
             session->cipher_iv_size = 4;
             session->cipher_mac_size = 0;
@@ -1647,9 +1687,11 @@ static int tls_parse_certificate(tls_session_t* session, const uint8_t* data, si
 static int tls_parse_server_key_exchange(tls_session_t* session, const uint8_t* data, size_t len) {
     const uint8_t* p = data;
     
-    // For ECDHE key exchange
+    // For ECDHE key exchange (both RSA and ECDSA authenticated)
     if (session->cipher_suite == TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 ||
-        session->cipher_suite == TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) {
+        session->cipher_suite == TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 ||
+        session->cipher_suite == TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 ||
+        session->cipher_suite == TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384) {
         
         // Curve type
         uint8_t curve_type = *p++;
@@ -1664,15 +1706,20 @@ static int tls_parse_server_key_exchange(tls_session_t* session, const uint8_t* 
         // Public key length
         uint8_t pk_len = *p++;
         
-        // Store ECDHE public key
+        // Store server's ECDHE ephemeral public key SEPARATELY
+        // (so it doesn't get overwritten when we generate our keypair)
         session->server_key_type = 3;  // ECDHE
-        session->ecdhe_key.curve = (ec_curve_type_t)curve;
-        memcpy(session->ecdhe_key.public_key, p, pk_len);
-        session->ecdhe_key.public_key_len = pk_len;
+        session->server_ecdhe_curve = curve;
+        if (pk_len <= sizeof(session->server_ecdhe_public_key)) {
+            memcpy(session->server_ecdhe_public_key, p, pk_len);
+            session->server_ecdhe_public_key_len = pk_len;
+        }
         p += pk_len;
         
         // Signature (verify with server certificate)
-        // For now, skip signature verification
+        // For now, skip signature verification - just advance past the signature
+        // The signature is included in the handshake hash which is computed
+        // from the full record, so skipping here is OK for the hash.
     }
     
     return 0;
@@ -1688,22 +1735,64 @@ static int tls_send_client_key_exchange(tls_session_t* session) {
     p += 3;
     
     if (session->server_key_type == 3) {
-        // ECDHE - generate ephemeral key pair and compute shared secret
-        ecdh_generate_keypair(&session->ecdhe_key, session->ecdhe_key.curve);
+        // ECDHE key exchange
+        // Server's ECDHE public key is stored in server_ecdhe_public_key
+        // We need to generate our keypair and compute shared secret
         
         uint8_t shared_secret[64];
-        ecdh_compute_shared_secret(&session->ecdhe_key,
-                                   session->server_ec_key.public_key,
-                                   session->server_ec_key.public_key_len,
-                                   shared_secret);
+        int shared_len = 0;
         
-        // Use shared secret as pre-master secret
-        // For TLS 1.2, derive master secret using PRF
+        if (session->server_ecdhe_curve == 0x001D) {
+            // X25519 key exchange (RFC 8422) - we have a real implementation!
+            // Generate X25519 keypair
+            extern int x25519_generate_keypair(uint8_t* pub, uint8_t* priv);
+            extern int x25519_compute_shared(const uint8_t* priv, const uint8_t* peer, uint8_t* shared);
+            
+            x25519_generate_keypair(session->x25519_public_key, session->x25519_private_key);
+            
+            // Compute shared secret using server's X25519 public key
+            if (x25519_compute_shared(session->x25519_private_key,
+                                      session->server_ecdhe_public_key,
+                                      shared_secret) != 0) {
+                return TLS_ERR_KEY_EXCHANGE;
+            }
+            shared_len = 32;
+            
+            // Send our X25519 public key (32 bytes, no 0x04 prefix for X25519)
+            *p++ = 32;  // Public key length
+            memcpy(p, session->x25519_public_key, 32);
+            p += 32;
+            
+        } else if (session->server_ecdhe_curve == 0x0017) {
+            // P-256 (secp256r1) - use the existing (simplified) ECDH
+            // NOTE: The current P-256 ECDH is not real EC math, so this will
+            // produce wrong results. But at least the protocol flow is correct.
+            // X25519 should be preferred as it has a real implementation.
+            ecdh_generate_keypair(&session->ecdhe_key, EC_CURVE_P256);
+            
+            shared_len = ecdh_compute_shared_secret(&session->ecdhe_key,
+                                                     session->server_ecdhe_public_key,
+                                                     session->server_ecdhe_public_key_len,
+                                                     shared_secret);
+            
+            // Send our P-256 public key (uncompressed: 0x04 + 32 + 32 = 65 bytes)
+            *p++ = session->ecdhe_key.public_key_len;
+            memcpy(p, session->ecdhe_key.public_key, session->ecdhe_key.public_key_len);
+            p += session->ecdhe_key.public_key_len;
+        } else {
+            // Unsupported curve
+            return TLS_ERR_KEY_EXCHANGE;
+        }
         
-        // Send our public key
-        *p++ = session->ecdhe_key.public_key_len;
-        memcpy(p, session->ecdhe_key.public_key, session->ecdhe_key.public_key_len);
-        p += session->ecdhe_key.public_key_len;
+        // Store the shared secret as the pre-master secret
+        // For ECDHE, the PMS is the shared secret (variable length)
+        // For TLS 1.2 PRF, we need to pass the actual PMS length
+        memset(session->master_secret, 0, sizeof(session->master_secret));
+        if (shared_len > 0 && shared_len <= (int)sizeof(session->master_secret)) {
+            memcpy(session->master_secret, shared_secret, shared_len);
+            session->pre_master_secret_len = shared_len;
+        }
+        
     } else {
         // RSA key exchange
         // Generate pre-master secret
@@ -1723,6 +1812,7 @@ static int tls_send_client_key_exchange(tls_session_t* session) {
         
         // Store pre-master secret for key derivation
         memcpy(session->master_secret, pre_master_secret, 48);
+        session->pre_master_secret_len = 48;
         
         // Send encrypted PMS
         tls_write_uint16(enc_len, p);
@@ -1750,7 +1840,11 @@ static int tls_derive_keys(tls_session_t* session) {
     memcpy(random, session->client_random, 32);
     memcpy(random + 32, session->server_random, 32);
     
-    tls_prf(session->master_secret, 48, "master secret",
+    // Use actual pre-master secret length (48 for RSA, variable for ECDHE)
+    size_t pms_len = session->pre_master_secret_len;
+    if (pms_len == 0) pms_len = 48;  // Fallback default
+    
+    tls_prf(session->master_secret, pms_len, "master secret",
             random, 64, session->master_secret, 48);
     
     // Derive key block

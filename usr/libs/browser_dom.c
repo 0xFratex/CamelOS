@@ -2239,6 +2239,7 @@ static void layout_node(dom_document_t *doc, dom_node_t *node, layout_ctx_t *ctx
             layout_block(doc, node, ctx);
             break;
         case DOM_DISPLAY_INLINE:
+        case DOM_DISPLAY_INLINE_BLOCK:
             layout_inline(doc, node, ctx);
             break;
         case DOM_DISPLAY_NONE:
@@ -2432,10 +2433,17 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
             }
         }
 
-        // Recurse into children
+        // Compute content-box origin for child rendering
+        // Children's layout_x/layout_y are relative to the parent's content area,
+        // so we need to pass the content-box origin as the parent position.
+        // Content-box = border-box origin + border + padding
+        int content_origin_x = abs_x + s->border[3].width + s->padding[3];
+        int content_origin_y = abs_y + s->border[0].width + s->padding[0];
+
+        // Recurse into children with content-box origin as parent position
         dom_node_t *child = node->first_child;
         while (child) {
-            render_node(doc, child, buffer, bx, by, bw, bh, 0, abs_x, abs_y);
+            render_node(doc, child, buffer, bx, by, bw, bh, 0, content_origin_x, content_origin_y);
             child = child->next_sibling;
         }
     }

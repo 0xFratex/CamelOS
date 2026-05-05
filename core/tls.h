@@ -309,6 +309,19 @@ typedef struct tls_session {
     // ECDHE key exchange
     ec_key_t ecdhe_key;
     
+    // Server's ECDHE ephemeral public key (separate from ecdhe_key which
+    // gets overwritten when generating the client's keypair)
+    uint8_t server_ecdhe_public_key[128];
+    uint16_t server_ecdhe_public_key_len;
+    uint16_t server_ecdhe_curve;  // Named curve ID from ServerKeyExchange
+    
+    // Pre-master secret length (48 for RSA, varies for ECDHE)
+    uint16_t pre_master_secret_len;
+    
+    // X25519 key exchange (used when server selects X25519 curve)
+    uint8_t x25519_private_key[32];
+    uint8_t x25519_public_key[32];
+    
     // Handshake hash (for Finished message)
     sha256_ctx_t handshake_hash;
     uint8_t handshake_hash_val[SHA256_DIGEST_SIZE];
