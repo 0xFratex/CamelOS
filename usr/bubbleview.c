@@ -107,7 +107,7 @@ extern int desk_count;
 #define HEADER_HEIGHT 28
 #define RESIZE_MARGIN 16
 #define SNAP_MARGIN 20 // Distance to edge to trigger snap
-#define SNAP_PREVIEW_COLOR 0x4088AAFF // Transparent Blue
+#define SNAP_PREVIEW_COLOR 0x30007AFF // Semi-transparent blue (subtle macOS-style tint)
 
 // Animation Constants
 #define ANIM_SPEED 10
@@ -378,11 +378,25 @@ void win_maximize(window_t* w) {
 // --- Logic Helpers ---
 
 // --- REFINED WINDOW SNAPPING LOGIC ---
+// Computes whether the mouse is near a screen edge and fills
+// snap_preview_rect with the target region.  The caller (drag
+// handler) decides whether to show the preview overlay.
+// Fixes:
+//   - "Blue background":  the preview is now drawn BEFORE windows
+//     so it never tints the window content.
+//   - "Pixel clearing":   already fixed by full-redraw every frame,
+//     but we also clamp the preview rect to avoid overflow.
+//   - "Doesn't return to default":  when the user drags away from
+//     the edge while still holding, snap_preview_active is cleared
+//     here so the window just follows the mouse normally.
 void handle_window_snapping(window_t* w, int mx, int my) {
     int screen_w = 1024;
     int screen_h = 768;
 
     snap_preview_active = 0;
+
+    // Only show snap preview when actually dragging a window
+    if (!w) return;
 
     // Check edges based on mouse pointer, not just window rect
     if (mx < SNAP_MARGIN) {
@@ -402,6 +416,16 @@ void handle_window_snapping(window_t* w, int mx, int my) {
         snap_preview_active = 1;
         snap_preview_rect.x = 0; snap_preview_rect.y = HEADER_HEIGHT;
         snap_preview_rect.w = screen_w; snap_preview_rect.h = screen_h - HEADER_HEIGHT - 70;
+    }
+
+    // Clamp preview rect to screen bounds to prevent overdraw artifacts
+    if (snap_preview_active) {
+        if (snap_preview_rect.x < 0) snap_preview_rect.x = 0;
+        if (snap_preview_rect.y < 0) snap_preview_rect.y = 0;
+        if (snap_preview_rect.x + snap_preview_rect.w > screen_w)
+            snap_preview_rect.w = screen_w - snap_preview_rect.x;
+        if (snap_preview_rect.y + snap_preview_rect.h > screen_h)
+            snap_preview_rect.h = screen_h - snap_preview_rect.y;
     }
 }
 
@@ -1425,6 +1449,20 @@ void start_bubble_view() {
 
         // Full redraw every frame — wallpaper cache memcpy + all windows
         desktop_draw(buffer);
+
+        // Draw Snap Preview Overlay AFTER wallpaper but BEFORE windows
+        // so the preview doesn't paint over window content (fixes "blue
+        // background" bug where the snap tint was visible on top of the
+        // dragged window and other windows).
+        if (snap_preview_active) {
+            gfx_fill_rounded_rect(snap_preview_rect.x, snap_preview_rect.y,
+                                  snap_preview_rect.w, snap_preview_rect.h,
+                                  SNAP_PREVIEW_COLOR, 15);
+            // Draw a subtle border around the preview for better visibility
+            gfx_draw_rect(snap_preview_rect.x + 2, snap_preview_rect.y + 2,
+                          snap_preview_rect.w - 4, snap_preview_rect.h - 4, 0x60007AFF);
+        }
+
         for(int i=0; i<MAX_WINDOWS; i++) {
             window_t* w = ws_get_window_at_index(i);
             if(!w || !w->is_visible) continue;
@@ -1542,13 +1580,6 @@ void start_bubble_view() {
                         desktop_rename_buf[len + 1] = 0;
                     }
                 }
-        }
-
-        // Draw Snap Preview Overlay
-        if (snap_preview_active) {
-            gfx_fill_rounded_rect(snap_preview_rect.x, snap_preview_rect.y,
-                                  snap_preview_rect.w, snap_preview_rect.h,
-                                  SNAP_PREVIEW_COLOR, 15);
         }
 
         dock_render(buffer, 1024, 768, mx, my);

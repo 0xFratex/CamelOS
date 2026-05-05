@@ -10,6 +10,8 @@
 #include "../../hal/video/gfx_hal.h"
 #include "../../core/window_server.h"
 #include "../dock.h"
+// Selection box API for rubber-band multi-select in the file grid
+#include "../lib/selection_box.h"
 
 // Forward declaration for framework image drawing
 extern void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int req_w, int req_h);
@@ -80,6 +82,10 @@ typedef struct {
     int prompt_is_dir;   // 1=creating folder, 0=creating file
     char prompt_buffer[40];
     int prompt_len;
+
+    // Selection Box (rubber-band multi-select)
+    selection_box_t selbox;
+    int selbox_inited;
 } FMInstance;
 
 static FMInstance fm_instances[MAX_FM_INSTANCES];
@@ -112,6 +118,9 @@ static FMInstance* fm_alloc_instance(int window_id) {
             fm_instances[i].hist_pos = 0;
             fm_instances[i].win_w = 550;
             fm_instances[i].win_h = 400;
+            // Initialize rubber-band selection box for this instance
+            selbox_init(&fm_instances[i].selbox);
+            fm_instances[i].selbox_inited = 1;
             return &fm_instances[i];
         }
     }
@@ -738,12 +747,37 @@ void files_on_paint(window_t* win, int x, int y, int w, int h) {
     
     // Context menu
     files_draw_ctx(x, y);
+
+    // Draw rubber-band selection box if active
+    if (fm_cur->selbox_inited) {
+        // Offset the selection box coordinates from window-local to screen
+        // (the selbox stores window-local coords, but selbox_draw uses
+        // absolute screen coords via gfx_fill_rounded_rect)
+        selection_box_t* sb = &fm_cur->selbox;
+        if (sb->state == SELBOX_DRAGGING || sb->state == SELBOX_COMPLETED) {
+            int rx, ry, rw, rh;
+            if (selbox_get_rect(sb, &rx, &ry, &rw, &rh)) {
+                if (rw >= sb->min_drag || rh >= sb->min_drag) {
+                    // Convert from content-local to window-absolute coords
+                    gfx_fill_rounded_rect(x + rx, y + ry, rw, rh, sb->color, 4);
+                    gfx_draw_rect(x + rx, y + ry, rw, rh, sb->border_color);
+                }
+            }
+        }
+    }
 }
 
 // ===== Mouse Handling =====
 void files_on_mouse(window_t* win, int x, int y, int btn) {
     fm_set_current_for(win);
     if (!fm_cur) return;
+
+    // Handle mouse-up: end rubber-band selection
+    if (btn == 0 && fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING) {
+        selbox_end(&fm_cur->selbox);
+        // Selection is kept (COMPLETED state) so items stay highlighted
+        // until the next click cancels it
+    }
     
     int win_w = fm_cur->win_w, win_h = fm_cur->win_h - 30;
     int content_y_offset = MARGIN_TOP;
@@ -830,6 +864,29 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
     }
 
     // ---- Handle content area clicks ----
+    // If the selection box is being dragged, update it and apply selection
+    if (fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING && btn == 1) {
+        selbox_update(&fm_cur->selbox, x, y + MARGIN_TOP);
+        // Apply selection: mark entries whose icons intersect the selection rect
+        int rx, ry, rw, rh;
+        if (selbox_get_rect(&fm_cur->selbox, &rx, &ry, &rw, &rh)) {
+            if (rw >= fm_cur->selbox.min_drag || rh >= fm_cur->selbox.min_drag) {
+                memset(fm_cur->is_selected, 0, sizeof(fm_cur->is_selected));
+                for(int i = 0; i < fm_cur->entry_count; i++) {
+                    int col = i % cols;
+                    int row = i / cols;
+                    int ix = MARGIN_LEFT + col * CELL_W;
+                    int iy = content_y_offset + row * CELL_H - fm_cur->scroll_offset;
+                    // Check intersection with selection rect
+                    if (ix < rx + rw && ix + CELL_W > rx && iy < ry + rh && iy + CELL_H > ry) {
+                        fm_cur->is_selected[i] = 1;
+                    }
+                }
+            }
+        }
+        // Don't return — let fall through to check if we clicked on an icon
+    }
+
     for(int i = 0; i < fm_cur->entry_count; i++) {
         int col = i % cols;
         int row = i / cols;
@@ -873,6 +930,8 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
             
             memset(fm_cur->is_selected, 0, sizeof(fm_cur->is_selected));
             fm_cur->is_selected[i] = 1;
+            // Cancel any active rubber-band selection since we clicked an icon
+            if (fm_cur->selbox_inited) selbox_cancel(&fm_cur->selbox);
             return;
         }
     }
@@ -883,8 +942,11 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
         fm_cur->ctx_x = x; fm_cur->ctx_y = y;
         fm_cur->ctx_type = 0;
         memset(fm_cur->is_selected, 0, sizeof(fm_cur->is_selected));
+        selbox_cancel(&fm_cur->selbox);
     } else if (btn == 1) {
+        // Start rubber-band selection from this point
         memset(fm_cur->is_selected, 0, sizeof(fm_cur->is_selected));
+        selbox_start(&fm_cur->selbox, x, y + MARGIN_TOP);
     }
 }
 
@@ -910,6 +972,84 @@ static void files_on_close(window_t* win) {
     }
 }
 
+// ===== Build parent directory chain into history =====
+// When opening a deep path like /Users/name/Desktop/MyFolder, this
+// populates history[0..N] with "/", "/Users", "/Users/name", etc.
+// so that the back button navigates through the parent directories
+// instead of jumping to "/" or being stuck at the initial path.
+static int fm_build_parent_history(FMInstance* inst, const char* initial_path) {
+    if (!inst || !initial_path || !initial_path[0]) return 0;
+
+    // Special case: root path
+    if (strcmp(initial_path, "/") == 0) {
+        strcpy(inst->history[0], "/");
+        inst->hist_count = 1;
+        inst->hist_pos = 0;
+        return 1;
+    }
+
+    // Walk up from "/" to the initial_path, collecting each component
+    char components[16][FM_PATH_MAX];
+    int comp_count = 0;
+
+    // Parse path components from initial_path
+    // e.g. "/Users/name/Desktop/MyFolder" -> ["Users", "name", "Desktop", "MyFolder"]
+    char temp[FM_PATH_MAX];
+    strncpy(temp, initial_path, FM_PATH_MAX - 1);
+    temp[FM_PATH_MAX - 1] = 0;
+
+    // Build cumulative paths: "/", "/Users", "/Users/name", etc.
+    char cumulative[FM_PATH_MAX];
+    int hist_idx = 0;
+
+    // Start with root
+    strcpy(inst->history[hist_idx], "/");
+    hist_idx++;
+    if (hist_idx >= FM_HISTORY_SIZE) goto done;
+
+    // Skip leading '/'
+    char* p = temp;
+    if (*p == '/') p++;
+
+    cumulative[0] = '/';
+    cumulative[1] = 0;
+    int cum_len = 1;
+
+    while (*p && hist_idx < FM_HISTORY_SIZE) {
+        // Extract next component
+        char* slash = p;
+        while (*slash && *slash != '/') slash++;
+        char saved = *slash;
+        *slash = 0;
+
+        int comp_len = strlen(p);
+        if (comp_len > 0) {
+            // Build cumulative path
+            if (cum_len > 1) { // not root
+                cumulative[cum_len] = '/';
+                memcpy(cumulative + cum_len + 1, p, comp_len);
+                cum_len += 1 + comp_len;
+            } else { // first component after root
+                memcpy(cumulative + 1, p, comp_len);
+                cum_len = 1 + comp_len;
+            }
+            cumulative[cum_len] = 0;
+
+            strcpy(inst->history[hist_idx], cumulative);
+            hist_idx++;
+        }
+
+        *slash = saved;
+        p = slash;
+        if (saved == '/') p++;
+    }
+
+done:
+    inst->hist_count = hist_idx;
+    inst->hist_pos = hist_idx - 1; // Point to the last entry (= initial_path)
+    return 1;
+}
+
 // ===== Init =====
 void init_files_app() {
     extern void wrap_get_args(char* b, int m);
@@ -930,12 +1070,14 @@ void init_files_app() {
     if (inst) {
         fm_cur = inst;
         strcpy(inst->path, initial_path);
-        // Replace the default "/" history entry with the actual initial path
-        // so that navigating back from a subfolder returns to the starting
-        // directory (e.g. /Users/name/Desktop) instead of root "/".
-        strcpy(inst->history[0], initial_path);
-        inst->hist_pos = 0;
-        inst->hist_count = 1;
+
+        // Build the full parent directory chain into history so that
+        // navigating back from /Users/name/Desktop/MyFolder goes to
+        // /Users/name/Desktop (not "/").  Previously history[0] was
+        // just the initial_path, meaning back-nav was impossible from
+        // the starting directory.
+        fm_build_parent_history(inst, initial_path);
+
         files_refresh();
         // Store instance pointer in window user_data so callbacks can
         // resolve their instance directly without relying on active_win

@@ -13,6 +13,8 @@
 #include "../core/dmg_mount.h"
 // App installer for drag-to-Applications
 #include "../core/app_installer.h"
+// Selection box API for rubber-band multi-select
+#include "lib/selection_box.h"
 
 // Externs from bubbleview.c
 extern int desktop_rename_active;
@@ -44,6 +46,10 @@ extern ContextMenuState g_ctx_menu;
 
 // Dynamic desktop path - resolved from user config at init time
 char g_desktop_path[128] = "";  // Empty until properly resolved from config
+
+// --- Desktop Selection Box (rubber-band multi-select) ---
+static selection_box_t g_desk_selbox;
+static int g_desk_selbox_inited = 0;
 
 // --- Wallpaper Cache ---
 // Pre-computed gradient eliminates per-pixel arithmetic every frame.
@@ -194,9 +200,13 @@ void desktop_init() {
     }
     
     desktop_refresh();
-}
 
-// Ensure the wallpaper gradient cache is allocated and filled.
+    // Initialize the desktop rubber-band selection box
+    if (!g_desk_selbox_inited) {
+        selbox_init(&g_desk_selbox);
+        g_desk_selbox_inited = 1;
+    }
+}
 // Called lazily on first desktop_draw or desktop_fill_wallpaper_region.
 static void wallpaper_cache_ensure(int w, int h) {
     if (wallpaper_cache && wallpaper_cache_w == w && wallpaper_cache_h == h) return;
@@ -326,10 +336,24 @@ void desktop_draw(uint32_t* buffer) {
 
     // 2. Draw Icons
     desktop_draw_icons(buffer);
+
+    // 3. Draw Selection Box (rubber-band) if active
+    if (g_desk_selbox_inited) {
+        selbox_draw(&g_desk_selbox);
+    }
 }
 
 void desktop_on_mouse(int mx, int my, int lb, int rb) {
+    // Initialize selbox on first call if not yet done
+    if (!g_desk_selbox_inited) {
+        selbox_init(&g_desk_selbox);
+        g_desk_selbox_inited = 1;
+    }
+
     if (rb) {
+        // Right-click: cancel any active selection and show context menu
+        selbox_cancel(&g_desk_selbox);
+
         int x = GRID_START_X;
         int y = GRID_START_Y;
         int hit_idx = -1;
@@ -344,17 +368,11 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
         }
 
         if (hit_idx != -1) {
-            // Store index for rename logic
-            // Hack: pass index as string pointer? No, pass valid pointer for delete, 
-            // but we need index for rename.
-            // We'll calculate index again in bubbleview or use a static global.
-            // For now, let's pass the path string as expected by bubbleview.
             static char path_buf[128];
             strcpy(path_buf, g_desktop_path);
             strcat(path_buf, "/");
             strcat(path_buf, desk_entries[hit_idx].filename);
             
-            // Also select it
             memset(desk_selected, 0, sizeof(desk_selected));
             desk_selected[hit_idx] = 1;
             
@@ -368,7 +386,6 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
     if (lb) {
         // If renaming, clicking outside commits
         if (desktop_rename_active) {
-            // bubbleview handles commit, just return
             return;
         }
 
@@ -380,12 +397,60 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
                 memset(desk_selected, 0, sizeof(desk_selected));
                 desk_selected[i] = 1;
                 hit = 1;
+                // Clicked on an icon — cancel any active selection box
+                selbox_cancel(&g_desk_selbox);
                 break;
             }
             y += ICON_SPACING_Y;
             if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
         }
-        if(!hit) memset(desk_selected, 0, sizeof(desk_selected));
+        if(!hit) {
+            // Clicked on empty desktop space — start rubber-band selection
+            // First check if we're already dragging a selection
+            if (g_desk_selbox.state == SELBOX_DRAGGING) {
+                // Update the selection and select icons inside it
+                selbox_update(&g_desk_selbox, mx, my);
+                desktop_apply_selection(&g_desk_selbox);
+            } else {
+                // Start a new selection drag
+                memset(desk_selected, 0, sizeof(desk_selected));
+                selbox_start(&g_desk_selbox, mx, my);
+            }
+        }
+    } else {
+        // Mouse button not pressed — finish or cancel any active selection
+        if (g_desk_selbox.state == SELBOX_DRAGGING) {
+            selbox_end(&g_desk_selbox);
+            // Keep the selection active (COMPLETED state) so items stay
+            // highlighted.  The selection will be cancelled on next click.
+        }
+    }
+}
+
+// Apply the current selection box to desktop icons — select any icon
+// whose bounding rectangle intersects the selection rubber-band.
+void desktop_apply_selection(selection_box_t* sb) {
+    if (!sb || sb->state != SELBOX_DRAGGING) return;
+
+    int rx, ry, rw, rh;
+    if (!selbox_get_rect(sb, &rx, &ry, &rw, &rh)) return;
+
+    // Minimum size threshold to avoid accidental micro-selections
+    if (rw < sb->min_drag && rh < sb->min_drag) return;
+
+    // Clear all selections first, then re-select icons that intersect
+    memset(desk_selected, 0, sizeof(desk_selected));
+
+    int x = GRID_START_X;
+    int y = GRID_START_Y;
+    for(int i=0; i<desk_count; i++) {
+        // Icon bounding box: (x, y) to (x+48, y+60)
+        // Check intersection with selection rect
+        if (x < rx + rw && x + 48 > rx && y < ry + rh && y + 60 > ry) {
+            desk_selected[i] = 1;
+        }
+        y += ICON_SPACING_Y;
+        if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
     }
 }
 // =====================================================================

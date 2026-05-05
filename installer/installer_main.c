@@ -32,6 +32,7 @@
 #include "disk_tools.h"
 #include "disk_health.h"
 #include "sys_requirements.h"
+#include "../include/math.h"
 
 // Multiboot structures for memory detection
 typedef struct {
@@ -447,6 +448,135 @@ void render_disk_mini_map(int x, int y, int w, int h, int drive_idx) {
 void render_section_label(int x, int y, int w, const char* label) {
     gfx_draw_string(x, y, label, C_TEXT_MUTED);
     gfx_draw_rect(x, y + 14, w, 1, C_BORDER);
+}
+
+// --- Pizza/Pie Chart (disk usage visualization) ---
+// Draws a macOS-style pie chart with colored slices and a legend.
+// slices: array of {fraction 0.0-1.0, color, label}
+// slice_count: number of slices
+// cx, cy: center of the pie chart
+// radius: radius of the pie chart
+typedef struct {
+    float fraction;       // 0.0 to 1.0 — portion of the total pie
+    uint32_t color;       // Fill color for this slice
+    const char* label;    // Label for the legend
+} pie_slice_t;
+
+void render_pie_chart(int cx, int cy, int radius, pie_slice_t* slices, int slice_count) {
+    if (!slices || slice_count <= 0 || radius <= 0) return;
+
+    // Draw shadow
+    gfx_fill_rounded_rect(cx - radius + 2, cy - radius + 3, radius * 2, radius * 2, 0x30000000, radius);
+
+    // Fill background circle (white) first
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            int dist_sq = dx * dx + dy * dy;
+            if (dist_sq <= radius * radius) {
+                int px = cx + dx;
+                int py = cy + dy;
+                if (px >= 0 && px < WIN_W && py >= 0 && py < WIN_H) {
+                    gfx_put_pixel(px, py, 0xFFFFFFFF);
+                }
+            }
+        }
+    }
+
+    // Draw each slice
+    double angle = 0.0; // Current angle in "turns" (0.0 = right, going clockwise)
+    for (int s = 0; s < slice_count; s++) {
+        if (slices[s].fraction <= 0.0f) continue;
+        double end_angle = angle + (double)slices[s].fraction;
+
+        // Draw filled slice using scanline approach
+        for (int dy = -radius; dy <= radius; dy++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                int dist_sq = dx * dx + dy * dy;
+                if (dist_sq > radius * radius) continue;
+
+                // Compute angle of this pixel relative to center
+                // 0 = right, going clockwise
+                double px_angle;
+                if (dx == 0 && dy == 0) {
+                    px_angle = 0.0;
+                } else {
+                    // atan2 gives angle in radians, convert to 0..1 range
+                    double a = -atan2((double)dy, (double)dx); // clockwise from right
+                    if (a < 0) a += 2.0 * M_PI;
+                    px_angle = a / (2.0 * M_PI);
+                }
+
+                // Check if this pixel's angle falls within the current slice
+                int in_slice = 0;
+                if (end_angle <= 1.0) {
+                    in_slice = (px_angle >= angle && px_angle < end_angle);
+                } else {
+                    // Wraps around
+                    in_slice = (px_angle >= angle || px_angle < (end_angle - 1.0));
+                }
+
+                if (in_slice) {
+                    int px = cx + dx;
+                    int py = cy + dy;
+                    if (px >= 0 && px < WIN_W && py >= 0 && py < WIN_H) {
+                        gfx_put_pixel(px, py, slices[s].color);
+                    }
+                }
+            }
+        }
+
+        // Draw slice separator line
+        {
+            int sx = cx + (int)(radius * cos(angle * 2.0 * M_PI));
+            int sy = cy - (int)(radius * sin(angle * 2.0 * M_PI));
+            gfx_draw_line(cx, cy, sx, sy, 0xFFFFFFFF);
+        }
+
+        angle = end_angle;
+    }
+
+    // Draw outer ring (border)
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            int dist_sq = dx * dx + dy * dy;
+            int inner = (radius - 2) * (radius - 2);
+            int outer = radius * radius;
+            if (dist_sq >= inner && dist_sq <= outer) {
+                int px = cx + dx;
+                int py = cy + dy;
+                if (px >= 0 && px < WIN_W && py >= 0 && py < WIN_H) {
+                    gfx_put_pixel(px, py, 0xFFC6C6C8);
+                }
+            }
+        }
+    }
+
+    // Draw center dot for aesthetics (like a donut/pizza style)
+    int inner_r = radius / 4;
+    for (int dy = -inner_r; dy <= inner_r; dy++) {
+        for (int dx = -inner_r; dx <= inner_r; dx++) {
+            if (dx*dx + dy*dy <= inner_r*inner_r) {
+                int px = cx + dx;
+                int py = cy + dy;
+                if (px >= 0 && px < WIN_W && py >= 0 && py < WIN_H) {
+                    gfx_put_pixel(px, py, 0xFFF2F2F7);
+                }
+            }
+        }
+    }
+
+    // Draw legend next to the pie chart
+    int legend_x = cx + radius + 20;
+    int legend_y = cy - (slice_count * 22) / 2;
+    for (int s = 0; s < slice_count; s++) {
+        if (!slices[s].label) continue;
+        // Color swatch
+        gfx_fill_rounded_rect(legend_x, legend_y, 14, 14, slices[s].color, 3);
+        gfx_draw_rect(legend_x, legend_y, 14, 14, 0xFFC6C6C8);
+        // Label
+        gfx_draw_string(legend_x + 20, legend_y + 1, slices[s].label, C_TEXT_DARK);
+        legend_y += 22;
+    }
 }
 
 // =============================================================================
@@ -1345,11 +1475,53 @@ void render_disk_utility(void) {
         gfx_draw_string(cx + 56, st_y + 8, ustr, C_TEXT_DARK);
         gfx_draw_string(cx + 140, st_y + 8, "Free:", C_TEXT_MUTED);
         gfx_draw_string(cx + 180, st_y + 8, fstr, C_TEXT_DARK);
+
+        // --- Pizza/Pie Chart for disk usage ---
+        // Build pie slices from partition data
+        pie_slice_t pie_slices[6]; // max 4 partitions + free + other
+        int pie_count = 0;
+        uint64_t total_sectors = dev->sectors;
+
+        for (int k = 0; k < 4; k++) {
+            mbr_entry_t* part = &disk_mbr[util_drive_idx].partitions[k];
+            if (part->type == 0) continue;
+            float frac = (total_sectors > 0) ? (float)part->lba_length / (float)total_sectors : 0.0f;
+            char tn[16]; get_part_type_name(part->type, tn);
+            // Build label: "PFS32 2.1 GB" etc.
+            static char part_labels[4][48];
+            char ps[32]; format_disk_size(part->lba_length, ps);
+            strcpy(part_labels[k], tn);
+            strcat(part_labels[k], " ");
+            strcat(part_labels[k], ps);
+            pie_slices[pie_count].fraction = frac;
+            pie_slices[pie_count].color = get_part_color(part->type);
+            pie_slices[pie_count].label = part_labels[k];
+            pie_count++;
+        }
+
+        // Add free space slice
+        if (used < dev->sectors) {
+            float free_frac = (total_sectors > 0) ? (float)(dev->sectors - used) / (float)total_sectors : 0.0f;
+            pie_slices[pie_count].fraction = free_frac;
+            pie_slices[pie_count].color = C_PART_FREE;
+            pie_slices[pie_count].label = "Free Space";
+            pie_count++;
+        }
+
+        if (pie_count > 0) {
+            int pie_cx = cx + 100;
+            int pie_cy = st_y + 150;
+            int pie_r = 70;
+
+            // Section label
+            render_section_label(cx, st_y + 36, content_w - 4, "DISK USAGE");
+            render_pie_chart(pie_cx, pie_cy, pie_r, pie_slices, pie_count);
+        }
     }
 
     // Advanced tools section
     int tools_y = (disk_has_mbr[util_drive_idx]) ?
-                   ctrl_y + 130 : ctrl_y + 88;
+                   ctrl_y + 250 : ctrl_y + 88;
 
     render_section_label(cx, tools_y, content_w - 4, "ADVANCED TOOLS");
     tools_y += 22;
