@@ -5,6 +5,7 @@
 #include "../../sys/api.h"
 #include "../../core/string.h"
 #include "../../hal/video/gfx_hal.h"
+#include "../../hal/drivers/serial.h"
 #include "../dock.h"
 #include "../../fs/pfs32.h"
 #include "../../core/window_server.h"
@@ -579,7 +580,7 @@ static void settings_save_config(void) {
     pos += sprintf(buf + pos, "configured=1\n");
 
     // Write to the primary path
-    extern void sys_fs_create(const char*, int);
+    extern int sys_fs_create(const char*, int);
     sys_fs_create("/Library", 1);
     sys_fs_create("/Library/Preferences", 1);
 

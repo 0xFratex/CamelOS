@@ -285,32 +285,121 @@ void k_rewind_heap(unsigned int mark) {
 
 // Allocate aligned to 4KB and return physical address
 // Since we don't have VM separation yet, Phy = Virt
+//
+// Optimized: Now splits the block into up to 3 pieces to reclaim
+// previously wasted leading/trailing bytes:
+//   [leading free block] [aligned allocated block] [trailing free block]
+// This recovers up to ~4080 bytes per call that were previously leaked.
 void* kmalloc_ap(size_t size, uint32_t* phys) {
-    // Allocate size + 4096 to guarantee alignment, then split the block
-    // to reclaim unused leading bytes instead of leaking them.
+    // Align requested size to 16 bytes
+    if (size % 16 != 0) size += 16 - (size % 16);
 
+    // We need size bytes aligned at a 4096 boundary, plus room for a
+    // block header + guard before the aligned region, so request size+4096.
     size_t actual_req = size + 4096;
     uint32_t ptr = (uint32_t)kmalloc(actual_req);
 
     if (ptr == 0) return 0;
 
+    // Compute the 4096-aligned address within this allocation
     uint32_t aligned_ptr = ptr;
     if (aligned_ptr % 4096 != 0) {
         aligned_ptr += 4096 - (aligned_ptr % 4096);
     }
 
-    // If the allocation gave us more than needed, shrink it from the front.
-    // We can't easily split the front of a heap block, so we accept the waste
-    // but at least track it properly. The kmalloc block header already accounts
-    // for the full allocation — the unused leading bytes stay in that block
-    // but won't be accessed by the caller.
-    //
-    // A full fix would require a page-aware allocator. For now, the waste is
-    // at most 4096 - 16 bytes per kmalloc_ap call, which is acceptable for
-    // the limited paging setup in CamelOS.
+    // If already perfectly aligned, no splitting needed
+    if (aligned_ptr == ptr) {
+        if (phys) {
+            *phys = aligned_ptr;
+        }
+        return (void*)aligned_ptr;
+    }
+
+    // We have a misaligned allocation. The kmalloc block header is at:
+    //   (ptr - sizeof(mem_block_t))
+    // We want to split this into up to 3 blocks:
+    //   1. Leading free block: from the original block start to just before the aligned address
+    //   2. Aligned allocated block: from the aligned address with the requested size
+    //   3. Trailing free block: any remaining space after the aligned block
+
+    mem_block_t* orig_block = (mem_block_t*)(ptr - sizeof(mem_block_t));
+    if (orig_block->magic != MEM_MAGIC) {
+        // Safety: if header is corrupt, just return aligned pointer without splitting
+        if (phys) *phys = aligned_ptr;
+        return (void*)aligned_ptr;
+    }
+
+    size_t orig_actual = orig_block->actual_size;
+    mem_block_t* orig_next = orig_block->next;
+
+    // Calculate leading free region
+    uint32_t leading_start = (uint32_t)orig_block;
+    uint32_t leading_size = aligned_ptr - ptr;  // Bytes between original data start and alignment
+    // The leading block occupies: header + leading_size + guard
+    size_t leading_total = sizeof(mem_block_t) + leading_size;
+
+    // Calculate the aligned block's data region
+    size_t aligned_data_size = size;
+    size_t aligned_total = sizeof(mem_block_t) + aligned_data_size + sizeof(mem_guard_t);
+
+    // Calculate trailing region
+    size_t used_total = leading_total + aligned_total;
+    size_t trailing_space = 0;
+    if (orig_actual + sizeof(mem_block_t) > used_total) {
+        trailing_space = orig_actual + sizeof(mem_block_t) - used_total;
+    }
+
+    // --- Leading free block ---
+    mem_block_t* lead = orig_block;
+    lead->size = leading_size;
+    lead->actual_size = leading_size + sizeof(mem_guard_t);
+    lead->free = 1;
+    lead->magic = MEM_MAGIC;
+    // Guard at end of leading block
+    mem_guard_t* lead_guard = (mem_guard_t*)((uint8_t*)lead + sizeof(mem_block_t) + leading_size);
+    lead_guard->guard = GUARD_MAGIC;
+
+    // --- Aligned allocated block ---
+    mem_block_t* aligned_block = (mem_block_t*)(aligned_ptr - sizeof(mem_block_t));
+    aligned_block->size = aligned_data_size;
+    aligned_block->actual_size = aligned_data_size + sizeof(mem_guard_t);
+    aligned_block->free = 0;
+    aligned_block->magic = MEM_MAGIC;
+    // Guard at end of aligned block
+    mem_guard_t* aligned_guard = (mem_guard_t*)(aligned_ptr + aligned_data_size);
+    aligned_guard->guard = GUARD_MAGIC;
+
+    // --- Trailing free block (if enough space) ---
+    if (trailing_space > BLOCK_META_SIZE + 32) {
+        mem_block_t* trail = (mem_block_t*)((uint8_t*)aligned_block + sizeof(mem_block_t) + aligned_block->actual_size);
+        trail->size = trailing_space - BLOCK_META_SIZE;
+        trail->actual_size = trailing_space - sizeof(mem_block_t);
+        trail->free = 1;
+        trail->magic = MEM_MAGIC;
+        trail->next = orig_next;
+
+        // Guard at end of trailing block
+        mem_guard_t* trail_guard = (mem_guard_t*)((uint8_t*)trail + sizeof(mem_block_t) + trail->size);
+        trail_guard->guard = GUARD_MAGIC;
+
+        aligned_block->next = trail;
+    } else {
+        // Not enough space for a trailing block; fold remaining bytes
+        // into the aligned block's actual_size
+        aligned_block->actual_size = (uint32_t)orig_block + sizeof(mem_block_t) + orig_actual - (uint32_t)aligned_block - sizeof(mem_block_t);
+        aligned_block->next = orig_next;
+        // Move guard to the real end
+        mem_guard_t* g = (mem_guard_t*)((uint8_t*)aligned_block + sizeof(mem_block_t) + aligned_block->actual_size - sizeof(mem_guard_t));
+        g->guard = GUARD_MAGIC;
+    }
+
+    lead->next = aligned_block;
+
+    // Adjust used_mem_size: subtract the leading free portion
+    used_mem_size -= lead->actual_size;
 
     if (phys) {
-        *phys = aligned_ptr; // Identity map assumption for now
+        *phys = aligned_ptr;
     }
 
     return (void*)aligned_ptr;

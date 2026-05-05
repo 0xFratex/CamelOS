@@ -23,6 +23,7 @@ typedef struct net_if_struct {
     uint32_t ip_addr;
     uint32_t netmask;
     uint32_t gateway;
+    uint32_t dns_server;
 
     // IPv6 Configuration
     ipv6_addr_t ipv6_addr;

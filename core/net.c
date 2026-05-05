@@ -369,6 +369,12 @@ void net_set_gateway(uint32_t gateway) {
     }
 }
 
+void net_set_dns(uint32_t dns) {
+    if(default_if) {
+        default_if->dns_server = dns;
+    }
+}
+
 // Simple ICMP Echo Request (Ping)
 static volatile int ping_received = 0;
 static uint16_t ping_id = 0x1234;

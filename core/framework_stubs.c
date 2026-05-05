@@ -84,8 +84,30 @@ void CGContextDrawText(CGContextRef ctx, float x, float y, const char* text, uin
 }
 
 void CGContextDrawImage(CGContextRef ctx, CGRect rect, CGImageRef image) {
-    (void)ctx; (void)rect; (void)image;
-    // TODO: Bridge to gfx_hal image drawing
+    (void)ctx;
+    if (!image) return;
+
+    // Cast the image reference to a png_image_t pointer.
+    // CGImageRef is void*, and png_decoder.h defines png_image_t with
+    // pixel_data in ARGB (0xAARRGGBB) format — matching gfx_hal.
+    // If the caller passes a valid decoded PNG image, render it scaled
+    // into the destination rectangle.
+    typedef struct {
+        uint32_t width;
+        uint32_t height;
+        uint8_t color_type;
+        uint8_t bit_depth;
+        uint32_t* pixel_data;
+    } png_image_compat_t;
+
+    png_image_compat_t* img = (png_image_compat_t*)image;
+    if (!img->pixel_data) return;
+
+    gfx_draw_asset_scaled(gfx_get_active_buffer(),
+                          (int)rect.origin.x, (int)rect.origin.y,
+                          img->pixel_data,
+                          (int)img->width, (int)img->height,
+                          (int)rect.size.width, (int)rect.size.height);
 }
 
 void CGContextSetFillColor(CGContextRef ctx, uint32_t color) {

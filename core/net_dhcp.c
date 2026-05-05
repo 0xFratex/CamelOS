@@ -1,6 +1,7 @@
 // core/net_dhcp.c
 #include "net.h"
 #include "net_dhcp.h"
+#include "net_if.h"
 #include "socket.h"
 #include "string.h"
 #include "memory.h"
@@ -17,6 +18,9 @@ extern int net_is_connected;
 
 static uint32_t dhcp_xid = 0x12345678;
 static int dhcp_state = 0; // 0=idle, 1=discovering, 2=requesting, 3=bound
+
+// Store the server IP from DHCP Offer so we can send it in DHCPREQUEST
+static uint32_t dhcp_server_ip = 0;
 
 int dhcp_discover(void) {
     s_printf("[DHCP] Starting discovery...\n");
@@ -60,9 +64,12 @@ int dhcp_discover(void) {
     // End option
     *opt++ = 255;
 
-    // Send broadcast using existing UDP function
+    // FIX: Send the actual packet buffer data, not (uint8_t*)&packet which
+    // sends only the 4-byte pointer. Previously sizeof(packet) was 4 bytes
+    // (just the pointer size), sending garbage instead of the DHCP packet.
+    uint32_t packet_len = (uint32_t)((uint8_t*)opt - packet_buf);
     uint32_t broadcast_ip = 0xFFFFFFFF;
-    net_send_udp_packet(broadcast_ip, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, (uint8_t*)&packet, sizeof(packet));
+    net_send_udp_packet(broadcast_ip, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, packet_buf, packet_len);
 
     dhcp_state = 1; // Discovering
     s_printf("[DHCP] Discovery sent\n");
@@ -101,18 +108,21 @@ int dhcp_request(uint32_t offered_ip) {
     opt += 4;
 
     // Server Identifier (required in request)
+    // FIX: Use the stored server IP from the DHCP Offer instead of 0.
+    // Previously this was always 0, which broke DHCPREQUEST because the
+    // server couldn't determine which offer was being accepted.
     *opt++ = 54;
     *opt++ = 4;
-    uint32_t server_ip = 0; // From offer - TODO: store from offer
-    memcpy(opt, &server_ip, 4);
+    memcpy(opt, &dhcp_server_ip, 4);
     opt += 4;
 
     // End option
     *opt++ = 255;
 
-    // Send broadcast using existing UDP function
+    // FIX: Send the actual packet buffer data, not (uint8_t*)&packet
+    uint32_t packet_len = (uint32_t)((uint8_t*)opt - packet_buf);
     uint32_t broadcast_ip = 0xFFFFFFFF;
-    net_send_udp_packet(broadcast_ip, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, (uint8_t*)&packet, sizeof(packet));
+    net_send_udp_packet(broadcast_ip, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, packet_buf, packet_len);
 
     dhcp_state = 2; // Requesting
     s_printf("[DHCP] Request sent\n");
@@ -142,6 +152,12 @@ void dhcp_handle_offer(dhcp_packet_t* dhcp) {
         else i += opts[i+1] + 2;
     }
 
+    // FIX: Store the server IP so dhcp_request() can use it in the
+    // Server Identifier option (option 54). Without this, DHCPREQUEST
+    // always sent server_ip=0, causing the DHCP server to reject or
+    // ignore the request.
+    dhcp_server_ip = server_ip;
+
     if(server_ip) {
         dhcp_request(offered_ip);
     }
@@ -168,7 +184,12 @@ void dhcp_handle_ack(dhcp_packet_t* dhcp) {
     uint8_t* opts = dhcp->options;
     for(int i = 0; i < 308 && opts[i] != 255; ) {
         if(opts[i] == 1 && opts[i+1] >= 4) { // Subnet Mask
-            // Could store subnet mask
+            // FIX: Store subnet mask in the interface struct
+            uint32_t subnet_mask;
+            memcpy(&subnet_mask, &opts[i+2], 4);
+            if(default_if) {
+                default_if->netmask = ntohl(subnet_mask);
+            }
         } else if(opts[i] == 3 && opts[i+1] >= 4) { // Router
             uint32_t gateway;
             memcpy(&gateway, &opts[i+2], 4);
@@ -177,7 +198,10 @@ void dhcp_handle_ack(dhcp_packet_t* dhcp) {
                 gateway_ip.addr = ntohl(gateway);
             }
         } else if(opts[i] == 6 && opts[i+1] >= 4) { // DNS
-            // Could store DNS servers
+            // FIX: Store DNS server via net_set_dns()
+            uint32_t dns_ip;
+            memcpy(&dns_ip, &opts[i+2], 4);
+            net_set_dns(ntohl(dns_ip));
         }
 
         if(opts[i] == 0) i++;
@@ -186,6 +210,14 @@ void dhcp_handle_ack(dhcp_packet_t* dhcp) {
 
     dhcp_state = 3; // Bound
     s_printf("[DHCP] Network configured\n");
+}
+
+// FIX: Handle DHCP NAK — reset state so we can retry discovery
+static void dhcp_handle_nak(dhcp_packet_t* dhcp) {
+    (void)dhcp;
+    s_printf("[DHCP] NAK received — resetting to idle\n");
+    dhcp_state = 0;
+    dhcp_server_ip = 0;
 }
 
 void dhcp_process_packet(uint8_t* payload, uint32_t len) {
@@ -214,6 +246,8 @@ void dhcp_process_packet(uint8_t* payload, uint32_t len) {
         dhcp_handle_offer(dhcp);
     } else if(msg_type == 5) { // ACK
         dhcp_handle_ack(dhcp);
+    } else if(msg_type == 6) { // NAK
+        dhcp_handle_nak(dhcp);
     }
 }
 
@@ -241,15 +275,21 @@ int dhcp_auto_configure(void) {
     extern uint32_t get_tick_count(void);
     start = get_tick_count();
 
-    // Wait up to ~5 seconds for the full DORA sequence
-    // dhcp_state: 0=idle, 1=discovering, 2=requesting, 3=bound
+    // FIX: Increased timeout from ~5 seconds to ~10 seconds for better
+    // reliability on slow or congested networks
     while (dhcp_state != 3) {
         // Poll network to receive DHCP responses
         rtl8139_poll();
 
-        // Check for timeout (5 seconds = 500 ticks at 100Hz, or 250 at 50Hz)
+        // FIX: Process TCP listeners during DHCP polling so that any
+        // pending TCP connections (e.g., from earlier requests) don't
+        // stall while we wait for DHCP to complete.
+        extern void tcp_process_listeners(void);
+        tcp_process_listeners();
+
+        // Check for timeout (10 seconds = 1000 ticks at 100Hz)
         uint32_t elapsed = get_tick_count() - start;
-        if (elapsed > 500) {
+        if (elapsed > 1000) {
             s_printf("[DHCP] Auto-configuration timed out\n");
             dhcp_state = 0;  // Reset state
             return -1;
