@@ -116,6 +116,8 @@ int k_sendto(int sockfd, const void* buf, size_t len, int flags, const sockaddr_
 int k_recvfrom(int sockfd, void* buf, size_t len, int flags, sockaddr_in_t* src);
 int k_setsockopt(int sockfd, int level, int optname, const void* optval, socklen_t optlen);
 int k_close(int sockfd);
+int k_listen(int sockfd, int backlog);
+int k_accept(int sockfd, sockaddr_in_t* addr);
 
 // System call interfaces
 int sys_socket(int domain, int type, int protocol);
@@ -125,6 +127,8 @@ ssize_t sys_send(int fd, const void* buf, size_t len, int flags);
 ssize_t sys_recv(int fd, void* buf, size_t len, int flags);
 int sys_close(int fd);
 int sys_setsockopt(int fd, int level, int optname, const void* optval, socklen_t optlen);
+int sys_listen(int fd, int backlog);
+int sys_accept(int fd, struct sockaddr* addr, socklen_t* addrlen);
 
 // Callback from Network Stack
 int socket_process_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint16_t src_port, uint32_t dst_ip, uint16_t dst_port, int proto);

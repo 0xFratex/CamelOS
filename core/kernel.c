@@ -22,6 +22,15 @@
 #include "../core/dns.h"
 #include "../core/net_if.h"
 #include "../hal/drivers/net_rtl8139.h"
+#include "../core/scheduler.h"
+#include "../core/vmm.h"
+#include "../core/signal.h"
+#include "../core/pipe.h"
+#include "../core/ipc.h"
+#include "../core/klog.h"
+#include "../fs/vfs.h"
+#include "../core/process.h"
+#include "../core/crash.h"
 
 extern int kbd_ctrl_pressed;
 extern int kbd_shift_pressed;
@@ -51,6 +60,29 @@ void kernel_init_hal() {
     init_heap(heap_start, 64 * 1024 * 1024);
     
     init_paging();
+
+    // --- VMM: Initialize Virtual Memory Manager after paging ---
+    vmm_init();
+    s_printf("[KERNEL] Virtual Memory Manager Initialized.\n");
+
+    // --- Scheduler: Initialize preemptive multitasking ---
+    scheduler_init();
+    s_printf("[KERNEL] Preemptive Scheduler Initialized.\n");
+
+    // --- Signals, Pipes, IPC ---
+    signal_init();
+    s_printf("[KERNEL] Signal Subsystem Initialized.\n");
+
+    pipe_init();
+    s_printf("[KERNEL] Pipe IPC Initialized.\n");
+
+    ipc_init();
+    s_printf("[KERNEL] Inter-Process Communication Initialized.\n");
+
+    // --- Kernel Logger ---
+    klog_init();
+    s_printf("[KERNEL] Kernel Logger Initialized.\n");
+
     init_apic();
     init_timer(50);
 }
@@ -160,17 +192,25 @@ extern void init_browser_app(void);
 extern void init_browser_app_with_url(const char* url);
 extern void init_settings_app(void);
 extern void init_mactest_app(void);
+extern void init_calculator_app(void);
+extern void init_console_app(void);
+extern void init_disk_utility_app(void);
+extern void init_process_monitor_app(void);
 
 int kernel_launch_builtin_app(const char* name) {
     // Built-in app dispatch table - all apps now have real implementations
     struct { const char* name; void (*init)(void); } builtin_apps[] = {
-        {"Files",     init_files_app},
-        {"Finder",    init_files_app},    // Finder = Files alias
-        {"Terminal",  init_terminal_app},
-        {"TextEdit",  init_textedit_app},
-        {"Browser",   init_browser_app},
-        {"Settings",  init_settings_app},
-        {"MacTest",   init_mactest_app},
+        {"Files",            init_files_app},
+        {"Finder",           init_files_app},    // Finder = Files alias
+        {"Terminal",         init_terminal_app},
+        {"TextEdit",         init_textedit_app},
+        {"Browser",          init_browser_app},
+        {"Settings",         init_settings_app},
+        {"MacTest",          init_mactest_app},
+        {"Calculator",       init_calculator_app},
+        {"Console",          init_console_app},
+        {"Disk Utility",     init_disk_utility_app},
+        {"Activity Monitor", init_process_monitor_app},
         {"Monitor",   0},                 // Uses CDL sysmon
         {"NetDiag",   0},                 // Has CDL, handled by CDL loader
         {"Waterhole", 0},                 // No built-in app yet
@@ -309,6 +349,21 @@ void kernel_main(void* mboot_ptr) {
     // Initialize SHA-256 module (used for encrypted passwords)
     // No init needed - it's stateless
     s_printf("[KERNEL] SHA-256 Hash Module Ready.\n");
+
+    // Initialize Virtual Filesystem Layer (VFS)
+    extern void vfs_init(void);
+    vfs_init();
+    s_printf("[KERNEL] Virtual Filesystem (VFS) Initialized.\n");
+
+    // Initialize Process Management (fork/exec/wait)
+    extern void process_init(void);
+    process_init();
+    s_printf("[KERNEL] Process Management Initialized.\n");
+
+    // Initialize Crash Reporter
+    extern void crash_reporter_init(void);
+    crash_reporter_init();
+    s_printf("[KERNEL] Crash Reporter Initialized.\n");
 
     int m = sys_fs_mount();
     s_printf("[DBG] sys_fs_mount returned ");

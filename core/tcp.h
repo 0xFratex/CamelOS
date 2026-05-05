@@ -75,6 +75,21 @@ typedef struct tcp_connection {
     void* callback_user_data;
 } tcp_connection_t;
 
+// Listen/accept support
+#define TCP_MAX_LISTENERS       16
+#define TCP_LISTEN_BACKLOG      8
+#define TCP_MAX_PENDING_CONNS   32
+
+typedef struct {
+    int in_use;
+    uint16_t port;
+    uint32_t bind_ip;          /* 0 = INADDR_ANY */
+    tcp_connection_t* pending[TCP_LISTEN_BACKLOG];  /* Pending connections (SYN_RECEIVED) */
+    int pending_count;
+    tcp_connection_t* established[TCP_LISTEN_BACKLOG]; /* Completed connections */
+    int established_count;
+} tcp_listener_t;
+
 // Functions
 void tcp_init(void);
 int tcp_connect(uint32_t remote_ip, uint16_t remote_port);
@@ -87,5 +102,12 @@ int tcp_conn_send(void* conn, const void* data, int len);
 int tcp_conn_recv(void* conn, void* buf, int max_len);
 uint16_t tcp_checksum(uint8_t* packet, uint16_t len, uint32_t src_ip, uint32_t dst_ip);
 void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip);
+
+/* Server-side API */
+int tcp_listen(uint16_t port, uint32_t bind_ip);
+int tcp_accept(int listener_id, tcp_connection_t** out_conn);
+int tcp_close_listener(int listener_id);
+tcp_listener_t* tcp_find_listener(uint16_t port);
+void tcp_process_listeners(void);
 
 #endif

@@ -24,10 +24,18 @@ void page_fault_handler(registers_t regs) {
     int us        = regs.err_code & 0x4;
     int reserved  = regs.err_code & 0x8;
 
+    // Try the VMM page fault handler first (handles COW, demand paging, stack growth)
+    extern int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code);
+    if (vmm_handle_page_fault(faulting_address, regs.err_code) == 0) {
+        // VMM handled the fault successfully (COW duplicate, demand page, stack growth)
+        return;
+    }
+
+    // VMM could not handle it — this is a genuine fatal page fault
     s_printf("\n[PAGING] Page Fault at 0x");
     char* chars = "0123456789ABCDEF";
     for (int i = 28; i >= 0; i -= 4) write_serial(chars[(faulting_address >> i) & 0xF]);
-    s_printf("\n");
+    s_printf(" (present=%d rw=%d us=%d reserved=%d)\n", present, rw, us, reserved);
 
     // UNMUTE LOGS SO WE CAN SEE THE PANIC ON SCREEN
     vga_mute_log(0);

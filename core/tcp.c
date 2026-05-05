@@ -210,16 +210,23 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
     tcp_header_t* tcp = (tcp_header_t*)packet;
     uint16_t src_port = ntohs(tcp->src_port);
     uint16_t dst_port = ntohs(tcp->dest_port);
+    uint8_t pkt_flags = tcp->flags;
 
     // Find connection
     tcp_connection_t* conn = tcp_find_connection(dst_ip, dst_port, src_ip, src_port);
     if (!conn) {
+        /* No existing connection found. Check if there's a listener on this port. */
+        if (pkt_flags & TCP_SYN) {
+            /* Incoming SYN to a potentially listening port */
+            tcp_handle_incoming_syn(dst_port, src_ip, src_port, dst_ip, ntohl(tcp->seq_num));
+        }
+        /* Otherwise, silently drop the packet */
         return;
     }
 
     uint32_t seq = ntohl(tcp->seq_num);
     uint32_t ack = ntohl(tcp->ack_num);
-    uint8_t flags = tcp->flags;
+    uint8_t flags = pkt_flags;
 
     // Handle RST
     if (flags & TCP_RST) {
@@ -235,6 +242,20 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
     // Process based on current state
     switch (conn->state) {
+        case TCP_SYN_RECEIVED:
+            /* Server side: waiting for ACK to complete 3-way handshake */
+            if (flags & TCP_ACK) {
+                if (ack == conn->snd_nxt) {
+                    conn->snd_una = ack;
+                    conn->state = TCP_ESTABLISHED;
+
+                    if (conn->on_state_change) {
+                        conn->on_state_change(TCP_SYN_RECEIVED, TCP_ESTABLISHED);
+                    }
+                }
+            }
+            break;
+
         case TCP_SYN_SENT:
             if (flags & TCP_SYN && flags & TCP_ACK) {
                 if (ack == conn->snd_nxt) {
@@ -430,5 +451,215 @@ void tcp_conn_set_state_callback(void* conn_ptr, void (*callback)(uint8_t, uint8
     tcp_connection_t* conn = (tcp_connection_t*)conn_ptr;
     if (conn) {
         conn->on_state_change = callback;
+    }
+}
+
+// ============================================================================
+// TCP Listen/Accept Implementation (Server-Side Sockets)
+// ============================================================================
+
+static tcp_listener_t tcp_listeners[TCP_MAX_LISTENERS];
+
+/**
+ * Find a listener for the given local port.
+ */
+tcp_listener_t* tcp_find_listener(uint16_t port) {
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        if (tcp_listeners[i].in_use && tcp_listeners[i].port == port) {
+            return &tcp_listeners[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Start listening for incoming connections on a port.
+ * Returns a listener ID (>=0) on success, -1 on failure.
+ */
+int tcp_listen(uint16_t port, uint32_t bind_ip) {
+    if (port == 0) return -1;
+
+    /* Check if already listening on this port */
+    if (tcp_find_listener(port)) {
+        s_printf("[TCP] Port %d already in listen\n", port);
+        return -1;
+    }
+
+    /* Find a free listener slot */
+    int slot = -1;
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        if (!tcp_listeners[i].in_use) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        s_printf("[TCP] No free listener slots\n");
+        return -1;
+    }
+
+    /* Initialize the listener */
+    memset(&tcp_listeners[slot], 0, sizeof(tcp_listener_t));
+    tcp_listeners[slot].in_use = 1;
+    tcp_listeners[slot].port = port;
+    tcp_listeners[slot].bind_ip = bind_ip;
+    tcp_listeners[slot].pending_count = 0;
+    tcp_listeners[slot].established_count = 0;
+
+    s_printf("[TCP] Listening on port %d\n", port);
+    return slot;
+}
+
+/**
+ * Accept a pending connection from a listener.
+ * Returns 0 on success (out_conn set), -1 if no connections ready.
+ */
+int tcp_accept(int listener_id, tcp_connection_t** out_conn) {
+    if (listener_id < 0 || listener_id >= TCP_MAX_LISTENERS) return -1;
+    if (!out_conn) return -1;
+
+    tcp_listener_t* listener = &tcp_listeners[listener_id];
+    if (!listener->in_use) return -1;
+
+    /* Check if there are any established connections */
+    if (listener->established_count <= 0) {
+        return -1;  /* No connections ready */
+    }
+
+    /* Dequeue the first established connection */
+    tcp_connection_t* conn = listener->established[0];
+    *out_conn = conn;
+
+    /* Shift the array */
+    for (int i = 1; i < listener->established_count; i++) {
+        listener->established[i - 1] = listener->established[i];
+    }
+    listener->established_count--;
+    listener->established[listener->established_count] = NULL;
+
+    s_printf("[TCP] Accepted connection on port %d from remote\n", listener->port);
+    return 0;
+}
+
+/**
+ * Close a listener and free all pending connections.
+ */
+int tcp_close_listener(int listener_id) {
+    if (listener_id < 0 || listener_id >= TCP_MAX_LISTENERS) return -1;
+
+    tcp_listener_t* listener = &tcp_listeners[listener_id];
+    if (!listener->in_use) return -1;
+
+    /* Close all pending connections */
+    for (int i = 0; i < listener->pending_count; i++) {
+        if (listener->pending[i]) {
+            /* Send RST and close */
+            tcp_send(listener->pending[i], TCP_RST, NULL, 0);
+            listener->pending[i]->state = TCP_CLOSED;
+            listener->pending[i] = NULL;
+        }
+    }
+
+    /* Close all established connections */
+    for (int i = 0; i < listener->established_count; i++) {
+        if (listener->established[i]) {
+            tcp_send(listener->established[i], TCP_FIN | TCP_ACK, NULL, 0);
+            listener->established[i]->state = TCP_FIN_WAIT1;
+            listener->established[i] = NULL;
+        }
+    }
+
+    listener->in_use = 0;
+    listener->pending_count = 0;
+    listener->established_count = 0;
+
+    s_printf("[TCP] Closed listener\n");
+    return 0;
+}
+
+/**
+ * Process incoming SYN packets for listeners.
+ * Called from tcp_handle_packet when no existing connection is found.
+ * This implements the server side of the TCP three-way handshake.
+ */
+static int tcp_handle_incoming_syn(uint16_t dst_port, uint32_t src_ip, uint16_t src_port,
+                                    uint32_t dst_ip, uint32_t seq) {
+    tcp_listener_t* listener = tcp_find_listener(dst_port);
+    if (!listener) return -1;
+
+    /* Check backlog */
+    if (listener->pending_count >= TCP_LISTEN_BACKLOG) {
+        s_printf("[TCP] Listen backlog full on port %d\n", dst_port);
+        return -1;
+    }
+
+    /* Allocate a new connection for this incoming request */
+    tcp_connection_t* conn = tcp_alloc_connection();
+    if (!conn) return -1;
+
+    /* Set up the connection as SYN_RECEIVED */
+    conn->state = TCP_SYN_RECEIVED;
+    conn->local_ip = dst_ip;
+    conn->remote_ip = src_ip;
+    conn->local_port = dst_port;
+    conn->remote_port = src_port;
+    conn->rcv_nxt = seq + 1;
+    conn->snd_nxt = (uint32_t)(timer_get_ticks() ^ (src_port << 16));  /* ISS */
+    if (conn->snd_nxt == 0) conn->snd_nxt = 1;
+    conn->connect_time = timer_get_ticks();
+    conn->window = TCP_WINDOW_SIZE;
+    conn->mss = TCP_MSS;
+
+    /* Send SYN-ACK */
+    tcp_send(conn, TCP_SYN | TCP_ACK, NULL, 0);
+    conn->snd_nxt++;
+
+    /* Add to pending list */
+    listener->pending[listener->pending_count++] = conn;
+
+    s_printf("[TCP] SYN received on port %d from remote, sent SYN-ACK\n", dst_port);
+    return 0;
+}
+
+/**
+ * Periodically process listeners: check if any pending connections
+ * have completed the three-way handshake and move them to established.
+ */
+void tcp_process_listeners(void) {
+    for (int i = 0; i < TCP_MAX_LISTENERS; i++) {
+        if (!tcp_listeners[i].in_use) continue;
+
+        tcp_listener_t* listener = &tcp_listeners[i];
+
+        /* Check pending connections for state changes */
+        for (int j = 0; j < listener->pending_count; j++) {
+            tcp_connection_t* conn = listener->pending[j];
+            if (!conn) continue;
+
+            if (conn->state == TCP_ESTABLISHED) {
+                /* Move to established queue */
+                if (listener->established_count < TCP_LISTEN_BACKLOG) {
+                    listener->established[listener->established_count++] = conn;
+                    s_printf("[TCP] Connection established on port %d\n", listener->port);
+                }
+
+                /* Remove from pending */
+                for (int k = j; k < listener->pending_count - 1; k++) {
+                    listener->pending[k] = listener->pending[k + 1];
+                }
+                listener->pending_count--;
+                listener->pending[listener->pending_count] = NULL;
+                j--;  /* Recheck this index */
+            }
+            else if (conn->state == TCP_CLOSED) {
+                /* Connection was reset before completing handshake */
+                for (int k = j; k < listener->pending_count - 1; k++) {
+                    listener->pending[k] = listener->pending[k + 1];
+                }
+                listener->pending_count--;
+                listener->pending[listener->pending_count] = NULL;
+                j--;
+            }
+        }
     }
 }
