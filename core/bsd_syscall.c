@@ -18,6 +18,10 @@ extern int  pipe_create(int* fd_out);                                          /
 extern int  signal_sigaction(int pid, int signum, void (*handler)(int));       // core/signal.c
 extern int  signal_sigprocmask(int pid, int how, uint32_t set);               // core/signal.c
 extern int  process_getpid(void);                                              // core/process.c
+extern int  process_fork(void);                                                // core/process.c
+extern int  process_wait(int pid, int* status);                                // core/process.c
+extern void process_exit(int status);                                          // core/process.c
+extern int  process_kill(int pid, int sig);                                    // core/process.c
 extern void* vmm_mmap(void* space, uint32_t addr, uint32_t length,
                        int prot, int flags, uint32_t offset);                 // mm/vmm.c
 
@@ -91,13 +95,31 @@ int32_t bsd_syscall_handler(uint32_t syscall_num,
                             uint32_t arg1, uint32_t arg2, uint32_t arg3,
                             uint32_t arg4, uint32_t arg5) {
     switch (syscall_num) {
-        // Process
+        // Process lifecycle
         case SYS_BSD_exit:
-            // In CamelOS, "exit" from a Mach-O app means return to caller
-            return 0;
+            process_exit((int)arg1);
+            return 0;  /* process_exit() does not return, but satisfy compiler */
+        case SYS_BSD_fork:
+            return process_fork();
+        case SYS_BSD_wait4: {
+            /* wait4(pid, &status, options, rusage) */
+            int status_out = 0;
+            int ret = process_wait((int)arg1, &status_out);
+            if (arg2) {
+                *((int*)arg2) = status_out;
+            }
+            return ret;
+        }
         case SYS_BSD_getpid:  return bsd_getpid();
         case SYS_BSD_getuid:  return bsd_getuid();
         case SYS_BSD_getgid:  return bsd_getgid();
+        case SYS_BSD_kill:
+            return process_kill((int)arg1, (int)arg2);
+        case SYS_BSD_execve: {
+            /* execve(path, argv, envp) */
+            extern int process_exec(const char* path, char* const argv[]);
+            return process_exec((const char*)arg1, (char* const*)arg2);
+        }
 
         // File I/O
         case SYS_BSD_open:

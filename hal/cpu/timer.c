@@ -110,7 +110,7 @@ uint32_t get_tick_count() {
 }
 
 void timer_wait(int ms) {
-    uint32_t eticks = ticks + (ms / 10); // Assuming 100Hz timer
+    uint32_t eticks = ticks + (ms / 20); // 50Hz timer = 20ms per tick
     while(ticks < eticks) asm volatile("hlt");
 }
 

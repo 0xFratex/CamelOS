@@ -250,8 +250,6 @@ void kernel_main(void* mboot_ptr) {
     s_printf(buf);
     s_printf("\n");
 
-    pfs32_init_handles();
-
     // DEBUG MOUNT
     uint8_t mbr[512];
     s_printf("[DBG] disk_total_blocks=");
@@ -377,8 +375,7 @@ void kernel_main(void* mboot_ptr) {
     sys_print("[OK] Filesystem Mounted.\n");
 
     sys_print("Booting...\n");
-    sys_print("\n--- Hardware Enumeration ---\n");
-    pci_init();
+    sys_print("--- Hardware Enumeration (already done) ---\n");
     sys_print("----------------------------\n");
 
     // NETWORK INITIALIZATION WITH DEBUG (after PCI scan)

@@ -20,6 +20,7 @@
 #define SYS_BSD_open        5
 #define SYS_BSD_close       6
 #define SYS_BSD_wait4       7
+#define SYS_BSD_execve      59
 #define SYS_BSD_getpid      20
 #define SYS_BSD_getuid      24
 #define SYS_BSD_geteuid     25
