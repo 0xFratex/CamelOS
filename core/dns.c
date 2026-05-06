@@ -13,7 +13,9 @@
 #define DNS_DEBUG_ENABLED     0
 
 #define DNS_CACHE_SIZE 32     // Increased cache size
-#define DNS_TIMEOUT 5000       // Increased timeout for slow networks
+#define DNS_TIMEOUT 250        // FIX: Reduced from 5000 (100s) to 250 ticks (5s at 50Hz).
+                                // The previous 100-second timeout caused the system to appear
+                                // frozen during DNS lookup. 5 seconds is sufficient for QEMU.
 
 typedef struct {
     char domain[64];
@@ -30,9 +32,12 @@ void dns_init() {
     dns_count = 0;
 }
 
-// Configurable DNS server - default to Google DNS for broader compatibility
-// Can be set via DHCP or manually
-static uint32_t dns_server_ip = 0x08080808;  // 8.8.8.8 Google DNS
+// Configurable DNS server - default to QEMU user-mode DNS (10.0.2.3).
+// FIX: Previously defaulted to 8.8.8.8 (Google DNS) which doesn't work
+// in QEMU user-mode networking because the guest can't route to external
+// DNS servers directly. QEMU provides a DNS forwarder at 10.0.2.3.
+// Can be overridden via DHCP or manually via net_set_dns().
+static uint32_t dns_server_ip = 0x0A000203;  // 10.0.2.3 QEMU DNS
 
 int dns_encode(const char* host, uint8_t* buf) {
     int len = strlen(host);
@@ -140,9 +145,11 @@ int dns_resolve(const char* domain, char* ip_out, int max_len) {
             }
         }
 
-        // Process GUI events to prevent system freeze during DNS lookup
-        extern void http_process_events(void);
-        http_process_events();
+        // FIX: Replaced http_process_events() with a simple pause.
+        // http_process_events() calls timer_sleep(1) which is a busy-spin
+        // and creates unnecessary dependency between DNS and HTTP.
+        // The network card is already polled above via rtl8139_poll().
+        for (volatile int i = 0; i < 500; i++) asm volatile("pause");
     }
     
     k_close(s);

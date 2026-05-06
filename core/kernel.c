@@ -533,8 +533,11 @@ void kernel_main(void* mboot_ptr) {
     extern void e1000_init_all(void);
     e1000_init_all();
 
-    // Test RTL8139 basic functionality
-    rtl8139_test_loopback();
+    // FIX: Skip the RTL8139 loopback test at boot — it sends packets
+    // before the interface is configured, which can interfere with
+    // the DHCP sequence. The loopback test was mainly for debugging
+    // and is not needed for normal operation.
+    // rtl8139_test_loopback();
 
     // === Try DHCP auto-configuration first ===
     // If a DHCP server is available (e.g., QEMU's built-in DHCP), we get an IP automatically.
@@ -567,9 +570,20 @@ void kernel_main(void* mboot_ptr) {
         extern void rtl8139_configure_ip(uint32_t, uint32_t, uint32_t);
         rtl8139_configure_ip(ip_parse("10.0.2.15"), ip_parse("10.0.2.2"), ip_parse("255.255.255.0"));
 
+        // FIX: Explicitly set the DNS server for the static configuration.
+        // The DNS server was already changed to 10.0.2.3 as the default in dns.c,
+        // but we also set it here via the proper API to ensure the interface
+        // struct has the correct value (used by DHCP ACK parsing, etc.)
+        extern void net_set_dns(uint32_t dns);
+        net_set_dns(ip_parse("10.0.2.3"));
+
         // Update legacy global variables
         extern void net_update_globals();
         net_update_globals();
+
+        // Mark as connected so the GUI Wi-Fi icon shows connected state
+        extern int net_is_connected;
+        net_is_connected = 1;
 
         s_printf("[KERNEL] Network configured for QEMU\n");
         s_printf("  IP:      10.0.2.15\n");
@@ -606,94 +620,25 @@ void kernel_main(void* mboot_ptr) {
         }
     }
 
-    // === FIX: Pre-resolve gateway ARP before DNS test ===
-    s_printf("[KERNEL] Pre-resolving gateway ARP...\n");
-    extern int arp_resolve(uint32_t ip, uint8_t* mac_out);
-    uint8_t gw_mac[6];
-    int arp_ok = arp_resolve(ip_parse("10.0.2.2"), gw_mac);  // Gateway IP
-    if (arp_ok == 0) {
-        s_printf("[KERNEL] Gateway ARP resolved: ");
-        for(int i=0; i<6; i++) {
-            char hex[3];
-            hex[0] = "0123456789ABCDEF"[gw_mac[i] >> 4];
-            hex[1] = "0123456789ABCDEF"[gw_mac[i] & 0xF];
-            hex[2] = 0;
-            s_printf(hex);
-            if(i<5) s_printf(":");
-        }
-        s_printf("\n");
-    } else {
-        s_printf("[KERNEL] WARNING: Gateway ARP not resolved, using static\n");
-    }
-
-    // === ICMP Ping Test to Gateway ===
-    s_printf("[KERNEL] Testing ICMP ping to gateway (10.0.2.2)...\n");
-    extern int ping(uint32_t ip, uint32_t timeout);
-    int ping_ok = ping(ip_parse("10.0.2.2"), 200);  // Gateway IP, 200 tick timeout
-    if (ping_ok == 0) {
-        s_printf("[KERNEL] ✓ Gateway ping successful\n");
-    } else {
-        s_printf("[KERNEL] ✗ Gateway ping failed\n");
-    }
-
-    // Test network with retries
-    char ip_str[16];
-    int dns_ok = -1;
-    for(int retry = 0; retry < 3; retry++) {
-        if(retry > 0) {
-            s_printf("[KERNEL] DNS retry ");
-            char buf[4];
-            extern void int_to_str(int, char*);
-            int_to_str(retry, buf);
-            s_printf(buf);
-            s_printf("/2...\n");
-            
-            // Poll network between retries
-            for(int p=0; p<50; p++) {
-                rtl8139_poll();
-                for(volatile int d=0; d<10000; d++) asm volatile("pause");
-            }
-        }
-        
-        dns_ok = dns_resolve("example.com", ip_str, sizeof(ip_str));
-        if(dns_ok == 0) break;
-    }
-    
-    if(dns_ok == 0) {
-        s_printf("[KERNEL] ✓ Network test passed: ");
-        s_printf(ip_str);
-        s_printf("\n");
-        
-        // Test TCP connection to example.com
-        s_printf("[KERNEL] Testing TCP connection to example.com:80...\n");
-        extern void* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port);
-        extern int tcp_conn_is_established(void* conn);
-        extern uint32_t ip_parse(const char* str);
-        
-        uint32_t example_ip = ip_parse(ip_str);
-        void* conn = tcp_connect_with_ptr(example_ip, 80);
-        if (conn) {
-            uint32_t start = timer_get_ticks();
-            int established = 0;
-            while (timer_get_ticks() - start < 5000) {
-                rtl8139_poll();
-                if (tcp_conn_is_established(conn)) {
-                    established = 1;
-                    break;
-                }
-                asm volatile("pause");
-            }
-            if (established) {
-                s_printf("[KERNEL] ✓ TCP connection established!\n");
-            } else {
-                s_printf("[KERNEL] ✗ TCP connection timeout\n");
-            }
+    // === FIX: Quick network verification (non-blocking) ===
+    // Previously, the boot sequence did ARP resolve (2s), ICMP ping (4s),
+    // DNS resolve with 3 retries (15s), and TCP connect (100s) ALL before
+    // starting the GUI. This caused the system to appear frozen for 2+
+    // minutes if the network was slow or misconfigured.
+    //
+    // Now we do a single quick DNS check (5s timeout) and proceed to the
+    // GUI immediately. Network is verified lazily as apps use it.
+    s_printf("[KERNEL] Quick network check...\n");
+    {
+        char ip_str[16];
+        int dns_ok = dns_resolve("example.com", ip_str, sizeof(ip_str));
+        if(dns_ok == 0) {
+            s_printf("[KERNEL] Network OK: example.com -> ");
+            s_printf(ip_str);
+            s_printf("\n");
         } else {
-            s_printf("[KERNEL] ✗ Failed to create TCP connection\n");
+            s_printf("[KERNEL] Network not yet reachable (will retry in background)\n");
         }
-    } else {
-        s_printf("[KERNEL] ✗ Network test failed after retries\n");
-        // Run diagnostic - TODO: implement net_diagnostic
     }
 
     play_startup_chime();

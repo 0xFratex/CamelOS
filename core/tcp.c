@@ -144,6 +144,14 @@ int tcp_send(tcp_connection_t* conn, uint8_t flags, uint8_t* data, uint16_t len)
 
 // TCP connection establishment
 int tcp_connect(uint32_t remote_ip, uint16_t remote_port) {
+    // FIX: Reject connection attempts before the network interface is configured.
+    // Previously, calling tcp_connect before DHCP/static config would set
+    // local_ip = 0, causing the SYN to be silently dropped by net_send_raw_ip.
+    // The connection would then sit in SYN_SENT for ~30 seconds before timing out.
+    if (net_get_ip() == 0) {
+        return -1;
+    }
+
     // Find unused local port
     uint16_t local_port = tcp_next_port++;
     if (tcp_next_port > 65535) tcp_next_port = 49152;
@@ -174,6 +182,12 @@ int tcp_connect(uint32_t remote_ip, uint16_t remote_port) {
 
 // Helper function for socket layer - returns connection pointer
 tcp_connection_t* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port) {
+    // FIX: Reject connection attempts before the network interface is configured.
+    // Same issue as tcp_connect() — local_ip would be 0, causing silent failure.
+    if (net_get_ip() == 0) {
+        return NULL;
+    }
+
     uint16_t local_port = tcp_next_port++;
     if (tcp_next_port > 65535) tcp_next_port = 49152;
 

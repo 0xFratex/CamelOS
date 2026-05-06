@@ -325,10 +325,13 @@ int arp_resolve(uint32_t ip, uint8_t* mac_out) {
                 return 0; // Success
             }
             
-            // Use timer_sleep instead of busy-wait to reduce CPU usage
-            // and allow other processing
-            extern void http_process_events(void);
-            http_process_events();
+            // FIX: Replaced http_process_events() with a simple pause.
+            // Previously, arp_resolve() called http_process_events() which
+            // calls timer_sleep(1) and rtl8139_poll(). This created a
+            // circular dependency (ARP -> HTTP -> network -> ARP) and
+            // caused unnecessary delays during boot. A simple pause is
+            // sufficient here — the network card is already polled above.
+            for (volatile int i = 0; i < 500; i++) asm volatile("pause");
         }
     }
     

@@ -17,7 +17,7 @@ extern int net_is_connected;
 #define DHCP_MAGIC_COOKIE 0x63825363
 
 static uint32_t dhcp_xid = 0x12345678;
-static int dhcp_state = 0; // 0=idle, 1=discovering, 2=requesting, 3=bound
+static int dhcp_state = 0; // 0=idle, 1=discovering, 2=requesting, 3=bound, 4=nak
 
 // Store the server IP from DHCP Offer so we can send it in DHCPREQUEST
 static uint32_t dhcp_server_ip = 0;
@@ -104,7 +104,14 @@ int dhcp_request(uint32_t offered_ip) {
     // Requested IP
     *opt++ = 50;
     *opt++ = 4;
-    memcpy(opt, &offered_ip, 4);
+    // FIX: DHCP options use network byte order. The offered_ip parameter
+    // is in host byte order (from ntohl in dhcp_handle_offer), so we must
+    // convert it back to network byte order before putting it in the option.
+    // Previously this was a raw memcpy which put the bytes in the wrong
+    // order on little-endian x86, causing the DHCP server to see a
+    // different IP than what it offered, resulting in a NAK.
+    uint32_t offered_ip_nbo = htonl(offered_ip);
+    memcpy(opt, &offered_ip_nbo, 4);
     opt += 4;
 
     // Server Identifier (required in request)
@@ -212,11 +219,15 @@ void dhcp_handle_ack(dhcp_packet_t* dhcp) {
     s_printf("[DHCP] Network configured\n");
 }
 
-// FIX: Handle DHCP NAK — reset state so we can retry discovery
+// FIX: Handle DHCP NAK — set state to 4 (NAK) so dhcp_auto_configure()
+// can detect it and immediately retry or fall through to static config.
+// Previously this reset to 0 (idle), which caused dhcp_auto_configure() to
+// spin in the while(dhcp_state != 3) loop for the full 20-second timeout,
+// making the system appear frozen after a NAK.
 static void dhcp_handle_nak(dhcp_packet_t* dhcp) {
     (void)dhcp;
-    s_printf("[DHCP] NAK received — resetting to idle\n");
-    dhcp_state = 0;
+    s_printf("[DHCP] NAK received\n");
+    dhcp_state = 4;  // NAK state - breaks the polling loop immediately
     dhcp_server_ip = 0;
 }
 
@@ -262,47 +273,87 @@ int dhcp_auto_configure(void) {
 
     s_printf("[DHCP] Starting auto-configuration...\n");
 
-    // Send Discover
-    if (dhcp_discover() != 0) {
-        s_printf("[DHCP] Failed to send discover\n");
-        return -1;
-    }
-
-    // Wait for Offer + Request + ACK with timeout
-    // The DORA sequence: Discover -> (wait) Offer -> Request -> (wait) ACK
-    // We poll the network and let the DHCP packet handler process responses
-    uint32_t start = 0;
-    extern uint32_t get_tick_count(void);
-    start = get_tick_count();
-
-    // FIX: Increased timeout from ~5 seconds to ~10 seconds for better
-    // reliability on slow or congested networks
-    while (dhcp_state != 3) {
-        // Poll network to receive DHCP responses
-        rtl8139_poll();
-
-        // FIX: Process TCP listeners during DHCP polling so that any
-        // pending TCP connections (e.g., from earlier requests) don't
-        // stall while we wait for DHCP to complete.
-        extern void tcp_process_listeners(void);
-        tcp_process_listeners();
-
-        // Check for timeout (10 seconds = 1000 ticks at 100Hz)
-        uint32_t elapsed = get_tick_count() - start;
-        if (elapsed > 1000) {
-            s_printf("[DHCP] Auto-configuration timed out\n");
-            dhcp_state = 0;  // Reset state
-            return -1;
+    // FIX: Try the DORA sequence up to 2 times.
+    // If we get a NAK on the first attempt, retry once with a new xid
+    // before falling through to static configuration.
+    // QEMU's DHCP server sometimes NAKs if the request arrives too
+    // quickly after the offer, or if the server identifier option
+    // is missing/incorrect.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        // Reset state for each attempt
+        dhcp_state = 0;
+        dhcp_server_ip = 0;
+        if (attempt > 0) {
+            // Use a new transaction ID for the retry
+            dhcp_xid++;
+            s_printf("[DHCP] Retrying discovery (attempt %d)...\n", attempt + 1);
         }
 
-        // Small delay to avoid busy-wait
-        for (volatile int i = 0; i < 1000; i++) asm volatile("pause");
+        // Send Discover
+        if (dhcp_discover() != 0) {
+            s_printf("[DHCP] Failed to send discover\n");
+            continue;
+        }
+
+        // Wait for Offer + Request + ACK with timeout
+        // The DORA sequence: Discover -> (wait) Offer -> Request -> (wait) ACK
+        // We poll the network and let the DHCP packet handler process responses
+        uint32_t start = 0;
+        extern uint32_t get_tick_count(void);
+        start = get_tick_count();
+
+        while (dhcp_state != 3 && dhcp_state != 4) {
+            // Poll network to receive DHCP responses
+            rtl8139_poll();
+
+            // Process TCP listeners during DHCP polling so that any
+            // pending TCP connections (e.g., from earlier requests) don't
+            // stall while we wait for DHCP to complete.
+            extern void tcp_process_listeners(void);
+            tcp_process_listeners();
+
+            // Check for timeout (5 seconds = 250 ticks at 50Hz)
+            // FIX: Reduced from 1000 ticks (20s) to 250 ticks (5s).
+            // The previous 20-second timeout made the system appear
+            // frozen when DHCP failed. 5 seconds is plenty for a
+            // local QEMU network.
+            uint32_t elapsed = get_tick_count() - start;
+            if (elapsed > 250) {
+                s_printf("[DHCP] Attempt %d timed out\n", attempt + 1);
+                break;
+            }
+
+            // Small delay to avoid busy-wait
+            for (volatile int i = 0; i < 1000; i++) asm volatile("pause");
+        }
+
+        if (dhcp_state == 3) {
+            s_printf("[DHCP] Auto-configuration successful\n");
+            return 0;
+        }
+
+        if (dhcp_state == 4) {
+            // NAK received — if this is the first attempt, retry.
+            // If this is the second attempt, fall through to static config.
+            s_printf("[DHCP] NAK received on attempt %d\n", attempt + 1);
+            if (attempt < 1) {
+                // Brief delay before retrying
+                uint32_t retry_start = get_tick_count();
+                while (get_tick_count() - retry_start < 25) {  // 0.5s delay
+                    rtl8139_poll();
+                    for (volatile int i = 0; i < 500; i++) asm volatile("pause");
+                }
+                continue;
+            }
+            // Second attempt also NAKed — fall through to static
+            s_printf("[DHCP] All attempts failed, using static configuration\n");
+            dhcp_state = 0;
+            return -1;
+        }
     }
 
-    if (dhcp_state == 3) {
-        s_printf("[DHCP] Auto-configuration successful\n");
-        return 0;
-    }
-
+    // Timeout on all attempts
+    s_printf("[DHCP] Auto-configuration timed out after all attempts\n");
+    dhcp_state = 0;
     return -1;
 }
