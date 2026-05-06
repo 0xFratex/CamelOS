@@ -72,18 +72,17 @@ static void (*browser_reparse_html_cb)(const char* html, int len) = 0;
 static void (*browser_invalidate_cb)(void) = 0;
 
 // ============================================================================
-// NATIVE DOM C-API EXTERNS (From browser_cdl.c)
+// NATIVE DOM C-API (Full struct definition from browser_dom.h)
 // ============================================================================
-typedef struct dom_node dom_node_t;
+#include "browser_dom.h"
 
 // These functions are implemented in browser_cdl.c
 extern dom_node_t* dom_create_element(const char* tag_name);
 extern dom_node_t* dom_create_text_node(const char* text);
 extern void dom_append_child(dom_node_t* parent, dom_node_t* child);
 extern void dom_set_attribute(dom_node_t* node, const char* name, const char* value);
-extern dom_node_t* dom_query_selector(dom_node_t* root, const char* selector);
 extern void dom_set_inner_html(dom_node_t* node, const char* html);
-extern dom_node_t* dom_get_document(void);
+extern dom_document_t* dom_get_document(void);
 
 // ============================================================================
 // INITIALIZATION
@@ -160,8 +159,8 @@ static js_v2_value_t* wrap_native_node(js_v2_engine_t* env, dom_node_t* native_n
     js_v2_object_set(env, el, "__native_ptr", ptr_val);
     
     // Set tagName if it's an element
-    if (native_node->type == 1) { // DOM_ELEMENT
-        js_v2_object_set(env, el, "tagName", js_v2_new_string(env, native_node->tag_name));
+    if (native_node->type == DOM_NODE_ELEMENT) {
+        js_v2_object_set(env, el, "tagName", js_v2_new_string(env, native_node->tag));
     }
     
     // Add methods
@@ -222,7 +221,7 @@ js_v2_value_t* js_bridge_document_getElementById(js_v2_engine_t* engine, int arg
     const char* id = str_val->data.string;
     
     // Get the document root
-    dom_node_t* doc = dom_get_document();
+    dom_document_t* doc = dom_get_document();
     if (!doc) return js_v2_new_null(engine);
     
     // Build selector "#id"
@@ -336,7 +335,7 @@ js_v2_value_t* js_bridge_document_querySelector(js_v2_engine_t* engine, int argc
     const char* selector = selector_val->data.string;
     
     // Get the document root
-    dom_node_t* doc = dom_get_document();
+    dom_document_t* doc = dom_get_document();
     if (!doc) return js_v2_new_null(engine);
     
     // 1. Actually query the C-level DOM
@@ -729,7 +728,7 @@ void js_bridge_register_browser_apis(void) {
     js_v2_object_set(&js_bridge_engine, body, "tagName", js_v2_new_string(&js_bridge_engine, "BODY"));
     
     // Link to real C root
-    dom_node_t* doc = dom_get_document();
+    dom_document_t* doc = dom_get_document();
     if (doc) {
         js_v2_value_t* ptr_val = js_v2_new_number(&js_bridge_engine, (int)(uintptr_t)doc);
         js_v2_object_set(&js_bridge_engine, body, "__native_ptr", ptr_val);

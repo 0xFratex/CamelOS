@@ -16,6 +16,7 @@
 #include "../../core/scheduler.h"
 #include "../../core/process.h"
 #include "../../core/bsd_syscall.h"
+#include "../../core/user_copy.h"
 
 // Extern the kernel API table and wrappers from cdl_loader.c
 extern kernel_api_t g_kernel_api;
@@ -206,15 +207,33 @@ void syscall_handler(syscall_regs_t* regs) {
             break;
             
         case SYS_FORK:
-            // Fork is complex - for now return -1 (ENOSYS)
-            // Full implementation requires COW + address space duplication
-            result = -1;
+            result = process_fork();
             break;
             
-        case SYS_WAITPID:
-            // Simplified waitpid - check if child is zombie
-            result = -1; // Not yet fully implemented
+        case SYS_WAITPID: {
+            // waitpid(pid, status_ptr, options)
+            int pid = (int)arg1;
+            int* status_ptr = (int*)arg2;
+            // int options = (int)arg3;  // WNOHANG etc — not yet used
+
+            // Look up the process entry for the specified child
+            process_entry_t* pe = process_find_by_pid(pid);
+            if (!pe) {
+                // No such process or not our child — ECHILD
+                result = -1;
+            } else if (pe->is_zombie) {
+                // Child is a zombie — reap it
+                if (status_ptr) {
+                    *status_ptr = pe->exit_code;
+                }
+                process_reap(pid);
+                result = pid;
+            } else {
+                // Child exists but hasn't exited — no blocking wait yet
+                result = -1;
+            }
             break;
+        }
             
         case SYS_KILL:
             result = signal_send((int)arg1, (int)arg2, SI_USER, 0);
@@ -313,22 +332,46 @@ void syscall_handler(syscall_regs_t* regs) {
             break;
 
         // --- User-Mode Syscalls (Task 7 - Ring 3 compatible) ---
+        // IMPORTANT: All user-space pointers must be validated before
+        // the kernel dereferences them.  A Ring 3 process can set any
+        // register value; without validation it could trick the kernel
+        // into reading/writing arbitrary kernel memory.
         case SYS_USER_EXIT:
             process_exit((int)arg1);
             result = 0;  /* Does not return */
             break;
             
-        case SYS_USER_READ:
+        case SYS_USER_READ: {
+            /* read(fd, buf, count) — kernel writes into user buf */
+            if (arg3 > 0 && validate_user_ptr((const void*)arg2, (size_t)arg3, 1) != 0) {
+                result = -1;
+                break;
+            }
             result = bsd_read((int)arg1, (void*)arg2, (uint32_t)arg3);
             break;
+        }
             
-        case SYS_USER_WRITE:
+        case SYS_USER_WRITE: {
+            /* write(fd, buf, count) — kernel reads from user buf */
+            if (arg3 > 0 && validate_user_ptr((const void*)arg2, (size_t)arg3, 0) != 0) {
+                result = -1;
+                break;
+            }
             result = bsd_write((int)arg1, (const void*)arg2, (uint32_t)arg3);
             break;
+        }
             
-        case SYS_USER_OPEN:
-            result = bsd_open((const char*)arg1, (int)arg2, (int)arg3);
+        case SYS_USER_OPEN: {
+            /* open(path, flags, mode) — kernel reads path string from user */
+            char k_path[256];
+            if (copy_from_user(k_path, (const void*)arg1, sizeof(k_path)) != 0) {
+                result = -1;
+                break;
+            }
+            k_path[255] = '\0';  /* Ensure NUL-termination */
+            result = bsd_open(k_path, (int)arg2, (int)arg3);
             break;
+        }
             
         case SYS_USER_CLOSE:
             result = bsd_close((int)arg1);
@@ -338,9 +381,22 @@ void syscall_handler(syscall_regs_t* regs) {
             result = process_fork();
             break;
             
-        case SYS_USER_EXEC:
-            result = process_exec((const char*)arg1, (char* const*)arg2);
+        case SYS_USER_EXEC: {
+            /* exec(path, argv) — kernel reads path & argv from user */
+            char k_path[256];
+            if (copy_from_user(k_path, (const void*)arg1, sizeof(k_path)) != 0) {
+                result = -1;
+                break;
+            }
+            k_path[255] = '\0';
+            /* Validate the argv pointer if non-NULL */
+            if (arg2 && validate_user_ptr((const void*)arg2, sizeof(char*), 0) != 0) {
+                result = -1;
+                break;
+            }
+            result = process_exec(k_path, (char* const*)arg2);
             break;
+        }
             
         case SYS_USER_YIELD:
             scheduler_yield();

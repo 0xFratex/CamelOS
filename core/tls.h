@@ -136,6 +136,7 @@ typedef enum {
 #define TLS_MAX_CERT_CHAIN    4
 #define TLS_MAX_CN_LENGTH     256
 #define TLS_MAX_ORG_LENGTH    256
+#define TLS_MAX_SAN_ENTRIES   8
 
 typedef struct {
     // Raw certificate data
@@ -165,6 +166,10 @@ typedef struct {
     // Certificate fingerprint (SHA-256)
     uint8_t fingerprint[32];
     
+    // Subject Alternative Names (dNSName entries)
+    char san_entries[TLS_MAX_SAN_ENTRIES][TLS_MAX_CN_LENGTH];
+    int san_count;
+
     // Self-signed flag
     int is_self_signed;
     

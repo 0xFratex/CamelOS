@@ -13,6 +13,7 @@
 #include "../../core/png_decoder.h"
 #include "../dock.h"
 #include "../../fs/pfs32.h"
+#include "../../hal/drivers/serial.h"
 
 // ========================================================================
 // Layout constants

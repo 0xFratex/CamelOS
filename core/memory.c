@@ -1,5 +1,6 @@
 // core/memory.c
 #include "types.h"
+#include "spinlock.h"
 
 // API
 void* memset(void* ptr, int value, size_t num);
@@ -56,6 +57,10 @@ static mem_block_t* heap_head = 0;
 static uint32_t total_mem_size = 0;
 static uint32_t used_mem_size = 0;
 
+// Global heap lock — protects the free-list and bookkeeping
+// from concurrent access by interrupt handlers or other CPUs.
+spinlock_t g_heap_lock = SPINLOCK_INIT;
+
 void init_heap(uint32_t start_address, uint32_t size) {
     // 16-byte alignment
     if (start_address % 16 != 0) start_address += 16 - (start_address % 16);
@@ -96,6 +101,8 @@ void coalesce_heap() {
 void* kmalloc(size_t size) {
     if (size == 0) return 0;
 
+    uint32_t flags = spinlock_irqsave_acquire(&g_heap_lock);
+
     // Align size to 16 bytes
     if (size % 16 != 0) size += 16 - (size % 16);
 
@@ -123,7 +130,10 @@ void* kmalloc(size_t size) {
     }
 
     // No suitable block found
-    if (!best_fit) return 0;
+    if (!best_fit) {
+        spinlock_irqsave_release(&g_heap_lock, flags);
+        return 0;
+    }
 
     // Allocation Logic on best_fit
     curr = best_fit;
@@ -156,6 +166,7 @@ void* kmalloc(size_t size) {
     // Zero memory for security
     memset((void*)((uint8_t*)curr + sizeof(mem_block_t)), 0, size);
 
+    spinlock_irqsave_release(&g_heap_lock, flags);
     return (void*)((uint8_t*)curr + sizeof(mem_block_t));
 }
 
@@ -164,12 +175,15 @@ void* kzalloc(size_t size) { return kmalloc(size); }
 void kfree(void* ptr) {
     if (!ptr) return;
 
+    uint32_t flags = spinlock_irqsave_acquire(&g_heap_lock);
+
     mem_block_t* block = (mem_block_t*)((uint8_t*)ptr - sizeof(mem_block_t));
 
     // 1. Header Corruption Check
     if (block->magic != MEM_MAGIC) {
         extern void s_printf(const char* fmt, ...);
         s_printf("[MEM] CRITICAL: Header corruption detected in kfree!\n");
+        spinlock_irqsave_release(&g_heap_lock, flags);
         return; 
     }
 
@@ -186,6 +200,8 @@ void kfree(void* ptr) {
         used_mem_size -= block->actual_size;
         coalesce_heap();
     }
+
+    spinlock_irqsave_release(&g_heap_lock, flags);
 }
 
 //

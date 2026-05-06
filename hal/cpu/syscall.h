@@ -96,14 +96,14 @@
 // These are the canonical syscall numbers for user-mode programs.
 // They use the same int 0x80 / sysenter interface but are the
 // POSIX-compatible subset that Ring 3 programs should use.
-#define SYS_USER_EXIT    0    // void exit(int code)
-#define SYS_USER_READ    1    // int read(int fd, void* buf, uint32_t count)
-#define SYS_USER_WRITE   2    // int write(int fd, const void* buf, uint32_t count)
-#define SYS_USER_OPEN    3    // int open(const char* path, int flags, int mode)
-#define SYS_USER_CLOSE   4    // int close(int fd)
-#define SYS_USER_FORK    5    // int fork()
-#define SYS_USER_EXEC    6    // int exec(const char* path, char* const argv[])
-#define SYS_USER_YIELD   7    // void yield()
+#define SYS_USER_EXIT    120  // void exit(int code)
+#define SYS_USER_READ    121  // int read(int fd, void* buf, uint32_t count)
+#define SYS_USER_WRITE   122  // int write(int fd, const void* buf, uint32_t count)
+#define SYS_USER_OPEN    123  // int open(const char* path, int flags, int mode)
+#define SYS_USER_CLOSE   124  // int close(int fd)
+#define SYS_USER_FORK    125  // int fork()
+#define SYS_USER_EXEC    126  // int exec(const char* path, char* const argv[])
+#define SYS_USER_YIELD   127  // void yield()
 
 // ============================================================================
 // Syscall Register State (pushed by assembly stub)

@@ -22,11 +22,14 @@
 #define CG_MAX_PATH_POINTS 4096
 
 // ============================================================================
-// Forward declarations
+// Forward declarations and typedefs
 // ============================================================================
-typedef struct CGContext* CGContextRef;
-typedef struct CGFont* CGFontRef;
-typedef struct CGImage* CGImageRef;
+typedef struct CGContext CGContext;
+typedef struct CGFont CGFont;
+typedef struct CGImage CGImage;
+typedef CGContext* CGContextRef;
+typedef CGFont* CGFontRef;
+typedef CGImage* CGImageRef;
 
 // ============================================================================
 // Path Point

@@ -81,20 +81,20 @@ static inline char* _js_strstr(const char* haystack, const char* needle) {
     return 0;
 }
 
-static inline void* _js_memset(void* s, int c, unsigned long n) {
+static inline void* _js_memset(void* s, int c, size_t n) {
     unsigned char* p = (unsigned char*)s;
     while (n--) *p++ = (unsigned char)c;
     return s;
 }
 
-static inline void* _js_memcpy(void* dest, const void* src, unsigned long n) {
+static inline void* _js_memcpy(void* dest, const void* src, size_t n) {
     unsigned char* d = (unsigned char*)dest;
     const unsigned char* s = (const unsigned char*)src;
     while (n--) *d++ = *s++;
     return dest;
 }
 
-static inline void* _js_memmove(void* dest, const void* src, unsigned long n) {
+static inline void* _js_memmove(void* dest, const void* src, size_t n) {
     unsigned char* d = (unsigned char*)dest;
     const unsigned char* s = (const unsigned char*)src;
     if (d < s) while (n--) *d++ = *s++;

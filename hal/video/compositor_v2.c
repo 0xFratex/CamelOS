@@ -7,6 +7,7 @@
 #include "cgcontext.h"
 #include "../../core/window_server.h"
 #include "../../core/memory.h"
+#include "../../core/string.h"
 
 // ============================================================================
 // Soft Shadow Drawing (macOS-style multi-layer shadow)

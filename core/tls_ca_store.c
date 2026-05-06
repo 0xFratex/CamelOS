@@ -2,8 +2,10 @@
 // Contains embedded DER-encoded root certificates for major CAs
 
 #include "tls_ca_store.h"
+#include "tls.h"
 #include "memory.h"
 #include "string.h"
+#include "sha256.h"
 
 // Root CA storage
 static root_ca_entry_t root_cas[TLS_MAX_ROOT_CAS];
@@ -319,29 +321,52 @@ int tls_ca_count(void) {
     return ca_count;
 }
 
-// Verify certificate chain against root CAs
-int tls_verify_cert_chain(const uint8_t* cert_chain, uint32_t chain_len) {
-    // Basic verification - check if any root CA matches
-    // Full implementation would parse and verify signatures
-    
+// Check if a certificate's SHA-256 fingerprint matches any trusted root CA
+int tls_ca_is_trusted_fingerprint(const uint8_t* fingerprint) {
     for (int i = 0; i < ca_count; i++) {
-        // Check if the root CA certificate appears in the chain
-        if (root_cas[i].flags & CA_FLAG_TRUSTED) {
-            // Simple substring check for now
-            // Full implementation would parse X.509 and verify signatures
-            const uint8_t* cert = root_cas[i].cert_der;
-            uint32_t cert_len = root_cas[i].cert_len;
-            
-            // Check if root cert is in chain
-            for (uint32_t j = 0; j < chain_len - cert_len; j++) {
-                if (memcmp(cert_chain + j, cert, cert_len) == 0) {
+        if (!(root_cas[i].flags & CA_FLAG_TRUSTED)) continue;
+
+        uint8_t ca_fingerprint[32];
+        sha256_hash(root_cas[i].cert_der, root_cas[i].cert_len, ca_fingerprint);
+
+        if (memcmp(ca_fingerprint, fingerprint, 32) == 0) {
+            return 1; // Found matching trusted root
+        }
+    }
+    return 0;
+}
+
+// Check if raw DER data matches any trusted root CA by direct comparison
+int tls_ca_match_der(const uint8_t* cert_der, uint32_t cert_len) {
+    for (int i = 0; i < ca_count; i++) {
+        if (!(root_cas[i].flags & CA_FLAG_TRUSTED)) continue;
+
+        if (root_cas[i].cert_len == cert_len &&
+            memcmp(root_cas[i].cert_der, cert_der, cert_len) == 0) {
+            return 1; // Exact DER match with trusted root
+        }
+    }
+    return 0;
+}
+
+// Verify a raw DER certificate chain against root CAs
+int tls_verify_cert_chain_raw(const uint8_t* cert_chain, uint32_t chain_len) {
+    // Check if any root CA appears in the chain by DER comparison
+    for (int i = 0; i < ca_count; i++) {
+        if (!(root_cas[i].flags & CA_FLAG_TRUSTED)) continue;
+
+        const uint8_t* ca_cert = root_cas[i].cert_der;
+        uint32_t ca_len = root_cas[i].cert_len;
+
+        if (chain_len >= ca_len) {
+            for (uint32_t j = 0; j <= chain_len - ca_len; j++) {
+                if (memcmp(cert_chain + j, ca_cert, ca_len) == 0) {
                     return 0; // Found matching trusted root
                 }
             }
         }
     }
-    
-    // If we can't verify against root CA, we'll accept anyway
-    // (In production, this should return an error)
-    return 0;
+
+    // No trusted root CA found in the chain
+    return TLS_ERR_CERT_VERIFY;
 }

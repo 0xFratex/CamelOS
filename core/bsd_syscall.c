@@ -220,11 +220,34 @@ int bsd_open(const char* path, int flags, int mode) {
         if (result < 0) return -1;
     }
 
+    // For regular files, open a PFS32 handle for offset-based I/O
+    int pfs_handle = -1;
+    if (!is_dir) {
+        // Map BSD flags to PFS32 open flags: 1=write, 0=read
+        int pfs_flags = 0;
+        if ((flags & BSD_O_RDWR) == BSD_O_RDWR || (flags & BSD_O_WRONLY))
+            pfs_flags = 1;
+        pfs_handle = pfs32_open(path, pfs_flags);
+        // If pfs32_open fails (e.g. file just created), we'll try again
+        // on first read/write
+    }
+
     // Allocate FD
-    int fd = bsd_alloc_fd(is_dir ? FD_TYPE_DIR : FD_TYPE_FILE, -1, path, flags);
-    if (fd < 0) return -1;
+    int fd = bsd_alloc_fd(is_dir ? FD_TYPE_DIR : FD_TYPE_FILE, pfs_handle, path, flags);
+    if (fd < 0) {
+        if (pfs_handle >= 0) pfs32_close(pfs_handle);
+        return -1;
+    }
 
     g_fd_table[fd].is_dir = is_dir;
+
+    // O_APPEND: start offset at end of file
+    if (!is_dir && (flags & BSD_O_APPEND)) {
+        pfs32_direntry_t entry;
+        if (pfs32_stat(path, &entry) == 0) {
+            g_fd_table[fd].offset = entry.file_size;
+        }
+    }
 
     return fd;
 }
@@ -235,8 +258,13 @@ int bsd_close(int fd) {
 
     switch (entry->type) {
         case FD_TYPE_FILE:
+            // Close the PFS32 handle if one was opened
+            if (entry->kernel_handle >= 0) {
+                pfs32_close(entry->kernel_handle);
+            }
+            break;
         case FD_TYPE_DIR:
-            // PFS32 file handles are managed internally
+            // Directories don't have PFS32 handles
             break;
         case FD_TYPE_SOCKET:
             // Close the kernel socket
@@ -270,19 +298,18 @@ int bsd_read(int fd, void* buf, uint32_t count) {
             return 0;
         }
         case FD_TYPE_FILE: {
-            // Read from PFS32 file
-            // For now, read the entire file and seek within it
-            char temp[4096];
-            int total = sys_fs_read(entry->path, temp, sizeof(temp));
-            if (total <= 0) return 0;
+            // Read from PFS32 file using handle-based offset I/O
+            if (entry->kernel_handle < 0) return -1;
 
-            int remaining = total - entry->offset;
-            if (remaining <= 0) return 0;
+            // Seek to the fd's current offset
+            if (pfs32_seek(entry->kernel_handle, (uint32_t)entry->offset) != PFS_OK)
+                return -1;
 
-            int to_read = (count < (uint32_t)remaining) ? count : (uint32_t)remaining;
-            memcpy(buf, temp + entry->offset, to_read);
-            entry->offset += to_read;
-            return to_read;
+            int bytes_read = pfs32_read_handle(entry->kernel_handle, buf, count);
+            if (bytes_read < 0) return -1;
+
+            entry->offset += bytes_read;
+            return bytes_read;
         }
         case FD_TYPE_SOCKET: {
             if (entry->kernel_handle >= 0) {
@@ -309,11 +336,26 @@ int bsd_write(int fd, const void* buf, uint32_t count) {
             return count;
         }
         case FD_TYPE_FILE: {
-            // Write to PFS32 file
-            // PFS32 write replaces the entire file, so this is limited
-            // TODO: Implement file offset-based writing
-            int result = sys_fs_write(entry->path, (char*)buf, count);
-            return result >= 0 ? count : -1;
+            // Write to PFS32 file using handle-based offset I/O
+            if (entry->kernel_handle < 0) return -1;
+
+            // If O_APPEND, seek to end of file before writing
+            if (entry->flags & BSD_O_APPEND) {
+                pfs32_direntry_t dent;
+                if (pfs32_stat(entry->path, &dent) == 0) {
+                    entry->offset = dent.file_size;
+                }
+            }
+
+            // Seek to the fd's current offset
+            if (pfs32_seek(entry->kernel_handle, (uint32_t)entry->offset) != PFS_OK)
+                return -1;
+
+            int bytes_written = pfs32_write_handle(entry->kernel_handle, buf, count);
+            if (bytes_written < 0) return -1;
+
+            entry->offset += bytes_written;
+            return bytes_written;
         }
         case FD_TYPE_SOCKET: {
             if (entry->kernel_handle >= 0) {

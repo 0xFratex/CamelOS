@@ -1,6 +1,7 @@
 // core/tls.c - TLS 1.2+ Protocol Implementation
 // Implements: TLS 1.2 handshake, AES-GCM, SHA-256, RSA, Certificate validation
 #include "tls.h"
+#include "tls_ca_store.h"
 #include "sha256.h"
 #include "socket.h"
 #include "dns.h"
@@ -8,6 +9,7 @@
 #include "memory.h"
 #include "net.h"
 #include "../hal/cpu/timer.h"
+#include "../common/time.h"
 
 // External functions
 extern size_t strlen(const char* s);
@@ -1106,6 +1108,12 @@ static const uint8_t oid_common_name[] = {0x55, 0x04, 0x03};
 static const uint8_t oid_organization[] = {0x55, 0x04, 0x0A};
 static const uint8_t oid_rsa_encryption[] = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01};
 static const uint8_t oid_sha256_rsa[] = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B};
+static const uint8_t oid_sha384_rsa[] = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C};
+static const uint8_t oid_san[] = {0x55, 0x1D, 0x11};  // 2.5.29.17 SubjectAltName
+
+// ASN.1 time tag constants
+#define ASN1_TAG_UTCTIME         0x17
+#define ASN1_TAG_GENERALIZEDTIME 0x18
 
 static int parse_asn1_length(const uint8_t* data, size_t* len, size_t* header_len) {
     if (data[0] < 0x80) {
@@ -1168,6 +1176,119 @@ static int oid_compare(const uint8_t* oid1, size_t len1, const uint8_t* oid2, si
     return memcmp(oid1, oid2, len1) == 0;
 }
 
+// Parse any ASN.1 element regardless of tag (returns total element size including tag+length)
+static int parse_asn1_any(const uint8_t* data, const uint8_t** content, size_t* content_len, uint8_t* actual_tag) {
+    if (!data) return -1;
+    *actual_tag = data[0];
+    size_t len, header_len;
+    if (parse_asn1_length(data + 1, &len, &header_len) < 0) return -1;
+    *content = data + 1 + header_len;
+    *content_len = len;
+    return 1 + header_len + len;
+}
+
+// Convert ASN.1 UTCTime or GeneralizedTime string to Unix timestamp
+static uint32_t asn1_time_to_unix(const uint8_t* time_str, size_t time_len, int is_generalized) {
+    int year, month, day, hour = 0, minute = 0, second = 0;
+    int pos = 0;
+
+    if (is_generalized) {
+        // YYYYMMDDHHmmSSZ
+        if (time_len < 10) return 0;
+        year = (time_str[0] - '0') * 1000 + (time_str[1] - '0') * 100 +
+               (time_str[2] - '0') * 10 + (time_str[3] - '0');
+        pos = 4;
+    } else {
+        // YYMMDDHHmmSSZ
+        if (time_len < 8) return 0;
+        year = (time_str[0] - '0') * 10 + (time_str[1] - '0');
+        year += (year >= 50) ? 1900 : 2000;
+        pos = 2;
+    }
+
+    month = (time_str[pos] - '0') * 10 + (time_str[pos+1] - '0');
+    pos += 2;
+    day = (time_str[pos] - '0') * 10 + (time_str[pos+1] - '0');
+    pos += 2;
+    if (pos + 1 < time_len) {
+        hour = (time_str[pos] - '0') * 10 + (time_str[pos+1] - '0');
+        pos += 2;
+    }
+    if (pos + 1 < time_len) {
+        minute = (time_str[pos] - '0') * 10 + (time_str[pos+1] - '0');
+        pos += 2;
+    }
+    if (pos + 1 < time_len && time_str[pos] != 'Z' && time_str[pos] != '+' && time_str[pos] != '-') {
+        second = (time_str[pos] - '0') * 10 + (time_str[pos+1] - '0');
+    }
+
+    // Validate basic ranges
+    if (month < 1 || month > 12 || day < 1 || day > 31) return 0;
+    if (year < 1970) return 0;
+
+    // Compute Unix timestamp
+    static const uint16_t days_before_month[13] = {
+        0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+    };
+
+    uint32_t days = 0;
+    for (int y = 1970; y < year; y++) {
+        days += 365 + ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0);
+    }
+    days += days_before_month[month];
+    if (month > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
+        days += 1;
+    }
+    days += day - 1;
+
+    return (uint32_t)(days * 86400UL + hour * 3600 + minute * 60 + second);
+}
+
+// Extract RSA key components from SubjectPublicKeyInfo BIT STRING content
+static int x509_extract_rsa_key(const uint8_t* pk_data, uint16_t pk_len, rsa_key_t* key) {
+    // The BIT STRING content (after unused-bits byte) contains DER:
+    // SEQUENCE { INTEGER modulus, INTEGER exponent }
+    if (pk_len < 4 || pk_data[0] != 0x00) return -1;  // Skip unused-bits byte
+
+    const uint8_t* p = pk_data + 1;  // Skip unused-bits byte
+
+    // SEQUENCE
+    if (p[0] != ASN1_TAG_SEQUENCE) return -1;
+    size_t seq_len, seq_hdr;
+    if (parse_asn1_length(p + 1, &seq_len, &seq_hdr) < 0) return -1;
+    const uint8_t* seq_p = p + 1 + seq_hdr;
+
+    // Modulus INTEGER
+    if (seq_p[0] != ASN1_TAG_INTEGER) return -1;
+    size_t mod_len, mod_hdr;
+    if (parse_asn1_length(seq_p + 1, &mod_len, &mod_hdr) < 0) return -1;
+    const uint8_t* mod_data = seq_p + 1 + mod_hdr;
+    // Skip leading zero byte (sign byte)
+    if (mod_len > 0 && mod_data[0] == 0x00) {
+        mod_data++;
+        mod_len--;
+    }
+    if (mod_len > TLS_MAX_RSA_MODULUS_SIZE) return -1;
+    key->modulus_len = (uint16_t)mod_len;
+    memcpy(key->modulus, mod_data, mod_len);
+    seq_p += 1 + mod_hdr + mod_len;
+
+    // Exponent INTEGER
+    if (seq_p[0] != ASN1_TAG_INTEGER) return -1;
+    size_t exp_len, exp_hdr;
+    if (parse_asn1_length(seq_p + 1, &exp_len, &exp_hdr) < 0) return -1;
+    const uint8_t* exp_data = seq_p + 1 + exp_hdr;
+    if (exp_len > 0 && exp_data[0] == 0x00) {
+        exp_data++;
+        exp_len--;
+    }
+    if (exp_len > 8) return -1;
+    key->exponent_len = (uint8_t)exp_len;
+    memcpy(key->exponent, exp_data, exp_len);
+
+    return 0;
+}
+
 int x509_parse_der(const uint8_t* der_data, size_t len, x509_cert_t* cert) {
     const uint8_t* p = der_data;
     const uint8_t* end = der_data + len;
@@ -1195,7 +1316,7 @@ int x509_parse_der(const uint8_t* der_data, size_t len, x509_cert_t* cert) {
     
     // Version [0] EXPLICIT INTEGER (optional)
     if (tbs[0] == 0xA0) {
-        size_t ver_len, ver_header;
+        size_t ver_len = 0, ver_header = 0;
         parse_asn1_length(tbs + 1, &ver_len, &ver_header);
         tbs += 1 + ver_header + ver_len;
     }
@@ -1251,8 +1372,30 @@ int x509_parse_der(const uint8_t* der_data, size_t len, x509_cert_t* cert) {
     if (validity_offset < 0) return -1;
     tbs += validity_offset;
     
-    // Parse notBefore and notAfter (simplified - just skip for now)
-    // In production, parse UTCTime or GeneralizedTime
+    // Parse notBefore and notAfter (UTCTime or GeneralizedTime)
+    const uint8_t* val_p = validity;
+    // notBefore
+    {
+        const uint8_t* time_content;
+        size_t time_len;
+        uint8_t tag;
+        int elem_size = parse_asn1_any(val_p, &time_content, &time_len, &tag);
+        if (elem_size < 0) return -1;
+        int is_gen = (tag == ASN1_TAG_GENERALIZEDTIME) ? 1 : 0;
+        cert->not_before = asn1_time_to_unix(time_content, time_len, is_gen);
+        val_p += elem_size;
+    }
+    // notAfter
+    {
+        const uint8_t* time_content;
+        size_t time_len;
+        uint8_t tag;
+        int elem_size = parse_asn1_any(val_p, &time_content, &time_len, &tag);
+        if (elem_size < 0) return -1;
+        int is_gen = (tag == ASN1_TAG_GENERALIZEDTIME) ? 1 : 0;
+        cert->not_after = asn1_time_to_unix(time_content, time_len, is_gen);
+        val_p += elem_size;
+    }
     
     // Subject SEQUENCE
     const uint8_t* subject;
@@ -1313,6 +1456,137 @@ int x509_parse_der(const uint8_t* der_data, size_t len, x509_cert_t* cert) {
         cert->public_key_len = pk_bits_len - 1;
         memcpy(cert->public_key, pk_bits + 1, cert->public_key_len);
     }
+    tbs += spki_offset;
+
+    // Parse extensions for Subject Alternative Names (v3 certs)
+    // Look for [3] EXPLICIT tag (0xA3) containing Extensions SEQUENCE
+    cert->san_count = 0;
+    if (tbs < tbs_end && tbs[0] == 0xA3) {
+        const uint8_t* ext_wrapper;
+        size_t ext_wrapper_len;
+        uint8_t ext_tag;
+        int ext_wrapper_size = parse_asn1_any(tbs, &ext_wrapper, &ext_wrapper_len, &ext_tag);
+        if (ext_wrapper_size > 0 && ext_wrapper_len > 0) {
+            // Inside [3] is a SEQUENCE OF Extension
+            if (ext_wrapper[0] == ASN1_TAG_SEQUENCE) {
+                const uint8_t* exts_content;
+                size_t exts_len;
+                if (parse_asn1_element(ext_wrapper, ASN1_TAG_SEQUENCE, &exts_content, &exts_len) > 0) {
+                    const uint8_t* ext_p = exts_content;
+                    const uint8_t* ext_end = exts_content + exts_len;
+
+                    while (ext_p < ext_end && cert->san_count < TLS_MAX_SAN_ENTRIES) {
+                        // Each Extension is a SEQUENCE
+                        const uint8_t* ext_content;
+                        size_t ext_len;
+                        int ext_size = parse_asn1_element(ext_p, ASN1_TAG_SEQUENCE, &ext_content, &ext_len);
+                        if (ext_size < 0) break;
+
+                        const uint8_t* ep = ext_content;
+                        // OID
+                        const uint8_t* ext_oid;
+                        size_t ext_oid_len;
+                        int oid_size = parse_asn1_element(ep, ASN1_TAG_OID, &ext_oid, &ext_oid_len);
+                        if (oid_size < 0) { ext_p += ext_size; continue; }
+                        ep += oid_size;
+
+                        // Check if this is the SAN extension (2.5.29.17)
+                        if (oid_compare(ext_oid, ext_oid_len, oid_san, sizeof(oid_san))) {
+                            // Optional BOOLEAN critical
+                            if (ep < ext_content + ext_len && ep[0] == 0x01) {
+                                size_t bool_len, bool_hdr;
+                                parse_asn1_length(ep + 1, &bool_len, &bool_hdr);
+                                ep += 1 + bool_hdr + bool_len;
+                            }
+                            // OCTET STRING containing the SAN value
+                            const uint8_t* san_octet;
+                            size_t san_octet_len;
+                            if (parse_asn1_element(ep, ASN1_TAG_OCTET_STRING, &san_octet, &san_octet_len) > 0) {
+                                // SAN is SEQUENCE OF GeneralName
+                                if (san_octet_len > 0 && san_octet[0] == ASN1_TAG_SEQUENCE) {
+                                    const uint8_t* san_seq;
+                                    size_t san_seq_len;
+                                    if (parse_asn1_element(san_octet, ASN1_TAG_SEQUENCE, &san_seq, &san_seq_len) > 0) {
+                                        const uint8_t* san_p = san_seq;
+                                        const uint8_t* san_end = san_seq + san_seq_len;
+                                        while (san_p < san_end && cert->san_count < TLS_MAX_SAN_ENTRIES) {
+                                            // dNSName is context tag [2] = 0x82
+                                            if (san_p[0] == 0x82) {
+                                                size_t name_len, name_hdr;
+                                                if (parse_asn1_length(san_p + 1, &name_len, &name_hdr) >= 0) {
+                                                    size_t copy = (name_len < TLS_MAX_CN_LENGTH - 1) ?
+                                                                  name_len : TLS_MAX_CN_LENGTH - 1;
+                                                    memcpy(cert->san_entries[cert->san_count],
+                                                           san_p + 1 + name_hdr, copy);
+                                                    cert->san_entries[cert->san_count][copy] = '\0';
+                                                    cert->san_count++;
+                                                }
+                                                size_t skip_len, skip_hdr;
+                                                parse_asn1_length(san_p + 1, &skip_len, &skip_hdr);
+                                                san_p += 1 + skip_hdr + skip_len;
+                                            } else {
+                                                // Skip other GeneralName types
+                                                size_t skip_len, skip_hdr;
+                                                if (parse_asn1_length(san_p + 1, &skip_len, &skip_hdr) >= 0) {
+                                                    san_p += 1 + skip_hdr + skip_len;
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        ext_p += ext_size;
+                    }
+                }
+            }
+        }
+    }
+
+    // Determine if certificate is self-signed (issuer CN == subject CN)
+    cert->is_self_signed = (strcmp(cert->common_name, cert->issuer_cn) == 0) ? 1 : 0;
+
+    // Parse signature from the outer Certificate SEQUENCE (after TBS)
+    // cert_content points to the start of Certificate content
+    // tbs_offset bytes cover the entire TBS element
+    {
+        const uint8_t* after_tbs = cert_content + tbs_offset;
+
+        // SignatureAlgorithm SEQUENCE
+        const uint8_t* outer_sig_alg;
+        size_t outer_sig_alg_len;
+        int sig_alg_size = parse_asn1_element(after_tbs, ASN1_TAG_SEQUENCE,
+                                               &outer_sig_alg, &outer_sig_alg_len);
+        if (sig_alg_size > 0) {
+            // Identify signature algorithm
+            const uint8_t* alg_oid;
+            size_t alg_oid_len;
+            if (parse_asn1_element(outer_sig_alg, ASN1_TAG_OID, &alg_oid, &alg_oid_len) > 0) {
+                if (oid_compare(alg_oid, alg_oid_len, oid_sha256_rsa, sizeof(oid_sha256_rsa))) {
+                    cert->signature_alg = 1; // SHA256withRSA
+                } else if (oid_compare(alg_oid, alg_oid_len, oid_sha384_rsa, sizeof(oid_sha384_rsa))) {
+                    cert->signature_alg = 2; // SHA384withRSA
+                } else if (oid_compare(alg_oid, alg_oid_len, oid_rsa_encryption, sizeof(oid_rsa_encryption))) {
+                    cert->signature_alg = 1; // RSA (default to SHA-256)
+                }
+            }
+
+            // SignatureValue BIT STRING
+            const uint8_t* after_sig_alg = after_tbs + sig_alg_size;
+            const uint8_t* sig_bits;
+            size_t sig_bits_len;
+            if (parse_asn1_element(after_sig_alg, ASN1_TAG_BIT_STRING, &sig_bits, &sig_bits_len) > 0) {
+                // First byte is unused-bits count (should be 0)
+                if (sig_bits_len > 1) {
+                    cert->signature_len = (uint16_t)(sig_bits_len - 1);
+                    if (cert->signature_len > 512) cert->signature_len = 512;
+                    memcpy(cert->signature, sig_bits + 1, cert->signature_len);
+                }
+            }
+        }
+    }
     
     // Compute fingerprint
     sha256_hash(der_data, len, cert->fingerprint);
@@ -1321,29 +1595,179 @@ int x509_parse_der(const uint8_t* der_data, size_t len, x509_cert_t* cert) {
 }
 
 int x509_check_validity(x509_cert_t* cert) {
-    // In production, compare with current time
-    // For now, just return success
+    if (!cert) return -1;
+
+    // If validity dates weren't parsed (remain 0), we can't verify expiry
+    // Allow through but this is a weak check
+    if (cert->not_before == 0 && cert->not_after == 0) return 0;
+
+    uint32_t now = get_unix_time();
+
+    // Certificate is not yet valid
+    if (cert->not_before != 0 && now < cert->not_before) return -1;
+
+    // Certificate has expired
+    if (cert->not_after != 0 && now > cert->not_after) return -1;
+
     return 0;
 }
 
-int tls_verify_certificate(x509_cert_t* cert, const char* hostname) {
-    if (x509_check_validity(cert) < 0) return TLS_ERR_CERT_VERIFY;
-    if (!hostname || !cert->common_name[0]) return 0; // no hostname to check
+int x509_verify_signature(x509_cert_t* cert, x509_cert_t* issuer_cert) {
+    if (!cert || !issuer_cert) return TLS_ERR_CERT_VERIFY;
 
-    // Exact match
-    if (strcmp(hostname, cert->common_name) == 0) return 0;
-
-    // Wildcard: cert CN = "*.example.com"
-    if (cert->common_name[0] == '*' && cert->common_name[1] == '.') {
-        // find first dot in hostname: "www.example.com" → ".example.com"
-        const char* host_dot = strchr(hostname, '.');
-        if (host_dot && strcmp(host_dot, cert->common_name + 1) == 0)
-            return 0;
+    // Only support RSA signature verification for now
+    if (issuer_cert->public_key_type != 1) {
+        // Non-RSA keys not yet supported - reject
+        return TLS_ERR_SIGNATURE;
     }
 
-    // For now accept any cert (disable strict verification so HTTPS works)
-    // TODO: check SubjectAltNames (SANs)
-    return 0;  // Changed from TLS_ERR_CERT_VERIFY to allow connections
+    // Extract the RSA public key from the issuer's certificate
+    rsa_key_t issuer_key;
+    memset(&issuer_key, 0, sizeof(rsa_key_t));
+    if (x509_extract_rsa_key(issuer_cert->public_key, issuer_cert->public_key_len, &issuer_key) < 0) {
+        return TLS_ERR_SIGNATURE;
+    }
+
+    // The TBS (To Be Signed) bytes are the raw DER of the TBSCertificate
+    // from the outer Certificate SEQUENCE. We need to locate them precisely.
+    // cert_content starts at the Certificate SEQUENCE content.
+    // The first element is the TBSCertificate.
+    const uint8_t* cert_content;
+    size_t cert_content_len;
+    if (parse_asn1_element(cert->raw_data, ASN1_TAG_SEQUENCE, &cert_content, &cert_content_len) < 0) {
+        return TLS_ERR_CERT_VERIFY;
+    }
+
+    // Find the end of the TBS element within cert_content
+    size_t tbs_len, tbs_hdr;
+    if (cert_content[0] != ASN1_TAG_SEQUENCE) return TLS_ERR_CERT_VERIFY;
+    if (parse_asn1_length(cert_content + 1, &tbs_len, &tbs_hdr) < 0) return TLS_ERR_CERT_VERIFY;
+
+    size_t tbs_total = 1 + tbs_hdr + tbs_len;
+    const uint8_t* tbs_der = cert_content;
+
+    // Hash the TBS certificate
+    uint8_t tbs_hash[32];
+    sha256_hash(tbs_der, tbs_total, tbs_hash);
+
+    // Verify signature using issuer's public key
+    int hash_alg = 1; // SHA-256
+    if (cert->signature_alg == 2) hash_alg = 2; // SHA-384 (not fully supported yet, fall through)
+
+    int result = rsa_verify_pkcs1(&issuer_key, cert->signature, cert->signature_len,
+                                   tbs_hash, 32, hash_alg);
+    return result;
+}
+
+// Check if a hostname matches a certificate's identity (CN or SANs)
+static int x509_hostname_matches(x509_cert_t* cert, const char* hostname) {
+    if (!hostname) return 0;
+
+    // Check Subject Alternative Names first (per RFC 6125)
+    for (int i = 0; i < cert->san_count; i++) {
+        // Exact match
+        if (strcmp(hostname, cert->san_entries[i]) == 0) return 1;
+
+        // Wildcard match: SAN entry is "*.example.com"
+        if (cert->san_entries[i][0] == '*' && cert->san_entries[i][1] == '.') {
+            const char* host_dot = strchr(hostname, '.');
+            if (host_dot && strcmp(host_dot, cert->san_entries[i] + 1) == 0) return 1;
+        }
+    }
+
+    // Fall back to Common Name (CN) if no SAN match
+    if (cert->common_name[0]) {
+        // Exact match
+        if (strcmp(hostname, cert->common_name) == 0) return 1;
+
+        // Wildcard match: cert CN = "*.example.com"
+        if (cert->common_name[0] == '*' && cert->common_name[1] == '.') {
+            const char* host_dot = strchr(hostname, '.');
+            if (host_dot && strcmp(host_dot, cert->common_name + 1) == 0) return 1;
+        }
+    }
+
+    return 0; // No match
+}
+
+int tls_verify_certificate(x509_cert_t* cert, const char* hostname) {
+    // Step 1: Check certificate validity period (expiry)
+    if (x509_check_validity(cert) < 0) {
+        return TLS_ERR_CERT_VERIFY;
+    }
+
+    // Step 2: Check hostname match (CN or SANs)
+    if (hostname && hostname[0]) {
+        if (!x509_hostname_matches(cert, hostname)) {
+            return TLS_ERR_CERT_VERIFY;
+        }
+    }
+
+    // Step 3: For self-signed certificates, verify they are in the trust store
+    if (cert->is_self_signed) {
+        // Verify the self-signed signature first
+        if (x509_verify_signature(cert, cert) < 0) {
+            return TLS_ERR_SIGNATURE;
+        }
+        // Check if this self-signed cert is a trusted root CA
+        if (!tls_ca_is_trusted_fingerprint(cert->fingerprint)) {
+            // Self-signed but NOT in trust store - reject
+            return TLS_ERR_CERT_VERIFY;
+        }
+    }
+
+    return 0;
+}
+
+// Verify a full certificate chain
+int tls_verify_cert_chain(x509_cert_t* chain, int count, const char* hostname) {
+    if (!chain || count <= 0) return TLS_ERR_CERT_VERIFY;
+
+    // Verify the leaf certificate (index 0)
+    int ret = tls_verify_certificate(&chain[0], hostname);
+    if (ret < 0) return ret;
+
+    // If there's only one cert and it's self-signed, tls_verify_certificate
+    // already checked the trust store. We're done.
+    if (count == 1) return 0;
+
+    // Walk the chain: each cert should be signed by the next one
+    for (int i = 0; i < count - 1; i++) {
+        // Check validity of each intermediate cert
+        if (x509_check_validity(&chain[i + 1]) < 0) {
+            return TLS_ERR_CERT_VERIFY;
+        }
+
+        // Verify that cert[i] was signed by cert[i+1]
+        ret = x509_verify_signature(&chain[i], &chain[i + 1]);
+        if (ret < 0) return ret;
+    }
+
+    // The last cert in the chain should be (or chain to) a trusted root
+    x509_cert_t* root = &chain[count - 1];
+    if (root->is_self_signed) {
+        // Verify self-signed signature
+        if (x509_verify_signature(root, root) < 0) {
+            return TLS_ERR_SIGNATURE;
+        }
+        // Must be in our trust store
+        if (!tls_ca_is_trusted_fingerprint(root->fingerprint)) {
+            return TLS_ERR_CERT_VERIFY;
+        }
+    } else {
+        // Last cert is not self-signed - check if it matches a trusted root
+        // by fingerprint (it might be an intermediate that chains to a root
+        // we have, or the root itself might not have been sent)
+        if (!tls_ca_is_trusted_fingerprint(root->fingerprint)) {
+            // Also try matching the issuer against trusted CAs
+            const root_ca_entry_t* ca = tls_ca_find(root->issuer_cn);
+            if (!ca || !(ca->flags & CA_FLAG_TRUSTED)) {
+                return TLS_ERR_CERT_VERIFY;
+            }
+        }
+    }
+
+    return 0;
 }
 
 // ============================================================================
@@ -2086,9 +2510,9 @@ int tls_connect(tls_session_t* session, const char* hostname, uint16_t port) {
         return ret;
     }
     
-    // Verify certificate
+    // Verify certificate chain
     if (session->verify_cert) {
-        ret = tls_verify_certificate(&session->cert_chain[0], hostname);
+        ret = tls_verify_cert_chain(session->cert_chain, session->cert_count, hostname);
         if (ret < 0) {
             kfree(buffer);
             return ret;

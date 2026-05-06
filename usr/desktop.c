@@ -38,6 +38,9 @@ typedef struct {
 
 extern ContextMenuState g_ctx_menu;
 
+// Forward declaration (defined later in this file)
+void desktop_apply_selection(selection_box_t* sb);
+
 #define DESKTOP_PATH_LEGACY "/Users/Desktop"
 #define GRID_START_X 30
 #define GRID_START_Y 60 

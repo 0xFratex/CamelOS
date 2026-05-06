@@ -10,6 +10,7 @@
 #include "../../core/window_server.h"
 #include "../dock.h"
 #include "../../fs/pfs32.h"
+#include "../../hal/drivers/serial.h"
 
 // ============================================================================
 // LAYOUT CONSTANTS

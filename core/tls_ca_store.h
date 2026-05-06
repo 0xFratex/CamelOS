@@ -32,11 +32,17 @@ void tls_ca_store_init(void);
 // Find a root CA by name
 const root_ca_entry_t* tls_ca_find(const char* name);
 
-// Verify a certificate chain against root CAs
-int tls_verify_cert_chain(const uint8_t* cert_chain, uint32_t chain_len);
+// Verify a raw DER certificate chain against root CAs
+int tls_verify_cert_chain_raw(const uint8_t* cert_chain, uint32_t chain_len);
 
 // Get number of loaded root CAs
 int tls_ca_count(void);
+
+// Check if a certificate's SHA-256 fingerprint matches a trusted root CA
+int tls_ca_is_trusted_fingerprint(const uint8_t* fingerprint);
+
+// Check if raw DER data matches any trusted root CA
+int tls_ca_match_der(const uint8_t* cert_der, uint32_t cert_len);
 
 // ============================================================================
 // EMBEDDED ROOT CA CERTIFICATES (DER format)
