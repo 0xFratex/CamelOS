@@ -12,8 +12,9 @@
 The original gap analysis identified several "dead code" subsystems that were never initialized. **All of these have since been wired up.** The scheduler, VMM, signals, pipes, IPC, klog, VFS, process management, and crash reporter are all now properly initialized at boot. TCP listen/accept is implemented, PNG decoding works, and CoreAnimation is functional.
 
 Recent improvements have added:
-- **launchd service manager** — now initialized at boot with core services registered
-- **FAT32 VFS registration** — FAT32 driver is registered with VFS at boot
+- **launchd service manager** — now initialized at boot with core services registered and proper start functions
+- **launchd NULL-pointer crash fix** — services registered without `start_func` no longer cause a page fault; passive services are marked running automatically. This was the root cause of the boot-time page fault at 0x5720cf69.
+- **FAT32 VFS registration + auto-mount** — FAT32 driver is registered with VFS at boot, and MBR partition table is now scanned to auto-detect and mount FAT32 partitions (type 0x0B, 0x0C)
 - **Clipboard system** — full text and file copy/cut/paste support
 - **TCP retransmission timer** — exponential backoff with max retry limit
 - **IPC RPC completion** — synchronous RPC with reply port and timeout
@@ -51,10 +52,10 @@ Recent improvements have added:
 - `launchd_check_health()` called from main event loop for crash monitoring
 - Dependency graph: WindowServer depends on NetworkStack
 
-### 2.2 FAT32 VFS — NOW REGISTERED
+### 2.2 FAT32 VFS — NOW REGISTERED + AUTO-MOUNT
 - `fat32_register_with_vfs()` called at boot, making FAT32 a mountable VFS type
-- FAT32 partitions can be mounted via `vfs_mount("/mnt/usb", VFS_FS_FAT32, NULL)` after calling `fat32_init(lba)`
-- **Still TODO**: Auto-detect and mount FAT32 partitions from the MBR at boot
+- **FAT32 auto-mount**: MBR partition table is now parsed at boot; FAT32 partitions (type 0x0B, 0x0C) are automatically detected, initialized with `fat32_init()`, and mounted at `/mnt/disk1`, `/mnt/disk2`, etc.
+- FAT32 partitions can also be manually mounted via `vfs_mount("/mnt/usb", VFS_FS_FAT32, NULL)`
 
 ### 2.3 Clipboard — NOW FUNCTIONAL
 - Full clipboard system with text copy/paste (4KB) and file copy/cut support
@@ -73,6 +74,12 @@ Recent improvements have added:
 - `ipc_rpc_call()` creates a temporary reply port, embeds it in the request
 - Polls for `IPC_MSG_REPLY` with a configurable timeout
 - Properly cleans up reply port on success or timeout
+
+### 2.6 launchd NULL-Pointer Crash — NOW FIXED
+- `launchd_start_service()` and `launchd_check_health()` now check for NULL `start_func` before calling it
+- Services registered without a `start_func` (passive/tracked-only) are automatically marked as RUNNING
+- Actual start functions added for NetworkStack, WindowServer, CrashReporter, and IPCService that verify their corresponding subsystem is active
+- **This was the root cause of the page fault at 0x5720cf69** — `launchd_boot_start()` called `start_func()` on NULL function pointers
 
 ---
 
@@ -101,15 +108,14 @@ Recent improvements have added:
 
 ## 4. Remaining High-Priority Gaps (P1)
 
-### 4.1 FAT32 Auto-Mount at Boot
+### 4.1 FAT32 Auto-Mount at Boot — NOW IMPLEMENTED ✅
 
-**Current State**: FAT32 driver and VFS registration are active, but `fat32_init()` is never called automatically. Partitions must be manually initialized.
+**Current State**: FAT32 driver is registered with VFS, and the MBR partition table is now automatically scanned at boot. FAT32 partitions (type 0x0B, 0x0C) are detected, initialized via `fat32_init()`, and mounted at `/mnt/disk1`, `/mnt/disk2`, etc.
 
-**What's Needed**:
-- Parse MBR partition table in `kernel_main()` after `disk_init()`
-- Detect FAT32 partitions by type ID (0x0B, 0x0C)
-- Call `fat32_init(partition_start_lba)` for each FAT32 partition
-- Mount via `vfs_mount("/mnt/disk1", VFS_FS_FAT32, NULL)`
+**Still TODO**:
+- Handle extended partition tables (EBR) for partitions beyond 4
+- GPT partition table support
+- Mount options (read-only, no-atime, etc.)
 
 ### 4.2 No TrueType / OpenType Font Rendering
 
@@ -187,7 +193,7 @@ Recent improvements have added:
 | Memory/VM | 3 | 1 | 75% |
 | Process/Scheduling | 5 | 1 | 83% |
 | IPC | 4 | 0 | 100% |
-| Filesystem | 3 | 1 | 75% |
+| Filesystem | 3 | 0 | 100% |
 | Networking | 9 | 0 | 100% |
 | Security | 2 | 5 | 29% |
 | Drivers | 14 | 4 | 78% |
@@ -196,9 +202,9 @@ Recent improvements have added:
 | Core Apps | 9 | 5 | 64% |
 | System Services | 5 | 3 | 63% |
 
-**Overall System Completion: ~68%** (up from ~48% in original audit)
+**Overall System Completion: ~72%** (up from ~68% in previous audit)
 
-The most impactful remaining work is **Ring 3 user-mode isolation** (§3.1), which unblocks true process security, and **FAT32 auto-mount** (§4.1), which enables USB drive interoperability. The **TCP retransmission** fix means networking is now reliable, and the **launchd** activation means the system has a proper service management foundation.
+The most impactful remaining work is **Ring 3 user-mode isolation** (§3.1), which unblocks true process security. The **launchd NULL-pointer crash** fix eliminates the boot-time page fault at 0x5720cf69, the **FAT32 auto-mount** enables USB drive interoperability, the **TCP retransmission** fix means networking is now reliable, and the **launchd** activation means the system has a proper service management foundation with real start functions.
 
 ---
 

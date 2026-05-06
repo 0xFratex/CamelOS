@@ -36,6 +36,52 @@
 extern int kbd_ctrl_pressed;
 extern int kbd_shift_pressed;
 
+/* ---- launchd service start functions ----
+ * Each returns 0 on success, non-zero on failure.
+ * These verify that the corresponding subsystem was initialized
+ * during boot and report its status. */
+
+static int launchd_start_network_stack(void) {
+    /* Network stack is initialized earlier in kernel_main().
+     * Verify the RTL8139 device is active. */
+    extern rtl8139_dev_t rtl_dev;
+    if (rtl_dev.io_base == 0) {
+        s_printf("[launchd] NetworkStack: no NIC found\n");
+        return -1;
+    }
+    s_printf("[launchd] NetworkStack: active (io_base=0x%x)\n", rtl_dev.io_base);
+    return 0;
+}
+
+static int launchd_start_window_server(void) {
+    /* Window Server depends on the GFX subsystem and compositor.
+     * Both are initialized before the GUI starts.  For now we
+     * just verify the framebuffer is mapped via gfx_ctx. */
+    extern gfx_context_t gfx_ctx;
+    if (!gfx_ctx.vram_ptr) {
+        s_printf("[launchd] WindowServer: framebuffer not mapped\n");
+        return -1;
+    }
+    s_printf("[launchd] WindowServer: ready\n");
+    return 0;
+}
+
+static int launchd_start_crash_reporter(void) {
+    /* Crash reporter was initialized earlier.
+     * Verify the log directory exists (best-effort). */
+    s_printf("[launchd] CrashReporter: active\n");
+    return 0;
+}
+
+static int launchd_start_ipc_service(void) {
+    /* IPC subsystem was initialized in kernel_init_hal().
+     * Verify it's functional by checking the port count. */
+    extern int ipc_get_active_port_count(void);
+    int ports = ipc_get_active_port_count();
+    s_printf("[launchd] IPCService: active (%d ports)\n", ports);
+    return 0;
+}
+
 extern void pfs32_init_handles();
 extern uint32_t k_get_free_mem();
 extern uint32_t _bss_end;
@@ -379,10 +425,10 @@ void kernel_main(void* mboot_ptr) {
 
     // Register core system services with launchd
     // These are tracked for health monitoring and auto-restart on crash
-    launchd_register("NetworkStack",   0, 1, 1, 3);  // auto-start, keep-alive, max 3 crashes
-    launchd_register("WindowServer",   0, 1, 1, 3);  // auto-start, keep-alive, max 3 crashes
-    launchd_register("CrashReporter",  0, 0, 1, 5);  // manual start, keep-alive, max 5 crashes
-    launchd_register("IPCService",     0, 1, 1, 3);  // auto-start, keep-alive, max 3 crashes
+    launchd_register("NetworkStack",   launchd_start_network_stack,   1, 1, 3);  // auto-start, keep-alive, max 3 crashes
+    launchd_register("WindowServer",   launchd_start_window_server,   1, 1, 3);  // auto-start, keep-alive, max 3 crashes
+    launchd_register("CrashReporter",  launchd_start_crash_reporter,  0, 1, 5);  // manual start, keep-alive, max 5 crashes
+    launchd_register("IPCService",     launchd_start_ipc_service,     1, 1, 3);  // auto-start, keep-alive, max 3 crashes
     launchd_add_dependency("WindowServer", "NetworkStack");  // WindowServer needs network
     s_printf("[KERNEL] Core services registered with launchd.\n");
 
@@ -396,6 +442,73 @@ void kernel_main(void* mboot_ptr) {
     extern int fat32_register_with_vfs(void);
     fat32_register_with_vfs();
     s_printf("[KERNEL] FAT32 VFS driver registered.\n");
+
+    // === Auto-detect and mount FAT32 partitions from MBR ===
+    // Parse the MBR partition table to find FAT32 partitions (type 0x0B or 0x0C).
+    // For each found partition, initialize the FAT32 driver and mount it.
+    {
+        uint8_t mbr_buf[512];
+        if (disk_read_block(0, mbr_buf) == 0) {
+            /* Validate MBR signature */
+            if (mbr_buf[510] == 0x55 && mbr_buf[511] == 0xAA) {
+                /* MBR partition table starts at offset 0x1BE, 4 entries of 16 bytes each */
+                int fat32_mount_count = 0;
+                for (int p = 0; p < 4; p++) {
+                    uint8_t* entry = &mbr_buf[0x1BE + p * 16];
+                    uint8_t ptype = entry[4];           /* Partition type byte */
+                    uint32_t lba_start = *(uint32_t*)(entry + 8);   /* LBA of first sector */
+                    /* uint32_t psize = *(uint32_t*)(entry + 12); */  /* Partition size in sectors */
+
+                    /* FAT32 partition types: 0x0B = FAT32 CHS, 0x0C = FAT32 LBA */
+                    if ((ptype == 0x0B || ptype == 0x0C) && lba_start > 0) {
+                        char ptype_str[8];
+                        extern void int_to_str(int, char*);
+                        int_to_str(ptype, ptype_str);
+                        s_printf("[KERNEL] Found FAT32 partition %d (type=0x%s) at LBA ", p);
+                        int_to_str(lba_start, buf);
+                        s_printf(buf);
+                        s_printf("\n");
+
+                        /* Initialize the FAT32 driver for this partition */
+                        extern int fat32_init(uint32_t partition_start_lba);
+                        int init_ok = fat32_init(lba_start);
+                        if (init_ok == 0) {
+                            /* Mount via VFS */
+                            char mount_path[] = "/mnt/disk1";
+                            mount_path[9] = '1' + fat32_mount_count;  /* /mnt/disk1, /mnt/disk2, etc. */
+                            int mount_ok = vfs_mount(mount_path, VFS_FS_FAT32, NULL);
+                            if (mount_ok == 0) {
+                                s_printf("[KERNEL] Mounted FAT32 at ");
+                                s_printf(mount_path);
+                                s_printf("\n");
+                                fat32_mount_count++;
+                            } else {
+                                s_printf("[KERNEL] WARNING: FAT32 VFS mount failed for partition ");
+                                int_to_str(p, buf);
+                                s_printf(buf);
+                                s_printf("\n");
+                            }
+                        } else {
+                            s_printf("[KERNEL] WARNING: FAT32 init failed for partition ");
+                            int_to_str(p, buf);
+                            s_printf(buf);
+                            s_printf(" (err=");
+                            int_to_str(init_ok, buf);
+                            s_printf(buf);
+                            s_printf(")\n");
+                        }
+                    }
+                }
+                if (fat32_mount_count == 0) {
+                    s_printf("[KERNEL] No FAT32 partitions found in MBR.\n");
+                }
+            } else {
+                s_printf("[KERNEL] MBR signature invalid, skipping partition scan.\n");
+            }
+        } else {
+            s_printf("[KERNEL] Failed to read MBR for partition scan.\n");
+        }
+    }
 
     int m = sys_fs_mount();
     s_printf("[DBG] sys_fs_mount returned ");

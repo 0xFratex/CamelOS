@@ -132,17 +132,26 @@ int launchd_start_service(const char* name)
     }
 
     /* Attempt to start the service */
-    int result = services[idx].start_func();
+    if (services[idx].start_func) {
+        int result = services[idx].start_func();
 
-    if (result == 0) {
+        if (result == 0) {
+            services[idx].state       = LAUNCHD_SERVICE_RUNNING;
+            services[idx].crash_count = 0;
+        } else {
+            services[idx].state = LAUNCHD_SERVICE_CRASHED;
+            services[idx].crash_count++;
+        }
+
+        return result;
+    } else {
+        /* No start function registered — mark as running (passive/tracked-only service).
+         * Services without a start_func are tracked for lifecycle monitoring but
+         * are initialized elsewhere in the kernel boot sequence. */
         services[idx].state       = LAUNCHD_SERVICE_RUNNING;
         services[idx].crash_count = 0;
-    } else {
-        services[idx].state = LAUNCHD_SERVICE_CRASHED;
-        services[idx].crash_count++;
+        return 0;
     }
-
-    return result;
 }
 
 int launchd_stop_service(const char* name)
@@ -175,11 +184,16 @@ void launchd_check_health(void)
             s_printf("[launchd] Restarting crashed service: %s\n",
                      services[i].name);
 
-            int result = services[i].start_func();
-            if (result == 0) {
-                services[i].state       = LAUNCHD_SERVICE_RUNNING;
+            if (services[i].start_func) {
+                int result = services[i].start_func();
+                if (result == 0) {
+                    services[i].state       = LAUNCHD_SERVICE_RUNNING;
+                } else {
+                    services[i].crash_count++;
+                }
             } else {
-                services[i].crash_count++;
+                /* Passive service: just mark as running again */
+                services[i].state = LAUNCHD_SERVICE_RUNNING;
             }
         } else {
             s_printf("[launchd] Service %s exceeded max crashes (%d)\n",
