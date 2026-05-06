@@ -9,6 +9,16 @@
 gfx_context_t gfx_ctx;
 static int use_backbuffer = 0;
 
+// Static fallback backbuffer for high-resolution modes.
+// If kmalloc fails for the backbuffer (e.g., heap too fragmented for a
+// 3MB+ contiguous allocation), we fall back to this static buffer.
+// Supports up to 800x600@32bpp (1,920,000 bytes).  For larger modes,
+// the kmalloc path is attempted first; only on failure do we use this,
+// potentially at a reduced resolution or with direct-VRAM rendering.
+#define STATIC_BACKBUFFER_SIZE (800 * 600 * 4)
+static uint32_t static_backbuffer[STATIC_BACKBUFFER_SIZE / 4] __attribute__((aligned(16)));
+static int using_static_backbuffer = 0;
+
 // --- SOFTWARE CLIP RECTANGLE ---
 // When set, all drawing primitives are clipped to this rectangle.
 // By default the clip rect covers the entire screen.
@@ -83,13 +93,23 @@ void gfx_init_hal(void* mboot_ptr) {
 
     if (!gfx_ctx.use_page_flip) {
         // Fallback: system RAM backbuffer + memcpy to VRAM
-        gfx_ctx.back_ptr = (uint32_t*)kmalloc(size);
+        uint32_t needed = gfx_ctx.width * gfx_ctx.height * 4;
+        gfx_ctx.back_ptr = (uint32_t*)kmalloc(needed);
 
         if (gfx_ctx.back_ptr) {
             use_backbuffer = 1;
-            memset(gfx_ctx.back_ptr, 0, size);
-            s_printf("[GFX] Backbuffer Allocated.\n");
+            using_static_backbuffer = 0;
+            memset(gfx_ctx.back_ptr, 0, needed);
+            s_printf("[GFX] Backbuffer Allocated (heap, %d bytes).\n", needed);
+        } else if (needed <= STATIC_BACKBUFFER_SIZE) {
+            // Heap allocation failed but we can fit in the static buffer
+            gfx_ctx.back_ptr = static_backbuffer;
+            use_backbuffer = 1;
+            using_static_backbuffer = 1;
+            memset(gfx_ctx.back_ptr, 0, needed);
+            s_printf("[GFX] Backbuffer using static fallback (%d bytes).\n", needed);
         } else {
+            // Neither heap nor static buffer is large enough
             use_backbuffer = 0;
             s_printf("[GFX] WARNING: Backbuffer alloc failed! Using direct VRAM.\n");
         }

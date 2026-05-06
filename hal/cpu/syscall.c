@@ -495,6 +495,6 @@ void syscall_init_fast(void) {
     s_printf("[SYSCALL] Fast syscall (sysenter/sysexit) initialized\n");
 }
 
-// Global to hold the current kernel stack for sysenter
-// Updated by the scheduler when switching to a Ring 3 task
-uint32_t tss_esp0_for_sysenter = 0;
+// tss_esp0_for_sysenter is defined in hal/cpu/gdt.c
+// It holds the current kernel stack for sysenter, updated by the
+// scheduler when switching to a Ring 3 task.

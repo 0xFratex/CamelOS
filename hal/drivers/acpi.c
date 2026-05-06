@@ -456,7 +456,23 @@ const char* acpi_get_table_signature(const char* signature) {
         uint32_t table_addr = ((uint32_t*)((uintptr_t)found_rsdt + sizeof(acpi_header_t)))[i];
         if (table_addr == 0) continue;
 
+        // Validate the table address is within identity-mapped memory
+        if (!acpi_phys_addr_safe(table_addr, sizeof(acpi_header_t))) {
+            continue;
+        }
+
         acpi_header_t* header = (acpi_header_t*)(uintptr_t)table_addr;
+
+        // Validate the full table fits in mapped memory
+        if (!acpi_phys_addr_safe(table_addr, header->length)) {
+            continue;
+        }
+
+        // Validate the table with checksum
+        if (acpi_checksum(header, header->length) != 0) {
+            continue;
+        }
+
         if (sig_match(header->signature, signature)) {
             return (const char*)header;
         }
