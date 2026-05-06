@@ -46,3 +46,7 @@ void s_printf(const char* fmt, ...) {
 void serial_write_string(const char* str) {
     s_printf(str);
 }
+
+void serial_write_char(char c) {
+    write_serial(c);
+}

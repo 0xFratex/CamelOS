@@ -2629,3 +2629,92 @@ void dom_debug_print_tree(dom_document_t *doc) {
     s_printf(buf);
     debug_print_tree_recursive(doc->root, 0);
 }
+
+// ============================================================================
+// JS BRIDGE API - High-level convenience functions for the JavaScript bridge
+// These provide the DOM API that browser_js_bridge.c expects
+// ============================================================================
+
+// Global document singleton used by the JS bridge
+static dom_document_t* g_js_bridge_document = NULL;
+
+dom_document_t* dom_get_document(void) {
+    if (!g_js_bridge_document) {
+        g_js_bridge_document = dom_document_create();
+    }
+    return g_js_bridge_document;
+}
+
+// Create an element node in the global JS bridge document
+dom_node_t* dom_create_element(const char* tag_name) {
+    dom_document_t* doc = dom_get_document();
+    if (!doc || !tag_name) return NULL;
+
+    dom_node_t* node = dom_node_alloc(doc);
+    if (!node) return NULL;
+
+    node->type = DOM_NODE_ELEMENT;
+    safe_strcpy(node->tag, tag_name, DOM_MAX_TAG_LEN);
+    node->computed_style.display = default_display_for_tag(tag_name);
+    node->computed_style.font_size = default_font_size_for_tag(tag_name);
+    node->computed_style.font_weight = default_font_weight_for_tag(tag_name);
+    apply_default_element_styles(node);
+
+    return node;
+}
+
+// Create a text node in the global JS bridge document
+dom_node_t* dom_create_text_node(const char* text) {
+    dom_document_t* doc = dom_get_document();
+    if (!doc) return NULL;
+
+    dom_node_t* node = dom_node_alloc(doc);
+    if (!node) return NULL;
+
+    node->type = DOM_NODE_TEXT;
+    if (text) {
+        safe_strcpy(node->text, text, DOM_MAX_TEXT_LEN);
+    }
+    node->computed_style.display = DOM_DISPLAY_INLINE;
+
+    return node;
+}
+
+// Append a child node to a parent (wrapper for dom_node_append_child)
+void dom_append_child(dom_node_t* parent, dom_node_t* child) {
+    dom_node_append_child(parent, child);
+}
+
+// Set an attribute on a node (wrapper for dom_node_set_attr)
+void dom_set_attribute(dom_node_t* node, const char* name, const char* value) {
+    dom_node_set_attr(node, name, value);
+}
+
+// Set innerHTML - replaces all children with parsed HTML content
+// For simplicity, this stores the HTML as a single text child node
+void dom_set_inner_html(dom_node_t* node, const char* html) {
+    if (!node || !html) return;
+
+    // Remove all existing children by marking them unused
+    dom_node_t* child = node->first_child;
+    while (child) {
+        dom_node_t* next = child->next_sibling;
+        child->in_use = 0;
+        child = next;
+    }
+    node->first_child = NULL;
+    node->last_child = NULL;
+    node->child_count = 0;
+
+    // If the node belongs to a document, create a text node for the content
+    dom_document_t* doc = dom_get_document();
+    if (doc) {
+        dom_node_t* text_node = dom_node_alloc(doc);
+        if (text_node) {
+            text_node->type = DOM_NODE_TEXT;
+            safe_strcpy(text_node->text, html, DOM_MAX_TEXT_LEN);
+            text_node->computed_style.display = DOM_DISPLAY_INLINE;
+            dom_node_append_child(node, text_node);
+        }
+    }
+}

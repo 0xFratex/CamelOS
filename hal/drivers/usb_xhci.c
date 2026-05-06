@@ -4,8 +4,8 @@
 #include "../../core/string.h"
 #include "usb.h"
 
-static xhci_cap_regs_t* cap_regs = 0;
-static xhci_op_regs_t* op_regs = 0;
+xhci_cap_regs_t* cap_regs = 0;
+xhci_op_regs_t* op_regs = 0;
 static uint32_t max_ports = 0;
 
 // Port Status Register Offsets (XHCI spec)

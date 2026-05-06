@@ -9,7 +9,7 @@
 #include "memory.h"
 #include "net.h"
 #include "../hal/cpu/timer.h"
-#include "../common/time.h"
+#include "../hal/drivers/rtc.h"
 
 // External functions
 extern size_t strlen(const char* s);

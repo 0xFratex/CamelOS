@@ -34,4 +34,8 @@ typedef struct {
 
 void xhci_controller_init(pci_device_t* dev);
 
+// Global xHCI register pointers (set by xhci_controller_init)
+extern xhci_cap_regs_t* cap_regs;
+extern xhci_op_regs_t* op_regs;
+
 #endif

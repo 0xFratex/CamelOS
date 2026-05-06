@@ -3,7 +3,6 @@
 #include "../../include/input_defs.h"
 #include "keyboard.h"
 
-#define KBD_BUFFER_SIZE 256
 int kbd_buffer[KBD_BUFFER_SIZE]; // Changed to int to support > 127
 int write_ptr = 0;
 int read_ptr = 0;

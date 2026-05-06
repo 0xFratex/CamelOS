@@ -41,7 +41,7 @@ CDL_CFLAGS      =       -m32    -fno-stack-protector    -fno-builtin    -O2     
 #       -Bsymbolic      ensures internal        function        calls   bind    locally
 CDL_LDFLAGS     =       -m      elf_i386        -shared -Bsymbolic      -e      cdl_main        -T      linker_cdl.ld   -L$(GCC_LIB32)
 
-COMMON_SRC      =       common/font.c
+COMMON_SRC      =       common/font.c   common/time.c
 
 #       ---     SOURCES ---
 HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/serial.c    \

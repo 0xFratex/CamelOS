@@ -85,7 +85,6 @@ void hex_dump(const void* data, size_t size, const char* desc) {
                 char lo = (b & 0xF) < 10 ? ('0' + (b & 0xF)) : ('A' + (b & 0xF) - 10);
                 s_printf(&hi);
                 // Serial write character directly
-                extern void serial_write_char(char);
                 serial_write_char(hi);
                 serial_write_char(lo);
                 serial_write_char(' ');
@@ -102,7 +101,6 @@ void hex_dump(const void* data, size_t size, const char* desc) {
             if (offset + i < size) {
                 uint8_t b = bytes[offset + i];
                 char c = (b >= 32 && b <= 126) ? (char)b : '.';
-                extern void serial_write_char(char);
                 serial_write_char(c);
             } else {
                 s_printf(" ");

@@ -1,5 +1,6 @@
 #include "../../common/ports.h"
 #include "../../sys/api.h"
+#include "rtc.h"
 
 #define CMOS_ADDR 0x70
 #define CMOS_DATA 0x71
@@ -75,4 +76,51 @@ void rtc_read_date(int* year, int* month, int* day) {
     } else {
         *year = 2000 + *year;
     }
+}
+
+// ============================================================================
+// Unix Timestamp Conversion
+// ============================================================================
+
+#define SECS_PER_MIN  60
+#define SECS_PER_HOUR 3600
+#define SECS_PER_DAY  86400
+
+static const int days_in_month[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+int is_leap(int year) {
+    return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+}
+
+unsigned int get_unix_time(void) {
+    int h, m, s;
+    int year, month, day;
+
+    // Read actual date and time from the RTC hardware
+    rtc_read_date(&year, &month, &day);
+    rtc_read_time(&h, &m, &s);
+
+    // Validate: if date is unreasonable, fall back to a safe default
+    if (year < 1970 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) {
+        year = 2025; month = 1; day = 1;
+    }
+
+    // Count days from 1970-01-01 to the beginning of the given year
+    unsigned int days = 0;
+    for (int y = 1970; y < year; y++) {
+        days += 365 + is_leap(y);
+    }
+
+    // Add days for completed months in the current year
+    for (int mo = 0; mo < month - 1; mo++) {
+        if (mo == 1 && is_leap(year))
+            days += 29;
+        else
+            days += days_in_month[mo];
+    }
+
+    // Add days in the current month (day-1 because day 1 = 0 completed days)
+    days += day - 1;
+
+    return (days * SECS_PER_DAY) + (h * SECS_PER_HOUR) + (m * SECS_PER_MIN) + s;
 }

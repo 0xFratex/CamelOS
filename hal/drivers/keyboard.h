@@ -48,4 +48,17 @@ extern int kbd_layout;
 extern const char scancode_std[];
 extern const char scancode_shift[];
 
+// Keyboard buffer (circular FIFO) - accessible for USB HID injection
+#define KBD_BUFFER_SIZE 256
+extern int kbd_buffer[];
+extern int write_ptr;
+extern int read_ptr;
+
+// Helper: get number of items in the keyboard buffer
+static inline int kbd_buffer_count(void) {
+    int w = write_ptr;
+    int r = read_ptr;
+    return (w >= r) ? (w - r) : (KBD_BUFFER_SIZE - r + w);
+}
+
 #endif

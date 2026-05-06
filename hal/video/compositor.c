@@ -341,7 +341,7 @@ void compositor_generate_blur_buffer(void) {
 // Dock-style Reflection Effect
 // ============================================================================
 
-void compositor_draw_reflection(int x, int y, int w, int h, float opacity) {
+static void compositor_draw_reflection_v1(int x, int y, int w, int h, float opacity) {
     uint32_t* back_buf = gfx_get_active_buffer();
     if (!back_buf) return;
     

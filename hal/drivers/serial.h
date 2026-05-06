@@ -9,5 +9,6 @@ void write_serial(char a);
 void s_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 void serial_write_string(const char* str);
+void serial_write_char(char c);
 
 #endif

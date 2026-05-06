@@ -3,7 +3,7 @@
 
 #include "css_parser_v2.h"
 #include "../../core/string.h"
-#include "../../core/memory.c"  // For kmalloc, kfree, krealloc, memset
+#include "../../core/memory.h"  // For kmalloc, kfree, krealloc, memset
 
 // ============================================================================
 // PARSER INITIALIZATION

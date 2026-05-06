@@ -453,4 +453,27 @@ int dom_parse_color(const char *str, uint32_t *out_color);
 // Print the DOM tree structure to the serial console (for debugging).
 void dom_debug_print_tree(dom_document_t *doc);
 
+// ============================================================================
+// JS BRIDGE API - High-level convenience functions
+// Used by browser_js_bridge.c for JavaScript DOM manipulation
+// ============================================================================
+
+// Get the global document singleton (created on first call)
+dom_document_t* dom_get_document(void);
+
+// Create an element node in the global document
+dom_node_t* dom_create_element(const char* tag_name);
+
+// Create a text node in the global document
+dom_node_t* dom_create_text_node(const char* text);
+
+// Append a child node to a parent element
+void dom_append_child(dom_node_t* parent, dom_node_t* child);
+
+// Set an attribute on a DOM element
+void dom_set_attribute(dom_node_t* node, const char* name, const char* value);
+
+// Set innerHTML on a node (replaces children with content)
+void dom_set_inner_html(dom_node_t* node, const char* html);
+
 #endif // BROWSER_DOM_H

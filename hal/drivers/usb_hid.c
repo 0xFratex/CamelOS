@@ -19,6 +19,7 @@
 #include "../../core/memory.h"
 #include "../../core/string.h"
 #include "../../sys/io_ports.h"
+#include "../video/gfx_hal.h"
 
 // ============================================================================
 // USB HID Constants
@@ -243,9 +244,8 @@ typedef struct __attribute__((packed)) {
 // needed to perform USB enumeration and HID configuration
 // ============================================================================
 
-// Global xHCI state (from usb_xhci.c)
-extern xhci_cap_regs_t* cap_regs;
-extern xhci_op_regs_t* op_regs;
+// Global xHCI state (from usb_xhci.c) - declared in usb_xhci.h
+// cap_regs and op_regs are already accessible via usb_xhci.h include above
 
 // TRB ring management
 #define TRB_RING_SIZE 256
@@ -595,15 +595,10 @@ static void hid_process_keyboard_report(const hid_keyboard_report_t* report) {
 
                 // Inject the scancode into the keyboard input buffer
                 // This calls the same path that the PS/2 IRQ1 handler uses
-                extern volatile int kbd_buffer[];
-                extern volatile int kbd_buffer_head;
-                extern volatile int kbd_buffer_count;
-                extern const int KBD_BUFFER_SIZE;
-
-                if (kbd_buffer_count < 64) {  // KBD_BUFFER_SIZE
-                    int idx = (kbd_buffer_head + kbd_buffer_count) % 64;
-                    kbd_buffer[idx] = scancode;
-                    kbd_buffer_count++;
+                int next = (write_ptr + 1) % KBD_BUFFER_SIZE;
+                if (next != read_ptr) {
+                    kbd_buffer[write_ptr] = scancode;
+                    write_ptr = next;
                 }
             }
         }
@@ -631,14 +626,10 @@ static void hid_process_keyboard_report(const hid_keyboard_report_t* report) {
             }
             if (scancode) {
                 // Key release scancode in Set 1: scancode | 0x80
-                extern volatile int kbd_buffer[];
-                extern volatile int kbd_buffer_head;
-                extern volatile int kbd_buffer_count;
-
-                if (kbd_buffer_count < 64) {
-                    int idx = (kbd_buffer_head + kbd_buffer_count) % 64;
-                    kbd_buffer[idx] = scancode | 0x80;  // Release code
-                    kbd_buffer_count++;
+                int next = (write_ptr + 1) % KBD_BUFFER_SIZE;
+                if (next != read_ptr) {
+                    kbd_buffer[write_ptr] = scancode | 0x80;  // Release code
+                    write_ptr = next;
                 }
             }
         }
@@ -663,8 +654,6 @@ static void hid_process_mouse_report(const hid_mouse_report_t* report) {
     mouse_scroll_delta = report->wheel_displacement;
 
     // Clamp to screen bounds
-    extern int gfx_get_width(void);
-    extern int gfx_get_height(void);
     int screen_w = gfx_get_width();
     int screen_h = gfx_get_height();
 

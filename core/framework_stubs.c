@@ -59,17 +59,10 @@ CGColorRef CGColorCreateGenericRGB(float r, float g, float b, float a) {
                         (uint32_t)(r * 255));
 }
 
-void CGContextFillRect(CGContextRef ctx, CGRect rect, uint32_t color) {
-    (void)ctx;
-    gfx_fill_rect((int)rect.origin.x, (int)rect.origin.y,
-                  (int)rect.size.width, (int)rect.size.height, color);
-}
-
-void CGContextStrokeRect(CGContextRef ctx, CGRect rect, uint32_t color, float width) {
-    (void)ctx; (void)width;
-    gfx_draw_rect((int)rect.origin.x, (int)rect.origin.y,
-                  (int)rect.size.width, (int)rect.size.height, color);
-}
+// NOTE: CGContextFillRect, CGContextStrokeRect, CGContextDrawImage,
+// CGContextSetFillColor, CGContextSetStrokeColor, CGContextSetLineWidth,
+// and CGContextDrawLine are now properly implemented in hal/video/cgcontext.c.
+// The stub versions have been removed to avoid multiple definition errors.
 
 void CGContextFillRoundRect(CGContextRef ctx, CGRect rect, float radius, uint32_t color) {
     (void)ctx;
@@ -81,51 +74,6 @@ void CGContextFillRoundRect(CGContextRef ctx, CGRect rect, float radius, uint32_
 void CGContextDrawText(CGContextRef ctx, float x, float y, const char* text, uint32_t color) {
     (void)ctx;
     gfx_draw_string((int)x, (int)y, text, color);
-}
-
-void CGContextDrawImage(CGContextRef ctx, CGRect rect, CGImageRef image) {
-    (void)ctx;
-    if (!image) return;
-
-    // Cast the image reference to a png_image_t pointer.
-    // CGImageRef is void*, and png_decoder.h defines png_image_t with
-    // pixel_data in ARGB (0xAARRGGBB) format — matching gfx_hal.
-    // If the caller passes a valid decoded PNG image, render it scaled
-    // into the destination rectangle.
-    typedef struct {
-        uint32_t width;
-        uint32_t height;
-        uint8_t color_type;
-        uint8_t bit_depth;
-        uint32_t* pixel_data;
-    } png_image_compat_t;
-
-    png_image_compat_t* img = (png_image_compat_t*)image;
-    if (!img->pixel_data) return;
-
-    gfx_draw_asset_scaled(gfx_get_active_buffer(),
-                          (int)rect.origin.x, (int)rect.origin.y,
-                          img->pixel_data,
-                          (int)img->width, (int)img->height,
-                          (int)rect.size.width, (int)rect.size.height);
-}
-
-void CGContextSetFillColor(CGContextRef ctx, uint32_t color) {
-    (void)ctx; (void)color;
-    // Context state - stored in thread-local for future drawing ops
-}
-
-void CGContextSetStrokeColor(CGContextRef ctx, uint32_t color) {
-    (void)ctx; (void)color;
-}
-
-void CGContextSetLineWidth(CGContextRef ctx, float width) {
-    (void)ctx; (void)width;
-}
-
-void CGContextDrawLine(CGContextRef ctx, float x1, float y1, float x2, float y2) {
-    (void)ctx;
-    gfx_draw_line((int)x1, (int)y1, (int)x2, (int)y2, 0xFF000000);
 }
 
 // ============================================================================

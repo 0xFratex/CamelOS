@@ -76,13 +76,8 @@ static void (*browser_invalidate_cb)(void) = 0;
 // ============================================================================
 #include "browser_dom.h"
 
-// These functions are implemented in browser_cdl.c
-extern dom_node_t* dom_create_element(const char* tag_name);
-extern dom_node_t* dom_create_text_node(const char* text);
-extern void dom_append_child(dom_node_t* parent, dom_node_t* child);
-extern void dom_set_attribute(dom_node_t* node, const char* name, const char* value);
-extern void dom_set_inner_html(dom_node_t* node, const char* html);
-extern dom_document_t* dom_get_document(void);
+// These functions are implemented in browser_dom.c and declared in browser_dom.h
+// (included above). No additional extern declarations needed.
 
 // ============================================================================
 // INITIALIZATION
@@ -597,98 +592,10 @@ void js_bridge_clear_pending_html(void) {
 // ============================================================================
 // HELPER IMPLEMENTATIONS
 // ============================================================================
-
-js_v2_value_t* js_v2_to_string(js_v2_engine_t* engine, js_v2_value_t* val) {
-    if (!val) return js_v2_new_string(engine, "");
-    if (val->type == JS_V2_TYPE_STRING) return val;
-    if (val->type == JS_V2_TYPE_NUMBER) {
-        char buf[32];
-        int num = (int)val->data.number;
-        int i = 0;
-        if (num < 0) { buf[i++] = '-'; num = -num; }
-        if (num == 0) { buf[i++] = '0'; }
-        else {
-            char temp[16];
-            int t = 0;
-            while (num > 0) { temp[t++] = '0' + (num % 10); num /= 10; }
-            while (t > 0) buf[i++] = temp[--t];
-        }
-        buf[i] = 0;
-        return js_v2_new_string(engine, buf);
-    }
-    return js_v2_new_string(engine, "");
-}
-
-js_v2_value_t* js_v2_to_number(js_v2_engine_t* engine, js_v2_value_t* val) {
-    if (!val) return js_v2_new_number(engine, 0);
-    if (val->type == JS_V2_TYPE_NUMBER) return val;
-    if (val->type == JS_V2_TYPE_STRING) {
-        int num = 0;
-        int sign = 1;
-        const char* s = val->data.string;
-        if (*s == '-') { sign = -1; s++; }
-        while (*s >= '0' && *s <= '9') {
-            num = num * 10 + (*s - '0');
-            s++;
-        }
-        return js_v2_new_number(engine, sign * num);
-    }
-    return js_v2_new_number(engine, 0);
-}
-
-js_v2_value_t* js_v2_new_undefined(js_v2_engine_t* engine) {
-    js_v2_value_t* val = (js_v2_value_t*)kmalloc(sizeof(js_v2_value_t));
-    if (val) {
-        val->type = JS_V2_TYPE_UNDEFINED;
-        val->data.string[0] = 0;
-        val->data.number = 0;
-    }
-    return val;
-}
-
-js_v2_value_t* js_v2_new_null(js_v2_engine_t* engine) {
-    js_v2_value_t* val = (js_v2_value_t*)kmalloc(sizeof(js_v2_value_t));
-    if (val) {
-        val->type = JS_V2_TYPE_NULL;
-        val->data.string[0] = 0;
-        val->data.number = 0;
-    }
-    return val;
-}
-
-js_v2_value_t* js_v2_new_boolean(js_v2_engine_t* engine, int val) {
-    js_v2_value_t* result = (js_v2_value_t*)kmalloc(sizeof(js_v2_value_t));
-    if (result) {
-        result->type = JS_V2_TYPE_NUMBER;
-        result->data.number = val ? 1 : 0;
-    }
-    return result;
-}
-
-js_v2_value_t* js_v2_new_array(js_v2_engine_t* engine) {
-    js_v2_value_t* arr = js_v2_new_object(engine);
-    if (arr) {
-        js_v2_object_set(engine, arr, "length", js_v2_new_number(engine, 0));
-    }
-    return arr;
-}
-
-js_v2_value_t* js_v2_object_get(js_v2_engine_t* engine, js_v2_value_t* obj, const char* key) {
-    if (!obj || obj->type != JS_V2_TYPE_OBJECT || !key) {
-        return js_v2_new_undefined(engine);
-    }
-    // Simplified - would need proper property lookup
-    return js_v2_new_undefined(engine);
-}
-
-js_v2_value_t* js_v2_call(js_v2_engine_t* engine, js_v2_value_t* fn, js_v2_value_t* this_val, 
-                          int argc, js_v2_value_t** args) {
-    if (!fn || fn->type != JS_V2_TYPE_FUNCTION) {
-        return js_v2_new_undefined(engine);
-    }
-    // Would need proper function execution
-    return js_v2_new_undefined(engine);
-}
+// NOTE: js_v2_to_string, js_v2_to_number, js_v2_new_undefined, js_v2_new_null,
+// js_v2_new_boolean, js_v2_new_array, js_v2_object_get, and js_v2_call
+// are now properly implemented in js_engine_v2.c. The duplicate stub
+// definitions that were here have been removed to avoid multiple definition errors.
 
 // ============================================================================
 // REGISTER BROWSER APIS
