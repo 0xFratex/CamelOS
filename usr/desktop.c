@@ -65,6 +65,12 @@ int desktop_is_ctx_open() {
     return g_ctx_menu.active;
 }
 
+// Returns 1 if the desktop rubber-band selection is currently being dragged.
+// Used by bubbleview.c to keep dispatching mouse events during the drag.
+int desktop_selbox_active() {
+    return g_desk_selbox_inited && g_desk_selbox.state == SELBOX_DRAGGING;
+}
+
 pfs32_direntry_t desk_entries[32];
 int desk_count = 0;
 int desk_selected[32];

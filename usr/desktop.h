@@ -22,6 +22,10 @@ extern char g_desktop_path[128];
 // Check if context menu is currently open (for modal behavior)
 extern int desktop_is_ctx_open();
 
+// Check if the desktop rubber-band selection is currently being dragged
+// (used by bubbleview.c to keep dispatching mouse events during the drag)
+extern int desktop_selbox_active();
+
 // Context menu functions (defined in bubbleview.c)
 extern void ctx_menu_show(int x, int y, int type, void* target);
 extern void desktop_refresh();

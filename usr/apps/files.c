@@ -772,12 +772,18 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
     fm_set_current_for(win);
     if (!fm_cur) return;
 
-    // Handle mouse-up: end rubber-band selection
-    if (btn == 0 && fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING) {
-        selbox_end(&fm_cur->selbox);
-        // selbox_end sets INACTIVE so the rubber-band visual disappears.
-        // Selected items remain highlighted via is_selected[] which is
-        // independent of the selbox state.
+    // Handle mouse-up (btn==0): end any active rubber-band selection and return.
+    // This event comes from the continuous drag dispatch in bubbleview.c when
+    // the user releases the mouse button after a content drag.
+    if (btn == 0) {
+        if (fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING) {
+            selbox_end(&fm_cur->selbox);
+        }
+        // Also end scrollbar drag on release
+        if (fm_cur->sb_dragging) {
+            fm_cur->sb_dragging = 0;
+        }
+        return; // Don't process a release as a click
     }
     
     int win_w = fm_cur->win_w, win_h = fm_cur->win_h - 30;
@@ -885,7 +891,7 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
                 }
             }
         }
-        // Don't return — let fall through to check if we clicked on an icon
+        return; // During drag, don't process icon clicks
     }
 
     for(int i = 0; i < fm_cur->entry_count; i++) {

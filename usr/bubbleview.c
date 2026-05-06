@@ -142,6 +142,12 @@ static rect_t snap_preview_rect = {0,0,0,0};
 // far enough from the screen edge (>2x SNAP_MARGIN).
 static int snap_escape_cooldown = 0;
 
+// Content Drag Tracking — when a window starts a drag operation in its
+// content area (e.g., rubber-band selection in the Files app), we track
+// it here so we can continue dispatching mouse events every frame while
+// the button is held, and send a btn=0 release event when it's released.
+static window_t* content_drag_win = 0;
+
 // Auto Refresh
 static uint32_t last_fs_gen = 0;
 
@@ -1000,6 +1006,7 @@ void handle_input(int mx, int my, int lb, int rb) {
 
     // 1. Resizing (Highest Priority Drag)
     if (resize_win) {
+        content_drag_win = 0; // Cancel any content drag — resize takes priority
         if (lb) {
             int dx = mx - resize_mx;
             int dy = my - resize_my;
@@ -1047,6 +1054,7 @@ void handle_input(int mx, int my, int lb, int rb) {
 
     // 5. Window Dragging
     if (drag_win) {
+        content_drag_win = 0; // Cancel any content drag — window move takes priority
         if (lb) {
             drag_win->x = mx - drag_off_x;
             drag_win->y = my - drag_off_y;
@@ -1134,6 +1142,10 @@ void handle_input(int mx, int my, int lb, int rb) {
                 if (w->mouse_callback) {
                     typedef void (*mcb)(window_t*,int,int,int);
                     ((mcb)w->mouse_callback)(w, lx, ly - 30, btn);
+                    // Start tracking content drag so we can keep dispatching
+                    // mouse events while the button is held (for rubber-band
+                    // selection, drag-select, etc.)
+                    content_drag_win = w;
                 }
                 return; 
             }
@@ -1180,6 +1192,46 @@ void handle_input(int mx, int my, int lb, int rb) {
         }
 
         desktop_on_mouse(mx, my, lb, rb);
+    }
+
+    // ======================================================================
+    // 7. Continuous Drag Dispatch
+    // While a mouse button is held for a drag operation that started inside
+    // a window's content area or on the desktop, we must keep dispatching
+    // mouse events every frame — not just on the initial click edge — so
+    // that rubber-band selection boxes can update and end properly.
+    // ======================================================================
+
+    // 7a. Window content drag (e.g., Files app rubber-band selection)
+    if (content_drag_win) {
+        if (lb) {
+            // Button still held — dispatch drag update
+            if (content_drag_win->mouse_callback) {
+                int lx = mx - content_drag_win->x;
+                int ly = my - content_drag_win->y - 30;
+                typedef void (*mcb)(window_t*,int,int,int);
+                ((mcb)content_drag_win->mouse_callback)(content_drag_win, lx, ly, 1);
+            }
+        } else {
+            // Button released — dispatch release event (btn=0)
+            if (content_drag_win->mouse_callback) {
+                int lx = mx - content_drag_win->x;
+                int ly = my - content_drag_win->y - 30;
+                typedef void (*mcb)(window_t*,int,int,int);
+                ((mcb)content_drag_win->mouse_callback)(content_drag_win, lx, ly, 0);
+            }
+            content_drag_win = 0;
+        }
+        return; // Don't process further while content dragging
+    }
+
+    // 7b. Desktop rubber-band selection drag
+    // If the desktop selbox is active (user is dragging on empty desktop),
+    // keep calling desktop_on_mouse every frame so the selbox can update
+    // and end when the button is released.
+    if (desktop_selbox_active()) {
+        desktop_on_mouse(mx, my, lb, rb);
+        return;
     }
 }
 
