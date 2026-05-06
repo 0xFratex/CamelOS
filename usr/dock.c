@@ -36,6 +36,7 @@ void dock_init() {
     dock_add_app("NetDiag",   "/Applications/NetDiag.app",    "networking");
     dock_add_app("TextEdit",  "/Applications/TextEdit.app",   "file");
     dock_add_app("Browser",   "/Applications/Browser.app",    "browser");
+    dock_add_app("Calculator","/Applications/Calculator.app", "calculator");
     dock_add_app("Settings",  "/Applications/Settings.app",   "hdd_icon");
     dock_add_app("MacTest",   "/Applications/MacTest.app",    "hdd_icon");
 }
@@ -44,13 +45,30 @@ void dock_add_app(const char* label, const char* path, const char* icon_res) {
     if (dock_count >= MAX_DOCK_APPS) return;
     strcpy(dock_icons[dock_count].label, label);
     strcpy(dock_icons[dock_count].exec_path, path);
+    strncpy(dock_icons[dock_count].icon_res, icon_res ? icon_res : "hdd_icon", 15);
+    dock_icons[dock_count].icon_res[15] = 0;
     dock_icons[dock_count].window_ref = 0;
     dock_count++;
 }
 
 // Deprecated API stubs
 void dock_bind_window(window_t* win) {}
-void dock_register(const char* label, int color, Window* win) {}
+void dock_register(const char* label, int color, Window* win) {
+    // Dynamically register an app in the dock if not already present
+    if (!label) return;
+    // Check if already registered by label
+    for (int i = 0; i < dock_count; i++) {
+        if (strcmp(dock_icons[i].label, label) == 0) return;
+    }
+    // Add to dock with a default path
+    if (dock_count < MAX_DOCK_APPS) {
+        char path[128];
+        strcpy(path, "/Applications/");
+        strcat(path, label);
+        strcat(path, ".app");
+        dock_add_app(label, path, "hdd_icon");
+    }
+}
 
 // Helper: Find window by title match
 window_t* find_app_window(const char* label_fragment) {
@@ -117,7 +135,9 @@ void dock_get_window_rect(window_t* win, int* out_x, int* out_y, int* out_w, int
 
     for(int i=0; i<dock_count; i++) {
         const char* lbl = dock_icons[i].label;
-        const char* match = (strcmp(lbl, "Monitor") == 0) ? "Activity" : lbl;
+        const char* match = lbl;
+        if(strcmp(lbl, "Monitor") == 0) match = "Activity";
+        if(strcmp(lbl, "NetDiag") == 0) match = "Network";
 
         if (win->title && strstr(win->title, match)) {
             *out_x = x_pos[i];
@@ -189,19 +209,12 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         int sz = sizes[i];
         int y = shelf_y + (shelf_h - sz)/2 - 4; 
 
-        const char* asset = "file";
-        if(i==0) asset = "folder";
-        if(i==1) asset = "terminal";
-        if(i==2) asset = "waterhole";
-        if(i==3) asset = "networking";
-        if(i==4) asset = "file";
-        if(i==5) asset = "browser";
-        if(i==6) asset = "hdd_icon";
-
-        cm_draw_image(buffer, asset, x_pos[i], y, sz, sz);
+        cm_draw_image(buffer, dock_icons[i].icon_res, x_pos[i], y, sz, sz);
 
         const char* match = dock_icons[i].label;
         if(strcmp(match, "Monitor") == 0) match = "Activity";
+        if(strcmp(match, "NetDiag") == 0) match = "Network";
+        if(strcmp(match, "Calculator") == 0) match = "Calculator";
 
         if(is_app_running(match)) {
             // Indicator Dot

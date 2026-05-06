@@ -30,6 +30,7 @@ uint32_t gfx_blend_color(uint32_t bg, uint32_t fg);
 void gfx_draw_char_scaled(int x, int y, char c, uint32_t color, int scale);
 void gfx_draw_string_scaled(int x, int y, const char* str, uint32_t color, int scale);
 void gfx_draw_string(int x, int y, const char* str, uint32_t color);
+void gfx_draw_string_clipped(int x, int y, const char* str, uint32_t color, int max_width);
 void gfx_draw_string_centered(int cx, int y, const char* str, uint32_t color, int scale);
 void gfx_fill_rounded_rect(int x, int y, int w, int h, uint32_t color, int r);
 void gfx_fill_rounded_rect_aa(int x, int y, int w, int h, uint32_t color, int r);

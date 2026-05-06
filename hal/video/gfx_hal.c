@@ -395,6 +395,18 @@ void gfx_draw_string_scaled(int x, int y, const char* str, uint32_t color, int s
 void gfx_draw_string(int x, int y, const char* str, uint32_t color) { 
     gfx_draw_string_scaled(x, y, str, color, 1); 
 }
+void gfx_draw_string_clipped(int x, int y, const char* str, uint32_t color, int max_width) {
+    // Draw string but only render characters that fit within max_width pixels
+    if (!str || max_width <= 0) return;
+    int max_chars = max_width / 8;
+    int i = 0;
+    while (*str && i < max_chars) {
+        gfx_draw_char_scaled(x, y, *str, color, 1);
+        x += 8;
+        str++;
+        i++;
+    }
+}
 void gfx_draw_string_centered(int cx, int y, const char* str, uint32_t color, int scale) {
     int len = 0; while (str[len]) len++;
     gfx_draw_string_scaled(cx - len * 4 * scale, y, str, color, scale);
@@ -544,21 +556,16 @@ void gfx_stroke_rounded_rect(int x, int y, int w, int h, uint32_t color, int r, 
     if (w < 2*r) r = w/2;
     if (h < 2*r) r = h/2;
     if (r < 1) { gfx_draw_rect(x, y, w, h, color); return; }
+    // Clamp line_width to radius to avoid degenerate stroke
+    if (line_width > r) line_width = r;
     
-    // Draw the outline by drawing 4 edge strips + 4 corner arcs
-    // Top edge (between corner arcs)
-    gfx_fill_rect(x + r, y, w - 2*r, line_width, color);
-    // Bottom edge
-    gfx_fill_rect(x + r, y + h - line_width, w - 2*r, line_width, color);
-    // Left edge
-    gfx_fill_rect(x, y + r, line_width, h - 2*r, color);
-    // Right edge
-    gfx_fill_rect(x + w - line_width, y + r, line_width, h - 2*r, color);
-    
-    // Corner arcs (iterate edge pixels of each corner)
+    // Use a single unified pixel loop for the entire stroke ring.
+    // This eliminates the gaps that appeared between edge strips and
+    // corner arcs when the old two-pass approach (fill_rect edges +
+    // per-pixel corners) used slightly different coordinate math.
     int r2 = r * r;
-    int inner_r2 = (r - line_width) * (r - line_width);
-    if (inner_r2 < 0) inner_r2 = 0;
+    int inner_r = r - line_width;
+    int inner_r2 = inner_r * inner_r;
     
     for (int dy = 0; dy < r; dy++) {
         for (int dx = 0; dx < r; dx++) {
@@ -566,7 +573,7 @@ void gfx_stroke_rounded_rect(int x, int y, int w, int h, uint32_t color, int r, 
             int cy = r - 1 - dy;
             int dist_sq = cx * cx + cy * cy;
             
-            // Pixel is on the stroke ring if it's inside outer radius but outside inner
+            // Pixel is on the stroke ring if inside outer radius but outside inner
             if (dist_sq <= r2 && dist_sq >= inner_r2) {
                 // TL
                 gfx_put_pixel(x + dx, y + dy, color);
@@ -579,6 +586,15 @@ void gfx_stroke_rounded_rect(int x, int y, int w, int h, uint32_t color, int r, 
             }
         }
     }
+    
+    // Top edge (between corner arcs)
+    gfx_fill_rect(x + r, y, w - 2*r, line_width, color);
+    // Bottom edge
+    gfx_fill_rect(x + r, y + h - line_width, w - 2*r, line_width, color);
+    // Left edge
+    gfx_fill_rect(x, y + r, line_width, h - 2*r, color);
+    // Right edge
+    gfx_fill_rect(x + w - line_width, y + r, line_width, h - 2*r, color);
 }
 
 // ============================================================================

@@ -13,13 +13,14 @@
 
 // === FIX: MATCH KERNEL WINDOW SERVER LIMIT ===
 #define MAX_WINDOWS 32 
-#define MAX_DOCK_APPS 8
+#define MAX_DOCK_APPS 12
 
 typedef window_t Window;
 
 typedef struct {
     char label[16];
     char exec_path[64]; 
+    char icon_res[16];  // Icon resource name (e.g. "folder", "terminal", "browser")
     int color;
     Window* window_ref; 
 } DockIcon;

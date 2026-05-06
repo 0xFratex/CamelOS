@@ -63,6 +63,32 @@ static void te_new() {
     te_update_title();
 }
 
+static void te_new_with_welcome() {
+    te_new();
+    // Insert welcome/instruction text
+    strcpy(text_lines[0],  "Welcome to CamelOS TextEdit");
+    strcpy(text_lines[1],  "");
+    strcpy(text_lines[2],  "Keyboard Shortcuts:");
+    strcpy(text_lines[3],  "  Arrow keys  - Move cursor");
+    strcpy(text_lines[4],  "  Home/End    - Jump to start/end of line");
+    strcpy(text_lines[5],  "  Enter       - Insert new line");
+    strcpy(text_lines[6],  "  Backspace   - Delete character before cursor");
+    strcpy(text_lines[7],  "  Delete      - Delete character after cursor");
+    strcpy(text_lines[8],  "");
+    strcpy(text_lines[9],  "Toolbar Buttons:");
+    strcpy(text_lines[10], "  New   - Create a new empty document");
+    strcpy(text_lines[11], "  Open  - Open a file from disk");
+    strcpy(text_lines[12], "  Save  - Save the current file");
+    strcpy(text_lines[13], "");
+    strcpy(text_lines[14], "Scroll with mouse wheel or arrow keys.");
+    strcpy(text_lines[15], "Start typing to replace this text!");
+    line_count = 16;
+    cursor_line = 15;
+    cursor_col = strlen(text_lines[15]);
+    strcpy(status_msg, "New File");
+    te_update_title();
+}
+
 static void te_open_file(const char* path) {
     // Allocate on heap to avoid stack overflow (kernel stack is only 16KB,
     // and te_open_file can be called deep in the call chain from context menus)
@@ -478,15 +504,16 @@ static void textedit_on_resize(window_t* win, int new_w, int new_h) {
 }
 
 void init_textedit_app() {
-    te_new();
-
     // Check for launch arguments (file path passed via "Open With" or command line)
     char launch_path[256];
     launch_path[0] = 0;
     extern void wrap_get_args(char* b, int m);
     wrap_get_args(launch_path, sizeof(launch_path) - 1);
     if (launch_path[0] && sys_fs_exists(launch_path)) {
+        te_new();
         te_open_file(launch_path);
+    } else {
+        te_new_with_welcome();
     }
 
     te_window = fw_create_window("TextEdit", 500, 380, textedit_on_paint, textedit_on_input, textedit_on_mouse);

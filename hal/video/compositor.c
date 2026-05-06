@@ -75,55 +75,49 @@ void compositor_draw_window(window_t* win) {
     // 3. Header Bar with smooth gradient (macOS-style)
     // The header must respect the same circular arc used by
     // gfx_fill_rounded_rect_aa so that the gradient aligns perfectly
-    // with the window body's rounded top corners.  Previously the inset
-    // was computed as (corner_radius - row), which is a linear ramp that
-    // doesn't match the circle equation, causing visible corner artifacts
-    // (body color bleeding through where the header should cover).
-    for (int i = 0; i < 28; i++) {
-        // Smooth gradient from 0xFFF0F0F0 to 0xFFE8E8E8
-        float t = (float)i / 27.0f;
-        uint8_t gray = (uint8_t)(0xF0 + (0xE8 - 0xF0) * t);
-        uint32_t header_col = (0xFF << 24) | (gray << 16) | (gray << 8) | gray;
-
-        // Only fill within the rounded top corners
-        if (i < corner_radius) {
-            // Use the same circle equation as gfx_fill_rounded_rect_aa:
-            //   circle center is at (R-1, R-1) relative to top-left
-            //   at row i, the horizontal offset from the circle edge is:
-            //     R - sqrt(R^2 - (R-1-i)^2)
-            //   which gives the inset from the window edge.
-            int dy = corner_radius - 1 - i;  // distance from circle center
-            int r2 = corner_radius * corner_radius;
-            // Integer square-root approximation for the inset
-            int inset = 0;
-            if (dy < corner_radius) {
-                // Compute inset = R - sqrt(R^2 - dy^2) using integer math
-                // Use a simple iterative sqrt approximation
-                int d2 = dy * dy;
-                int diff = r2 - d2;
-                if (diff >= 0) {
-                    // Fast integer sqrt via Newton's method
-                    int sq = diff;
-                    // Initial guess
-                    int est = sq;
-                    if (est > 0) {
-                        // Newton iterations (3 is enough for R<=20)
-                        for (int iter = 0; iter < 3; iter++) {
-                            est = (est + sq / est) / 2;
-                        }
-                        inset = corner_radius - 1 - est;
-                    } else {
-                        inset = corner_radius - 1;
+    // with the window body's rounded top corners.
+    // We use the EXACT same per-pixel circle test as gfx_fill_rounded_rect_aa:
+    //   circle center at (R-1, R-1) relative to the corner, pixel (dx,dy) is
+    //   inside if (R-1-dx)^2 + (R-1-dy)^2 <= R^2
+    {
+        int r = corner_radius;
+        int r2 = r * r;
+        
+        for (int row = 0; row < 28; row++) {
+            // Smooth gradient from 0xFFF0F0F0 to 0xFFE8E8E8
+            uint8_t gray = (uint8_t)(0xF0 + (0xE8 - 0xF0) * row / 27);
+            uint32_t header_col = (0xFF << 24) | (gray << 16) | (gray << 8) | gray;
+            
+            if (row < r) {
+                // Use the exact same per-pixel circle test as gfx_fill_rounded_rect_aa
+                // to find the left and right inset for this row
+                int left_inset = r;  // Default: full corner width
+                int right_inset = r;
+                
+                for (int dx = 0; dx < r; dx++) {
+                    int cx = r - 1 - dx;
+                    int cy = r - 1 - row;
+                    if (cx * cx + cy * cy <= r2) {
+                        left_inset = dx;
+                        break;
                     }
                 }
-            }
-            if (inset > 0) {
-                gfx_fill_rect(win->x + inset, win->y + i, win->width - 2 * inset, 1, header_col);
+                for (int dx = 0; dx < r; dx++) {
+                    int cx = r - 1 - dx;
+                    int cy = r - 1 - row;
+                    if (cx * cx + cy * cy <= r2) {
+                        right_inset = dx;
+                        break;
+                    }
+                }
+                
+                int row_w = win->width - left_inset - right_inset;
+                if (row_w > 0) {
+                    gfx_fill_rect(win->x + left_inset, win->y + row, row_w, 1, header_col);
+                }
             } else {
-                gfx_fill_rect(win->x, win->y + i, win->width, 1, header_col);
+                gfx_fill_rect(win->x, win->y + row, win->width, 1, header_col);
             }
-        } else {
-            gfx_fill_rect(win->x, win->y + i, win->width, 1, header_col);
         }
     }
     

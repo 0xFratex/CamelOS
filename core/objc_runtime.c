@@ -39,7 +39,7 @@ static void init_root_class(void) {
     // Setup root metaclass
     memset(&g_root_metaclass, 0, sizeof(g_root_metaclass));
     g_root_metaclass.isa = &g_root_metaclass;  // Metaclass's isa points to itself
-    g_root_metaclass.superclass = &g_root_metaclass;
+    g_root_metaclass.superclass = &g_root_class;  // Root metaclass's superclass is the root class (NOT itself — prevents infinite recursion in method lookup)
     strcpy(g_root_metaclass.name, "NSObject meta");
     g_root_metaclass.info = 0x02; // Meta-class flag
     
@@ -209,15 +209,17 @@ void objc_registerClassPair(Class cls) {
 Method class_getInstanceMethod(Class cls, SEL name) {
     if (!cls || !name) return 0;
     
-    Method m = cls->methods;
-    while (m) {
-        if (sel_isEqual(m->selector, name)) return m;
-        m = m->next;
-    }
-    
-    // Search superclass
-    if (cls->superclass) {
-        return class_getInstanceMethod(cls->superclass, name);
+    // Guard against circular superclass chains (max depth 32)
+    int depth = 0;
+    Class cur = cls;
+    while (cur && depth < 32) {
+        Method m = cur->methods;
+        while (m) {
+            if (sel_isEqual(m->selector, name)) return m;
+            m = m->next;
+        }
+        cur = cur->superclass;
+        depth++;
     }
     
     return 0;

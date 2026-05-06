@@ -1300,10 +1300,15 @@ static void render_new_tab_page(int x, int y, int w, int h) {
             for (int i = 0; i < recent_visit_count && rv_y + 18 < y + h - 10; i++) {
                 // Small colored dot
                 gfx_fill_rounded_rect(x + 40, rv_y + 3, 8, 8, COL_ACCENT_BLUE, 4);
-                // Title
-                gfx_draw_string(x + 54, rv_y, recent_visits[i].title[0] ? recent_visits[i].title : recent_visits[i].url, COL_TEXT_DARK);
-                // URL on the right (truncated)
+                // Calculate URL position first so we can use it for title clipping
                 int url_x = x + w - 200;
+                // Title (clipped to available width)
+                {
+                    const char* rv_title = recent_visits[i].title[0] ? recent_visits[i].title : recent_visits[i].url;
+                    int max_title_w = (url_x > x + 54 + 100) ? (url_x - x - 60) : (w - 68);
+                    gfx_draw_string_clipped(x + 54, rv_y, rv_title, COL_TEXT_DARK, max_title_w);
+                }
+                // URL on the right (truncated)
                 if (url_x > x + 54 + 100) {
                     char trunc_url[24];
                     int ulen = strlen(recent_visits[i].url);
@@ -2098,14 +2103,40 @@ static void browser_on_paint(window_t* win, int x, int y, int w, int h) {
     // Shortcut hints bar
     gfx_fill_rect(content_x, hints_y, content_w_area, hints_h, 0xFFF8F8FA);
     gfx_draw_rect(content_x, hints_y, content_w_area, 1, COL_SEPARATOR);
-    gfx_draw_string(content_x + 8, hints_y + 4, "L:URL  B:Back  F:Fwd  R:Reload  V:Source  D:Dev  +/-:Zoom  0:Reset", 0xFFAAAAAA);
+    // Clip hint text to available width to prevent overflow on small windows
+    {
+        const char* hint_text = "L:URL  B:Back  F:Fwd  R:Reload  V:Source  D:Dev  +/-:Zoom  0:Reset";
+        int hint_max_w = content_w_area - 16;  // 8px padding each side
+        if (hint_max_w > 0) {
+            int hint_chars = hint_max_w / 8;  // 8px per character
+            if (hint_chars > 0) {
+                char hint_buf[80];
+                int hint_len = strlen(hint_text);
+                if (hint_len > hint_chars) hint_len = hint_chars;
+                strncpy(hint_buf, hint_text, hint_len);
+                hint_buf[hint_len] = 0;
+                gfx_draw_string(content_x + 8, hints_y + 4, hint_buf, 0xFFAAAAAA);
+            }
+        }
+    }
 
     // Status bar (enhanced with more info)
     gfx_fill_rect(x, status_y, w, STATUS_BAR_H, COL_STATUS_BAR_BG);
     gfx_draw_rect(x, status_y, w, 1, COL_SEPARATOR);
 
-    // Status text
-    gfx_draw_string(x + 8, status_y + 6, status_text, COL_TEXT_MUTED);
+    // Status text (clipped to prevent overflow on small windows)
+    {
+        int status_max_w = w - 16;  // Leave 8px padding each side
+        int status_max_chars = status_max_w / 8;
+        if (status_max_chars > 0) {
+            char status_clipped[256];
+            int slen = strlen(status_text);
+            if (slen > status_max_chars) slen = status_max_chars;
+            strncpy(status_clipped, status_text, slen);
+            status_clipped[slen] = 0;
+            gfx_draw_string(x + 8, status_y + 6, status_clipped, COL_TEXT_MUTED);
+        }
+    }
 
     // Loading indicator
     if (is_loading) {

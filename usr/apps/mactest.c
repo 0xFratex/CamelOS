@@ -92,11 +92,18 @@ static void run_macho_tests(void) {
 
     // Test 4: Attempt to load a Mach-O from /Applications
     {
-        loaded_macho_t* img = macho_load("/Applications/TestMachO.app/Contents/MacOS/TestMachO");
-        if (img) {
-            macho_test_pass++;
-            strcat(macho_result, "[PASS] Mach-O binary loaded successfully\n");
-            macho_unload(img);
+        // First check if the file exists before calling macho_load to avoid
+        // spurious "[MachO] File too small or not found" log messages
+        if (sys_fs_exists("/Applications/TestMachO.app/Contents/MacOS/TestMachO")) {
+            loaded_macho_t* img = macho_load("/Applications/TestMachO.app/Contents/MacOS/TestMachO");
+            if (img) {
+                macho_test_pass++;
+                strcat(macho_result, "[PASS] Mach-O binary loaded successfully\n");
+                macho_unload(img);
+            } else {
+                macho_test_fail++;
+                strcat(macho_result, "[FAIL] Mach-O binary found but failed to load\n");
+            }
         } else {
             // No test binary expected on fresh install - mark as info
             macho_test_pass++;
