@@ -25,3 +25,5 @@ skills/
 system.disasm
 task_progress
 write_disk
+*.d
+*.o

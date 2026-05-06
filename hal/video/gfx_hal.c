@@ -12,11 +12,13 @@ static int use_backbuffer = 0;
 // Static fallback backbuffer for high-resolution modes.
 // If kmalloc fails for the backbuffer (e.g., heap too fragmented for a
 // 3MB+ contiguous allocation), we fall back to this static buffer.
-// Supports up to 800x600@32bpp (1,920,000 bytes).  For larger modes,
-// the kmalloc path is attempted first; only on failure do we use this,
-// potentially at a reduced resolution or with direct-VRAM rendering.
-#define STATIC_BACKBUFFER_SIZE (800 * 600 * 4)
-static uint32_t static_backbuffer[STATIC_BACKBUFFER_SIZE / 4] __attribute__((aligned(16)));
+// Supports up to 1024x768@32bpp (3,145,728 bytes).
+// IMPORTANT: Without a valid backbuffer, gfx_put_pixel_aa() and other
+// functions that dereference back_ptr directly will corrupt low memory
+// (writing through NULL pointer into the first 3MB of physical RAM),
+// overwriting kernel code and causing Invalid Opcode panics.
+#define STATIC_BACKBUFFER_SIZE (1024 * 768 * 4)
+static uint32_t static_backbuffer[STATIC_BACKBUFFER_SIZE / 4] __attribute__((aligned(4096)));
 static int using_static_backbuffer = 0;
 
 // --- SOFTWARE CLIP RECTANGLE ---
@@ -244,6 +246,11 @@ uint32_t* gfx_get_blur_buffer() {
 // Draw a pixel with Alpha (AA Helper)
 void gfx_put_pixel_aa(int x, int y, uint32_t color, uint8_t alpha) {
     if (x < 0 || x >= gfx_ctx.width || y < 0 || y >= gfx_ctx.height) return;
+    // CRITICAL: Must check use_backbuffer before dereferencing back_ptr.
+    // When back_ptr is NULL (backbuffer alloc failed), writing through it
+    // corrupts low physical memory (first 3MB), overwriting kernel code
+    // and causing Invalid Opcode panics.
+    if (!use_backbuffer || !gfx_ctx.back_ptr) return;
     
     uint32_t* ptr = &gfx_ctx.back_ptr[y * gfx_ctx.width + x];
     
@@ -258,15 +265,20 @@ void gfx_put_pixel(int x, int y, uint32_t color) {
     if ((unsigned int)x >= (unsigned int)gfx_ctx.width || (unsigned int)y >= (unsigned int)gfx_ctx.height) return;
     // Software clip rectangle
     if (clip_enabled && (x < clip_x1 || x >= clip_x2 || y < clip_y1 || y >= clip_y2)) return;
-    if (use_backbuffer) {
+    if (use_backbuffer && gfx_ctx.back_ptr) {
         uint32_t* ptr = &gfx_ctx.back_ptr[y * gfx_ctx.width + x];
         unsigned int a = (color >> 24) & 0xFF;
         if(a == 255) *ptr = color;
         else if(a > 0) *ptr = fast_blend(*ptr, color);
-    } else {
+    } else if (gfx_ctx.vram_ptr) {
         if(gfx_ctx.bpp == 32) {
             uint32_t* p = (uint32_t*)((uint8_t*)gfx_ctx.vram_ptr + y*gfx_ctx.pitch + x*4);
             *p = color;
+        } else if(gfx_ctx.bpp == 24) {
+            uint8_t* p = (uint8_t*)gfx_ctx.vram_ptr + y*gfx_ctx.pitch + x*3;
+            p[0] = color & 0xFF;
+            p[1] = (color >> 8) & 0xFF;
+            p[2] = (color >> 16) & 0xFF;
         }
     }
 }
@@ -287,7 +299,7 @@ void gfx_fill_rect(int x, int y, int w, int h, uint32_t color) {
     }
     if (w <= 0 || h <= 0) return;
 
-    if (use_backbuffer) {
+    if (use_backbuffer && gfx_ctx.back_ptr) {
         unsigned int a = (color >> 24) & 0xFF;
         if (a == 255) {
             for(int row=0; row<h; row++) {
@@ -300,9 +312,18 @@ void gfx_fill_rect(int x, int y, int w, int h, uint32_t color) {
                 for(int col=0; col<w; col++) line[col] = fast_blend(line[col], color);
             }
         }
-    } else {
-        for(int row=0; row<h; row++)
-            for(int col=0; col<w; col++) gfx_put_pixel(x+col, y+row, color);
+    } else if (gfx_ctx.vram_ptr) {
+        // Direct VRAM fast fill (no backbuffer)
+        if(gfx_ctx.bpp == 32 && (color >> 24) == 0xFF) {
+            // Fast path: opaque fill to 32bpp VRAM
+            for(int row=0; row<h; row++) {
+                uint32_t* line = (uint32_t*)((uint8_t*)gfx_ctx.vram_ptr + (y+row)*gfx_ctx.pitch + x*4);
+                for(int col=0; col<w; col++) line[col] = color;
+            }
+        } else {
+            for(int row=0; row<h; row++)
+                for(int col=0; col<w; col++) gfx_put_pixel(x+col, y+row, color);
+        }
     }
 }
 
@@ -312,7 +333,8 @@ void gfx_draw_asset_scaled(uint32_t* buffer, int x, int y, const uint32_t* data,
     if (dw == 0 || dh == 0) return;
     if (sw == 0 || sh == 0) return;
 
-    uint32_t* target = buffer ? buffer : (use_backbuffer ? gfx_ctx.back_ptr : (uint32_t*)gfx_ctx.vram_ptr);
+    uint32_t* target = buffer ? buffer : (use_backbuffer && gfx_ctx.back_ptr ? gfx_ctx.back_ptr : (uint32_t*)gfx_ctx.vram_ptr);
+    if (!target) return;
 
     // Calculate Clipping
     int start_dx = 0, start_dy = 0;
@@ -360,7 +382,7 @@ void gfx_draw_asset_scaled(uint32_t* buffer, int x, int y, const uint32_t* data,
     }
 }
 
-uint32_t* gfx_get_active_buffer() { return use_backbuffer ? gfx_ctx.back_ptr : (uint32_t*)gfx_ctx.vram_ptr; }
+uint32_t* gfx_get_active_buffer() { return (use_backbuffer && gfx_ctx.back_ptr) ? gfx_ctx.back_ptr : (uint32_t*)gfx_ctx.vram_ptr; }
 /* gfx_get_width/gfx_get_height moved to gfx_hal.h as static inline */
 void gfx_draw_icon(int x, int y, int w, int h, const uint32_t* data) { gfx_draw_asset_scaled(0, x, y, data, w, h, w, h); }
 
@@ -471,7 +493,7 @@ void gfx_fill_rounded_rect(int x, int y, int w, int h, uint32_t color, int r) {
 
 // --- NEW: Anti-Aliased Rounded Rect (The "Squircle" Look) ---
 void gfx_fill_rounded_rect_aa(int x, int y, int w, int h, uint32_t color, int r) {
-    if (!use_backbuffer) return;
+    if (!use_backbuffer || !gfx_ctx.back_ptr) return;
     
     // Clamp radius
     if (r > w/2) r = w/2;
@@ -522,7 +544,7 @@ void gfx_fill_rounded_rect_aa(int x, int y, int w, int h, uint32_t color, int r)
 
 // --- NEW: Glass Rect (Samples Blur Buffer) ---
 void gfx_draw_glass_rect(int x, int y, int w, int h, int r) {
-    if (!wallpaper_blur_ptr || !use_backbuffer) {
+    if (!wallpaper_blur_ptr || !use_backbuffer || !gfx_ctx.back_ptr) {
         // Fallback to solid translucent white if no blur buffer
         gfx_fill_rounded_rect_aa(x, y, w, h, 0xCCF0F0F0, r);
         return;
