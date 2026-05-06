@@ -22,7 +22,8 @@ extern void printk(const char* fmt, ...);
 #define TCP_MAX_CONNECTIONS 32
 #define TCP_WINDOW_SIZE 16384 // Increased to 16KB
 #define TCP_MSS 1460
-#define TCP_RETRANSMIT_TIMEOUT 1000 // ms
+#define TCP_RETRANSMIT_TIMEOUT 2000  // ms (initial retransmit timeout in ticks)
+#define TCP_MAX_RETRANSMIT     5     // Max retransmit attempts before giving up
 
 
 static tcp_connection_t tcp_connections[TCP_MAX_CONNECTIONS];
@@ -160,6 +161,9 @@ int tcp_connect(uint32_t remote_ip, uint16_t remote_port) {
     conn->remote_port = remote_port;
     conn->snd_nxt = 1;
     conn->connect_time = timer_get_ticks();
+    conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
+    conn->retransmit_count = 0;
+    conn->last_ack_time = timer_get_ticks();
 
     // Send SYN
     tcp_send(conn, TCP_SYN, NULL, 0);
@@ -185,6 +189,9 @@ tcp_connection_t* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port)
     conn->remote_port = remote_port;
     conn->snd_nxt = 1;
     conn->connect_time = timer_get_ticks();
+    conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
+    conn->retransmit_count = 0;
+    conn->last_ack_time = timer_get_ticks();
 
     // Send SYN
     tcp_send(conn, TCP_SYN, NULL, 0);
@@ -267,6 +274,7 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                     conn->rcv_nxt = seq + 1;
                     conn->snd_una = ack;
                     conn->state = TCP_ESTABLISHED;
+                    conn->retransmit_count = 0;  /* Reset on successful handshake */
 
                     // Send ACK
                     tcp_send(conn, TCP_ACK, NULL, 0);
@@ -279,6 +287,15 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             break;
 
         case TCP_ESTABLISHED:
+            // Handle ACK — reset retransmit timer on acknowledgment
+            if (flags & TCP_ACK) {
+                if (ack > conn->snd_una) {
+                    conn->snd_una = ack;
+                    conn->retransmit_count = 0;  /* ACK received, reset retransmit */
+                    conn->last_ack_time = timer_get_ticks();
+                }
+            }
+
             // Handle data
             if (len > (tcp->data_offset >> 2) * 4) {
                 uint16_t data_len = len - (tcp->data_offset >> 2) * 4;
@@ -665,6 +682,129 @@ void tcp_process_listeners(void) {
                 listener->pending[listener->pending_count] = NULL;
                 j--;
             }
+        }
+    }
+}
+
+// ============================================================================
+// TCP Retransmission Timer
+// ============================================================================
+
+/**
+ * tcp_retransmit_check - Check all connections for retransmission timeout.
+ *
+ * Should be called periodically (e.g., from the timer tick or main loop).
+ * For each active connection that has unacknowledged data and whose
+ * retransmit timer has expired, retransmits the last segment.
+ * Implements exponential backoff: each retransmit doubles the timeout.
+ *
+ * After TCP_MAX_RETRANSMIT attempts, the connection is closed with a RST.
+ */
+void tcp_retransmit_check(void)
+{
+    uint32_t now = timer_get_ticks();
+
+    for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+        tcp_connection_t* conn = &tcp_connections[i];
+
+        /* Skip closed or idle connections */
+        if (conn->state == TCP_CLOSED) continue;
+        if (conn->retransmit_timeout == 0) continue;
+
+        /* Check if the retransmit timer has expired */
+        uint32_t elapsed = now - conn->last_ack_time;
+        if (elapsed < conn->retransmit_timeout) continue;
+
+        /* Too many retransmits — give up and close the connection */
+        if (conn->retransmit_count >= TCP_MAX_RETRANSMIT) {
+            s_printf("[TCP] Max retransmits exceeded for port %d, closing\n",
+                     conn->remote_port);
+            tcp_send(conn, TCP_RST, NULL, 0);
+            conn->state = TCP_CLOSED;
+            if (conn->on_state_change) {
+                conn->on_state_change(TCP_ESTABLISHED, TCP_CLOSED);
+            }
+            continue;
+        }
+
+        /* Retransmit based on current state */
+        conn->retransmit_count++;
+
+        /* Exponential backoff: double the timeout for next retransmit */
+        conn->retransmit_timeout *= 2;
+        /* Cap at 30 seconds (assuming ~50 ticks/sec, that's 1500 ticks) */
+        if (conn->retransmit_timeout > 1500) {
+            conn->retransmit_timeout = 1500;
+        }
+
+        /* Reset the timer for the next check */
+        conn->last_ack_time = now;
+
+        switch (conn->state) {
+            case TCP_SYN_SENT:
+                /* Retransmit SYN */
+                s_printf("[TCP] Retransmitting SYN to port %d (attempt %d)\n",
+                         conn->remote_port, conn->retransmit_count);
+                tcp_send(conn, TCP_SYN, NULL, 0);
+                break;
+
+            case TCP_SYN_RECEIVED:
+                /* Retransmit SYN-ACK */
+                s_printf("[TCP] Retransmitting SYN-ACK to port %d (attempt %d)\n",
+                         conn->remote_port, conn->retransmit_count);
+                tcp_send(conn, TCP_SYN | TCP_ACK, NULL, 0);
+                break;
+
+            case TCP_ESTABLISHED:
+                /* Retransmit unacknowledged data from the send buffer.
+                 * We resend from send_head up to send_tail in MSS-sized chunks,
+                 * starting from the sequence number that hasn't been ACKed. */
+                if (conn->send_tail > conn->send_head) {
+                    s_printf("[TCP] Retransmitting data on port %d (attempt %d, %d bytes)\n",
+                             conn->remote_port, conn->retransmit_count,
+                             conn->send_tail - conn->send_head);
+
+                    uint32_t data_len = conn->send_tail - conn->send_head;
+                    uint32_t offset = 0;
+
+                    /* Save and temporarily set snd_nxt to snd_una for retransmit */
+                    uint32_t saved_nxt = conn->snd_nxt;
+                    conn->snd_nxt = conn->snd_una;
+
+                    while (offset < data_len) {
+                        uint16_t chunk = (data_len - offset > TCP_MSS)
+                                         ? TCP_MSS : (uint16_t)(data_len - offset);
+                        tcp_send(conn, TCP_ACK | TCP_PSH,
+                                 conn->send_buffer + conn->send_head + offset, chunk);
+                        conn->snd_nxt += chunk;
+                        offset += chunk;
+                    }
+
+                    /* Restore snd_nxt if it advanced beyond what we retransmitted */
+                    if (saved_nxt > conn->snd_nxt) {
+                        conn->snd_nxt = saved_nxt;
+                    }
+                } else {
+                    /* No data in send buffer — just send a keep-alive ACK */
+                    tcp_send(conn, TCP_ACK, NULL, 0);
+                }
+                break;
+
+            case TCP_FIN_WAIT1:
+                /* Retransmit FIN */
+                s_printf("[TCP] Retransmitting FIN to port %d (attempt %d)\n",
+                         conn->remote_port, conn->retransmit_count);
+                tcp_send(conn, TCP_FIN | TCP_ACK, NULL, 0);
+                break;
+
+            case TCP_LAST_ACK:
+                /* Retransmit FIN */
+                tcp_send(conn, TCP_FIN | TCP_ACK, NULL, 0);
+                break;
+
+            default:
+                /* Other states: no retransmit action needed */
+                break;
         }
     }
 }

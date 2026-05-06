@@ -31,6 +31,7 @@
 #include "../fs/vfs.h"
 #include "../core/process.h"
 #include "../core/crash.h"
+#include "../core/launchd.h"
 
 extern int kbd_ctrl_pressed;
 extern int kbd_shift_pressed;
@@ -372,6 +373,30 @@ void kernel_main(void* mboot_ptr) {
     crash_reporter_init();
     s_printf("[KERNEL] Crash Reporter Initialized.\n");
 
+    // Initialize launchd Service Manager (macOS-style PID 1 equivalent)
+    launchd_init();
+    s_printf("[KERNEL] launchd Service Manager Initialized.\n");
+
+    // Register core system services with launchd
+    // These are tracked for health monitoring and auto-restart on crash
+    launchd_register("NetworkStack",   0, 1, 1, 3);  // auto-start, keep-alive, max 3 crashes
+    launchd_register("WindowServer",   0, 1, 1, 3);  // auto-start, keep-alive, max 3 crashes
+    launchd_register("CrashReporter",  0, 0, 1, 5);  // manual start, keep-alive, max 5 crashes
+    launchd_register("IPCService",     0, 1, 1, 3);  // auto-start, keep-alive, max 3 crashes
+    launchd_add_dependency("WindowServer", "NetworkStack");  // WindowServer needs network
+    s_printf("[KERNEL] Core services registered with launchd.\n");
+
+    // Auto-start all services marked auto_start=1
+    launchd_boot_start();
+    s_printf("[KERNEL] launchd boot auto-start complete.\n");
+
+    // Register FAT32 filesystem driver with VFS
+    // FAT32 partitions can be mounted after calling fat32_init() with the partition LBA.
+    // This registration makes VFS aware of the FAT32 driver type.
+    extern int fat32_register_with_vfs(void);
+    fat32_register_with_vfs();
+    s_printf("[KERNEL] FAT32 VFS driver registered.\n");
+
     int m = sys_fs_mount();
     s_printf("[DBG] sys_fs_mount returned ");
     int_to_str(m, buf);
@@ -595,7 +620,15 @@ void kernel_main(void* mboot_ptr) {
             extern void rtl8139_poll();
             rtl8139_poll();  // Poll network card regularly
             
-            // Other event processing...
+            // Process TCP listener queue and retransmit timers
+            extern void tcp_process_listeners(void);
+            extern void tcp_retransmit_check(void);
+            tcp_process_listeners();
+            tcp_retransmit_check();
+            
+            // Periodic launchd health check
+            extern void launchd_check_health(void);
+            launchd_check_health();
             
             asm("hlt");  // Halt until next interrupt
         }

@@ -110,4 +110,7 @@ int tcp_close_listener(int listener_id);
 tcp_listener_t* tcp_find_listener(uint16_t port);
 void tcp_process_listeners(void);
 
+/* Retransmission timer — call periodically from main loop */
+void tcp_retransmit_check(void);
+
 #endif

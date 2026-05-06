@@ -16,6 +16,7 @@
 #include "memory.h"
 #include "string.h"
 #include "../hal/drivers/serial.h"
+#include "../hal/cpu/timer.h"
 
 // ============================================================================
 // Global IPC State
@@ -281,19 +282,84 @@ void ipc_shm_unmap(int shm_id) {
 // RPC (Remote Procedure Call) - Synchronous message passing
 // ============================================================================
 
+#define IPC_RPC_REPLY_PORT_BASE  9000  /* Ephemeral port range for RPC replies */
+#define IPC_RPC_TIMEOUT         5000   /* Default RPC timeout in ticks (~100s at 50Hz) */
+#define IPC_RPC_POLL_INTERVAL   10     /* Poll every 10 ticks */
+
 int ipc_rpc_call(int dest_port_id, uint32_t method,
                  const void* args, uint32_t args_size,
                  void* reply, uint32_t* reply_size) {
-    // Send request
-    int msg_id = ipc_send(dest_port_id, 0, method, args, args_size);
-    if (msg_id < 0) return msg_id;
-    
-    // Wait for reply (polling with timeout)
-    // In a real system this would block the calling thread
-    // For now, we poll for a reply message
-    // TODO: Implement proper blocking wait
-    
-    return msg_id;
+    if (!args && args_size > 0) return IPC_ERR_INVALID_PARAM;
+
+    /* Create a temporary reply port for this RPC call.
+     * The server will send the reply to this port. */
+    ipc_port_t* reply_port = ipc_port_create(0);  /* PID 0 = kernel */
+    if (!reply_port) return IPC_ERR_NO_MEMORY;
+
+    /* Build the request message with the reply port embedded.
+     * We pack the reply_port_id at the start of the data so the
+     * server knows where to send the response. */
+    uint8_t rpc_data[IPC_MAX_MSG_SIZE];
+    uint32_t rpc_data_size = 4 + args_size;  /* 4 bytes for reply port ID */
+
+    if (rpc_data_size > IPC_MAX_MSG_SIZE) {
+        ipc_port_destroy(reply_port);
+        return IPC_ERR_MSG_TOO_LARGE;
+    }
+
+    /* Embed reply port ID in the first 4 bytes of data */
+    rpc_data[0] = (reply_port->port_id >> 24) & 0xFF;
+    rpc_data[1] = (reply_port->port_id >> 16) & 0xFF;
+    rpc_data[2] = (reply_port->port_id >> 8)  & 0xFF;
+    rpc_data[3] = (reply_port->port_id)       & 0xFF;
+
+    /* Copy args after the reply port ID */
+    if (args && args_size > 0) {
+        memcpy(rpc_data + 4, args, args_size);
+    }
+
+    /* Send the RPC request */
+    int msg_id = ipc_send(dest_port_id, reply_port->port_id,
+                          IPC_MSG_REQUEST | method,
+                          rpc_data, rpc_data_size);
+    if (msg_id < 0) {
+        ipc_port_destroy(reply_port);
+        return msg_id;
+    }
+
+    /* Poll for reply on the reply port with timeout */
+    uint32_t start = timer_get_ticks();
+    while (1) {
+        /* Check if a reply message has arrived */
+        ipc_message_t reply_msg;
+        int ret = ipc_recv_type(reply_port->port_id, IPC_MSG_REPLY, &reply_msg);
+
+        if (ret == IPC_OK) {
+            /* Got the reply! */
+            if (reply && reply_size && *reply_size > 0) {
+                uint32_t copy_len = reply_msg.data_size;
+                if (copy_len > *reply_size) {
+                    copy_len = *reply_size;
+                }
+                memcpy(reply, reply_msg.data, copy_len);
+                *reply_size = copy_len;
+            }
+
+            ipc_port_destroy(reply_port);
+            return 0;  /* Success */
+        }
+
+        /* Check timeout */
+        uint32_t elapsed = timer_get_ticks() - start;
+        if (elapsed >= IPC_RPC_TIMEOUT) {
+            ipc_port_destroy(reply_port);
+            return IPC_ERR_NO_MESSAGES;  /* Timeout — no reply received */
+        }
+
+        /* Yield to other tasks / wait a bit before polling again */
+        /* In a cooperative environment, we yield here. With the scheduler,
+         * we could scheduler_block() instead. For now, just continue polling. */
+    }
 }
 
 // ============================================================================
