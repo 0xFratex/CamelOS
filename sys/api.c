@@ -2,6 +2,7 @@
 #include "../hal/video/gfx_hal.h"
 #include "../hal/drivers/vga.h"
 #include "../hal/drivers/ata.h"
+#include "../hal/drivers/acpi.h"
 #include "../fs/disk.h"
 #include "../core/string.h"
 #include "../hal/drivers/keyboard.h"
@@ -46,8 +47,16 @@ void sys_shutdown() {
     extern int pfs32_sync(void);
     pfs32_sync();
     disk_flush_cache();
-    sys_print("\nShutting down in 3s...");
-    sys_delay(3000);
+    sys_print("\nShutting down...");
+    sys_delay(500);
+
+    // Try ACPI S5 shutdown first
+    if (acpi_is_available() && acpi_shutdown() == 0) {
+        // ACPI shutdown succeeded (should not reach here)
+        while(1) asm volatile("hlt");
+    }
+
+    // Fallback: QEMU/Bochs-specific shutdown ports
     outw(0x604, 0x2000);
     outw(0xB004, 0x2000);
     asm volatile("cli; hlt");
@@ -61,6 +70,13 @@ void sys_reboot() {
     // Small delay to let the drive settle after flush
     sys_delay(50);
 
+    // Try ACPI reboot first (includes keyboard controller fallback)
+    if (acpi_is_available()) {
+        acpi_reboot();
+        // If ACPI reboot returned, fall through to triple fault
+    }
+
+    // Fallback: keyboard controller reset
     uint8_t good = 0x02;
     while (good & 0x02) good = inb(0x64);
     outb(0x64, 0xFE);

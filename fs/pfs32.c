@@ -59,7 +59,7 @@ static int clone_count = 0;
 static uint32_t current_transaction = 0;
 
 // --- Helper Prototypes ---
-uint32_t get_current_gid() { return 0; } // Single-user OS: group 0
+uint32_t get_current_gid() { return current_gid; }
 
 uint32_t pfs32_time_now() {
     // Return Unix-style timestamp from RTC
@@ -172,24 +172,30 @@ void sanitize_name(char* dest, const char* src, int max_len) {
     if (j == 0) { dest[0] = '_'; dest[1] = 0; }
 }
 
-// --- Permission Logic (SEC-002 Group Support) ---
+// --- Global UID/GID (Task 6: File Permission Enforcement) ---
+uint32_t current_uid = 0;  // Default: root
+uint32_t current_gid = 0;  // Default: root group
+
+// --- Permission Logic (SEC-002 Group Support + Task 6) ---
+
+// Internal helper: check permission bits against current process uid/gid
 int check_permission(uint8_t file_uid, uint8_t file_gid, uint8_t file_perm, int op) {
-    int current_uid = get_current_uid();
-    int current_gid = get_current_gid();
+    int cur_uid = get_current_uid();
+    int cur_gid = get_current_gid();
 
     // Root (0) bypass
-    if (current_uid == 0) return 1;
+    if (cur_uid == 0) return 1;
 
     // Permissions: [Owner 3][Group 3][World 2]
     
     // Check Owner
-    if (current_uid == file_uid) {
+    if (cur_uid == file_uid) {
         uint8_t owner_perm = (file_perm >> 5) & 0x07;
         return (owner_perm & op);
     }
 
     // Check Group
-    if (current_gid == file_gid) {
+    if (cur_gid == file_gid) {
         uint8_t group_perm = (file_perm >> 2) & 0x07;
         return (group_perm & op);
     }
@@ -204,6 +210,25 @@ int check_permission(uint8_t file_uid, uint8_t file_gid, uint8_t file_perm, int 
     if (op == PFS_PERM_WRITE) return 0; // World write disabled by design in packed byte
 
     return (world_perm & req);
+}
+
+// Public API: check if current process has permission to access a file
+// access_mode: 0=read, 1=write, 2=execute
+int pfs32_check_permission(pfs32_direntry_t* inode, int access_mode) {
+    if (!inode) return -1;  // Invalid inode
+
+    int op;
+    switch (access_mode) {
+        case 0: op = PFS_PERM_READ;  break;
+        case 1: op = PFS_PERM_WRITE; break;
+        case 2: op = PFS_PERM_EXEC;  break;
+        default: return -1;
+    }
+
+    if (check_permission(inode->uid, inode->gid, inode->permissions, op)) {
+        return 0;   // Success
+    }
+    return -1;      // Permission denied
 }
 
 // --- FAT Management (LRU) ---
@@ -787,6 +812,30 @@ int pfs32_create_node(const char* path, int is_dir) {
 
     uint32_t pblk;
     if(get_dir_block(parent, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
+
+    // Check write permission on parent directory (Task 6)
+    pfs32_direntry_t parent_entry;
+    char parent_name[64];
+    get_basename(parent, parent_name);
+    if (strlen(parent_name) > 0 && strcmp(parent, "/") != 0) {
+        // Look up the parent directory's own entry to check permissions
+        char grandparent[128];
+        get_parent_path(parent, grandparent);
+        uint32_t gpblk;
+        if (get_dir_block(grandparent, &gpblk) == PFS_OK) {
+            pfs32_direntry_t pdir_ent;
+            if (find_entry_in_dir(gpblk, parent_name, &pdir_ent, 0, 0) == PFS_OK) {
+                if (!check_permission(pdir_ent.uid, pdir_ent.gid, pdir_ent.permissions, PFS_PERM_WRITE))
+                    return PFS_ERR_ACCESS;
+            }
+        }
+    } else {
+        // Writing to root directory - check root permissions
+        // Root dir has uid=0, permissions=0xE8 (owner RWX)
+        if (!check_permission(0, 0, 0xE8, PFS_PERM_WRITE))
+            return PFS_ERR_ACCESS;
+    }
+
     if(find_entry_in_dir(pblk, name, 0, 0, 0) == PFS_OK) return PFS_ERR_EXISTS;
 
     uint32_t curr = pblk;
@@ -1185,6 +1234,23 @@ int pfs32_get_stats(pfs32_stats_t* out_stats) {
 // --- Utils ---
 int pfs32_listdir(uint32_t block, pfs32_direntry_t* buf, uint32_t max) {
     if(!mounted) return -1;
+
+    // Check read permission on directory (Task 6)
+    // We need to find the directory's entry to check permissions.
+    // Walk the root to find which dir this block belongs to.
+    // For simplicity, check the . entry in this directory block itself.
+    {
+        uint8_t dbuf[512];
+        if (disk_rw(0, block, dbuf) == PFS_OK) {
+            pfs32_direntry_t* d = (pfs32_direntry_t*)dbuf;
+            // The "." entry contains the directory's own metadata
+            if (d[0].filename[0] != 0 && strcmp(d[0].filename, ".") == 0) {
+                if (!check_permission(d[0].uid, d[0].gid, d[0].permissions, PFS_PERM_READ))
+                    return PFS_ERR_ACCESS;
+            }
+        }
+    }
+
     int count = 0;
     uint32_t curr = block;
     while(curr != PFS32_END_BLOCK && curr != 0 && count < max) {

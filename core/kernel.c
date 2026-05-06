@@ -252,6 +252,8 @@ extern void init_calculator_app(void);
 extern void init_console_app(void);
 extern void init_disk_utility_app(void);
 extern void init_process_monitor_app(void);
+extern void init_image_viewer_app(void);
+extern void acpi_init(void);
 
 int kernel_launch_builtin_app(const char* name) {
     // Built-in app dispatch table - all apps now have real implementations
@@ -267,6 +269,7 @@ int kernel_launch_builtin_app(const char* name) {
         {"Console",          init_console_app},
         {"Disk Utility",     init_disk_utility_app},
         {"Activity Monitor", init_process_monitor_app},
+        {"Image Viewer",     init_image_viewer_app},
         {"Monitor",   0},                 // Uses CDL sysmon
         {"NetDiag",   0},                 // Has CDL, handled by CDL loader
         {"Waterhole", 0},                 // No built-in app yet
@@ -296,6 +299,7 @@ void kernel_main(void* mboot_ptr) {
     gfx_init_hal(mboot_ptr);
 
     pci_init();
+    acpi_init();
     disk_init();
     s_printf("[DISK] total_blocks=");
     char buf[32];

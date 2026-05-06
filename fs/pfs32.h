@@ -240,6 +240,16 @@ int pfs32_listdir(uint32_t dir_block, pfs32_direntry_t* entries, uint32_t max_en
 int pfs32_stat(const char* path, pfs32_direntry_t* entry);
 int pfs32_get_stats(pfs32_stats_t* out_stats);
 
+// Permission check (Task 6)
+// Check if current process has permission to access a file
+// access_mode: 0=read, 1=write, 2=execute
+// Returns 0 on success, -1 on permission denied
+int pfs32_check_permission(pfs32_direntry_t* inode, int access_mode);
+
+// Global UID/GID (Task 6)
+extern uint32_t current_uid;
+extern uint32_t current_gid;
+
 // Path Resolution
 int get_dir_block(const char* path, uint32_t* block);
 uint32_t pfs32_time_now(void);

@@ -124,6 +124,19 @@ int process_fork(void);
 int process_exec(const char* path, char* const argv[]);
 
 /**
+ * Execute a binary in user mode (Ring 3).
+ *
+ * Like process_exec() but sets up the task's context frame for
+ * Ring 3 return: CS=0x1B, DS=ES=FS=GS=SS=0x23, EFLAGS with IOPL=0.
+ * The binary runs at CPL 3 with no direct hardware access.
+ *
+ * @param path  Path to the executable
+ * @param argv  Argument vector (NULL-terminated)
+ * @return      Does not return on success; -1 on failure
+ */
+int process_exec_user(const char* path, const char** argv);
+
+/**
  * Terminate the current process.
  *
  *   1. Mark task as ZOMBIE

@@ -9,6 +9,7 @@
 #include "../sys/cdl_defs.h"
 #include "../fs/pfs32.h"
 #include "../hal/drivers/serial.h"
+#include "../hal/cpu/paging.h"
 
 // Kernel API
 extern kernel_api_t g_kernel_api;
@@ -421,10 +422,43 @@ int bsd_munmap(void* addr, uint32_t length) {
 }
 
 int bsd_mprotect(void* addr, uint32_t length, int prot) {
-    // TODO: Wire to vmm_mprotect() once VMM supports page-level protection changes.
-    // For now, CamelOS runs in a flat memory model without per-page protection,
-    // so mprotect is a safe no-op.
-    (void)addr; (void)length; (void)prot;
+    // Task 6: Wire mprotect to VMM page protection changes.
+    // Walk the page tables for the address range and update permission bits.
+    if (!addr || length == 0) return -1;
+
+    uint32_t start = (uint32_t)addr & 0xFFFFF000;  // Page-align
+    uint32_t end   = ((uint32_t)addr + length + 0xFFF) & 0xFFFFF000;
+
+    // Build x86 page flags from prot bits
+    uint32_t page_flags = PAGING_FLAG_PRESENT;
+    if (prot & 0x2) page_flags |= PAGING_FLAG_RW;     // PROT_WRITE -> R/W
+    if (prot & 0x4) page_flags |= PAGING_FLAG_USER;    // PROT_EXEC -> user accessible
+    // PROT_READ is implied by PRESENT
+
+    // Get current page directory
+    extern page_directory_t* current_directory;
+    if (!current_directory) return -1;
+
+    // Walk page tables and update each page's protection
+    for (uint32_t vaddr = start; vaddr < end; vaddr += 0x1000) {
+        uint32_t table_idx = vaddr / 0x400000;
+        uint32_t page_idx  = (vaddr / 0x1000) % 1024;
+
+        if (table_idx >= 1024) return -1;
+        if (!current_directory->tables[table_idx]) continue;  // Not mapped
+
+        uint32_t entry = current_directory->tables[table_idx]->entries[page_idx];
+        if (!(entry & PAGING_FLAG_PRESENT)) continue;  // Page not present
+
+        // Preserve the physical frame address, update only permission bits
+        uint32_t phys = entry & 0xFFFFF000;
+        current_directory->tables[table_idx]->entries[page_idx] = phys | page_flags;
+    }
+
+    // Flush TLB by reloading CR3
+    extern void switch_page_directory(page_directory_t* dir);
+    switch_page_directory(current_directory);
+
     return 0;
 }
 

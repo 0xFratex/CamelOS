@@ -42,6 +42,12 @@ typedef void (*task_func_t)(void);
 /* Function declarations */
 task_t* create_task(int id, uint32_t entry_point, uint32_t stack_top);
 void create_user_task(void (*entry)(), const char* name, int uid, int is_app);
+
+// Task 7: Create a Ring 3 (user-mode) task
+// Returns a task whose context frame is set up for Ring 3 return:
+//   CS = 0x18|3, DS=ES=FS=GS=SS = 0x20|3, EFLAGS with IOPL=0
+task_t* task_create_user(const char* name, void* entry_point, void* stack_top);
+
 void task_switch(void);
 void task_exit(void);
 int get_current_uid(void);

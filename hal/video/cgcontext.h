@@ -4,6 +4,7 @@
 #define CGCONTEXT_H
 
 #include "../../include/types.h"
+#include "../../include/stb_truetype.h"
 
 // ============================================================================
 // Path Point Types
@@ -94,6 +95,8 @@ struct CGFont {
     int is_bold;
     int is_italic;
     void* glyph_data;       // TrueType glyph data (stb_truetype style)
+    stbtt_fontinfo tt_info; // Parsed TrueType font info
+    int tt_initialized;     // 1 if tt_info has been initialized from glyph_data
     int ascent;
     int descent;
     int line_height;

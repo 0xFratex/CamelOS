@@ -14,6 +14,8 @@
 #include "../../core/notification.h"
 #include "../../core/task.h"
 #include "../../core/scheduler.h"
+#include "../../core/process.h"
+#include "../../core/bsd_syscall.h"
 
 // Extern the kernel API table and wrappers from cdl_loader.c
 extern kernel_api_t g_kernel_api;
@@ -309,6 +311,41 @@ void syscall_handler(syscall_regs_t* regs) {
             notify_set_dnd((int)arg1);
             result = 0;
             break;
+
+        // --- User-Mode Syscalls (Task 7 - Ring 3 compatible) ---
+        case SYS_USER_EXIT:
+            process_exit((int)arg1);
+            result = 0;  /* Does not return */
+            break;
+            
+        case SYS_USER_READ:
+            result = bsd_read((int)arg1, (void*)arg2, (uint32_t)arg3);
+            break;
+            
+        case SYS_USER_WRITE:
+            result = bsd_write((int)arg1, (const void*)arg2, (uint32_t)arg3);
+            break;
+            
+        case SYS_USER_OPEN:
+            result = bsd_open((const char*)arg1, (int)arg2, (int)arg3);
+            break;
+            
+        case SYS_USER_CLOSE:
+            result = bsd_close((int)arg1);
+            break;
+            
+        case SYS_USER_FORK:
+            result = process_fork();
+            break;
+            
+        case SYS_USER_EXEC:
+            result = process_exec((const char*)arg1, (char* const*)arg2);
+            break;
+            
+        case SYS_USER_YIELD:
+            scheduler_yield();
+            result = 0;
+            break;
             
         default:
             // Unknown syscall
@@ -346,3 +383,62 @@ void init_syscall(void) {
     
     serial_write_string("SYSCALL: Initialized (int 0x80), NIC moved to int 0x81\n");
 }
+
+// ============================================================================
+// FAST SYSCALL (SYSENTER/SYSEXIT) - Task 7
+// ============================================================================
+
+// MSR addresses for sysenter/sysexit
+#define IA32_SYSENTER_CS   0x174
+#define IA32_SYSENTER_ESP  0x175
+#define IA32_SYSENTER_EIP  0x176
+
+// Helper: write to an MSR
+static inline void wrmsr(uint32_t msr, uint32_t lo, uint32_t hi) {
+    asm volatile(
+        "wrmsr"
+        :
+        : "c"(msr), "a"(lo), "d"(hi)
+    );
+}
+
+// Helper: read from an MSR
+static inline void rdmsr(uint32_t msr, uint32_t* lo, uint32_t* hi) {
+    asm volatile(
+        "rdmsr"
+        : "=a"(*lo), "=d"(*hi)
+        : "c"(msr)
+    );
+}
+
+// Assembly entry point for sysenter (defined in system_entry.asm)
+extern void sysenter_entry(void);
+
+void syscall_init_fast(void) {
+    // Set up MSRs for sysenter/sysexit fast system call mechanism
+    
+    // IA32_SYSENTER_CS: kernel code segment selector (0x08)
+    // When sysenter executes, the CPU loads:
+    //   CS  = value from this MSR
+    //   SS  = value from this MSR + 8 (so 0x10 = kernel data)
+    wrmsr(IA32_SYSENTER_CS, 0x08, 0);
+    
+    // IA32_SYSENTER_ESP: kernel stack pointer
+    // We use the current kernel stack top. The scheduler will update
+    // the TSS ESP0 on task switch; for sysenter we also need a
+    // dedicated kernel stack. For now, use a static kernel stack.
+    extern uint32_t tss_esp0_for_sysenter;  // Defined below
+    static uint8_t sysenter_stack[8192] __attribute__((aligned(16)));
+    uint32_t stack_top = (uint32_t)sysenter_stack + sizeof(sysenter_stack);
+    tss_esp0_for_sysenter = stack_top;
+    wrmsr(IA32_SYSENTER_ESP, stack_top, 0);
+    
+    // IA32_SYSENTER_EIP: syscall handler entry point
+    wrmsr(IA32_SYSENTER_EIP, (uint32_t)sysenter_entry, 0);
+    
+    s_printf("[SYSCALL] Fast syscall (sysenter/sysexit) initialized\n");
+}
+
+// Global to hold the current kernel stack for sysenter
+// Updated by the scheduler when switching to a Ring 3 task
+uint32_t tss_esp0_for_sysenter = 0;

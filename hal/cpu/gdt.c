@@ -90,6 +90,11 @@ void tss_set_kernel_stack(uint32_t esp0) {
     tss.ss0 = 0x10;  // Kernel data segment
 }
 
+// Task 7: Public wrapper to set TSS kernel stack for Ring 3 privilege returns
+void gdt_setup_tss_stack(uint32_t kernel_stack) {
+    tss_set_kernel_stack(kernel_stack);
+}
+
 void init_gdt() {
     // 1. Setup the GDT Pointer (7 entries)
     gdt_ptr.limit = (sizeof(struct gdt_entry_struct) * GDT_ENTRIES) - 1;

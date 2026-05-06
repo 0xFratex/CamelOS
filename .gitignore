@@ -1,4 +1,4 @@
-.vscode
+# Build artifacts
 *.o
 *.bin
 *.elf
@@ -7,10 +7,21 @@
 disk.img
 nasm
 iso/
-build/**/*.o
-*.o
-*.cdl
-*.elf
-*.bin
-*.iso
-disk.img
+
+# IDE
+.vscode/
+.idea/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Unrelated files (should never be committed)
+skills/
+.env
+.env.*
+.kilo/
+*.bak
+system.disasm
+task_progress
+write_disk

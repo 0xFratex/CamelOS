@@ -91,6 +91,21 @@
 #define SYS_NOTIFY_DND  113  // int notify_set_dnd(int enabled)
 
 // ============================================================================
+// USER-MODE SYSCALL NUMBERS (Task 7 - Ring 3 compatible)
+// ============================================================================
+// These are the canonical syscall numbers for user-mode programs.
+// They use the same int 0x80 / sysenter interface but are the
+// POSIX-compatible subset that Ring 3 programs should use.
+#define SYS_USER_EXIT    0    // void exit(int code)
+#define SYS_USER_READ    1    // int read(int fd, void* buf, uint32_t count)
+#define SYS_USER_WRITE   2    // int write(int fd, const void* buf, uint32_t count)
+#define SYS_USER_OPEN    3    // int open(const char* path, int flags, int mode)
+#define SYS_USER_CLOSE   4    // int close(int fd)
+#define SYS_USER_FORK    5    // int fork()
+#define SYS_USER_EXEC    6    // int exec(const char* path, char* const argv[])
+#define SYS_USER_YIELD   7    // void yield()
+
+// ============================================================================
 // Syscall Register State (pushed by assembly stub)
 // ============================================================================
 typedef struct {
@@ -112,8 +127,13 @@ typedef struct {
 // API Functions
 // ============================================================================
 
-// Initialize the syscall system (installs IDT entry for int 0x80)
 void init_syscall(void);
+
+// Task 7: Initialize fast syscall (sysenter/sysexit) via MSRs
+void syscall_init_fast(void);
+
+// Global kernel stack for sysenter (updated by scheduler)
+extern uint32_t tss_esp0_for_sysenter;
 
 // C handler called from assembly
 // Takes pointer to saved register state, dispatches to correct syscall

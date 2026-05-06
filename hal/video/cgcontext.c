@@ -8,6 +8,10 @@
 #include "../../core/memory.h"
 #include "../../core/string.h"
 
+// JPEG decoder implementation (single-header, freestanding)
+#define JPEG_DECODER_IMPLEMENTATION
+#include "../../include/jpeg_decoder.h"
+
 // ============================================================================
 // CGContext Creation and Management
 // ============================================================================
@@ -750,6 +754,14 @@ void CGContextDrawString(CGContextRef ctx, int x, int y, const char* str) {
 void CGContextDrawStringCentered(CGContextRef ctx, int cx, int y, const char* str) {
     if (!ctx || !str) return;
     
+    // Use TrueType measurement if available
+    if (ctx->font && ctx->font->glyph_data) {
+        int width = CGFontMeasureString(ctx->font, str, ctx->font_size);
+        int x = cx - width / 2;
+        CGContextDrawString(ctx, x, y, str);
+        return;
+    }
+    
     int len = 0;
     while (str[len]) len++;
     
@@ -929,6 +941,7 @@ CGFontRef CGFontCreate(const char* name) {
     font->is_bold = 0;
     font->is_italic = 0;
     font->glyph_data = NULL;
+    font->tt_initialized = 0;
     font->ascent = 12;
     font->descent = 3;
     font->line_height = 16;
@@ -947,10 +960,91 @@ void CGFontDrawString(CGFontRef font, const char* str, int x, int y,
                        float size, uint32_t color) {
     if (!font || !str) return;
     
-    // If we have TrueType glyph data, render from it
+    // If we have TrueType glyph data, render from it using stb_truetype
     if (font->glyph_data) {
-        // TrueType rendering would go here using stb_truetype
-        // For now, fall through to bitmap font
+        // Lazy-initialize the stb_truetype font info on first use
+        if (!font->tt_initialized) {
+            if (stbtt_InitFont(&font->tt_info, (const uint8_t*)font->glyph_data, 0)) {
+                font->tt_initialized = 1;
+            }
+        }
+        
+        if (font->tt_initialized) {
+            // Compute scale factor (16.16 fixed-point)
+            int pixel_height = (int)(size > 0 ? size : 13.0f);
+            int scale_factor = stbtt_ScaleForPixelHeight(&font->tt_info, pixel_height);
+            
+            // Get font metrics for baseline alignment
+            int f_ascent, f_descent, f_linegap;
+            stbtt_GetFontVMetrics(&font->tt_info, &f_ascent, &f_descent, &f_linegap);
+            
+            // Baseline offset: ascent scaled to pixels (note: Y is flipped for screen)
+            int baseline = (int)(((long long)f_ascent * scale_factor) >> 16);
+            
+            int cursor_x = x;
+            int prev_char = 0;
+            
+            // Extract color components for alpha blending
+            uint8_t col_a = (color >> 24) & 0xFF;
+            uint8_t col_r = (color >> 16) & 0xFF;
+            uint8_t col_g = (color >> 8) & 0xFF;
+            uint8_t col_b = color & 0xFF;
+            
+            // Render each character
+            for (int i = 0; str[i]; i++) {
+                int codepoint = (unsigned char)str[i];
+                
+                // Apply kerning
+                if (prev_char) {
+                    int kern = stbtt_GetCodepointKernAdvance(&font->tt_info, prev_char, codepoint);
+                    cursor_x += (int)(((long long)kern * scale_factor) >> 16);
+                }
+                prev_char = codepoint;
+                
+                // Get glyph advance width
+                int advance, lsb;
+                stbtt_GetCodepointHMetrics(&font->tt_info, codepoint, &advance, &lsb);
+                
+                // Render the glyph to a bitmap
+                int bw, bh, bxoff, byoff;
+                unsigned char* bitmap = stbtt_GetCodepointBitmap(
+                    &font->tt_info, scale_factor, scale_factor,
+                    codepoint, &bw, &bh, &bxoff, &byoff);
+                
+                if (bitmap && bw > 0 && bh > 0) {
+                    // Composite the bitmap onto the framebuffer
+                    // byoff is relative to baseline in screen coords (negative = above baseline)
+                    int dest_x = cursor_x + bxoff + (int)(((long long)lsb * scale_factor) >> 16);
+                    int dest_y = y + baseline + byoff;
+                    
+                    for (int py = 0; py < bh; py++) {
+                        for (int px = 0; px < bw; px++) {
+                            unsigned char alpha = bitmap[py * bw + px];
+                            if (alpha > 0) {
+                                if (alpha == 255) {
+                                    // Fully opaque - just draw the pixel
+                                    gfx_put_pixel(dest_x + px, dest_y + py, color);
+                                } else {
+                                    // Semi-transparent - alpha blend with background
+                                    // Read existing pixel (this is expensive but necessary for AA)
+                                    // For performance, we approximate: just use the color with scaled alpha
+                                    uint8_t blended_a = (col_a * alpha) >> 8;
+                                    uint32_t blended = (blended_a << 24) | (col_r << 16) | (col_g << 8) | col_b;
+                                    gfx_put_pixel(dest_x + px, dest_y + py, blended);
+                                }
+                            }
+                        }
+                    }
+                    
+                    kfree(bitmap);
+                }
+                
+                // Advance cursor
+                cursor_x += (int)(((long long)advance * scale_factor) >> 16);
+            }
+            
+            return;  // Done with TrueType rendering
+        }
     }
     
     // Fallback: use bitmap font at the given scale
@@ -965,6 +1059,40 @@ void CGFontDrawString(CGFontRef font, const char* str, int x, int y,
 int CGFontMeasureString(CGFontRef font, const char* str, float size) {
     if (!str) return 0;
     
+    // If we have TrueType font, measure accurately
+    if (font && font->glyph_data) {
+        if (!font->tt_initialized) {
+            if (stbtt_InitFont(&font->tt_info, (const uint8_t*)font->glyph_data, 0)) {
+                font->tt_initialized = 1;
+            }
+        }
+        
+        if (font->tt_initialized) {
+            int pixel_height = (int)(size > 0 ? size : 13.0f);
+            int scale_factor = stbtt_ScaleForPixelHeight(&font->tt_info, pixel_height);
+            
+            int total_width = 0;
+            int prev_char = 0;
+            
+            for (int i = 0; str[i]; i++) {
+                int codepoint = (unsigned char)str[i];
+                int advance, lsb;
+                stbtt_GetCodepointHMetrics(&font->tt_info, codepoint, &advance, &lsb);
+                total_width += (int)(((long long)advance * scale_factor) >> 16);
+                
+                // Add kerning
+                if (prev_char) {
+                    int kern = stbtt_GetCodepointKernAdvance(&font->tt_info, prev_char, codepoint);
+                    total_width += (int)(((long long)kern * scale_factor) >> 16);
+                }
+                prev_char = codepoint;
+            }
+            
+            return total_width;
+        }
+    }
+    
+    // Fallback: estimate width from bitmap font
     int len = 0;
     while (str[len]) len++;
     
@@ -1219,16 +1347,25 @@ CGImageRef CGImageLoadPNG(const char* path) {
     return image;
 }
 
-// Load a JPEG image from filesystem (placeholder)
+// Load a JPEG image from filesystem
 CGImageRef CGImageLoadJPEG(const char* path) {
-    // JPEG decoding is complex - placeholder for now
-    // Returns a small gray placeholder image
-    CGImageRef image = CGImageCreate(64, 64);
-    if (!image) return NULL;
-    
-    for (int i = 0; i < 64 * 64; i++) {
-        image->pixel_data[i] = 0xFFD0D0D0;
+    // Use the freestanding JPEG decoder to load the image
+    int w, h;
+    uint32_t* pixels = jpeg_load_file(path, &w, &h);
+    if (!pixels) return NULL;
+
+    // Create a CGImage that takes ownership of the pixel buffer
+    CGImageRef image = (CGImageRef)kmalloc(sizeof(CGImage));
+    if (!image) {
+        kfree(pixels);
+        return NULL;
     }
-    
+    memset(image, 0, sizeof(CGImage));
+    image->width = w;
+    image->height = h;
+    image->bpp = 32;
+    image->pixel_data = pixels;
+    image->owns_data = 1;  // We allocated pixels, so free on destroy
+
     return image;
 }

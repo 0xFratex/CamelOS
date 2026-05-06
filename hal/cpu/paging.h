@@ -32,6 +32,10 @@ void page_fault_handler(registers_t regs);
 // Map a region of physical memory into the virtual address space
 void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, uint32_t flags);
 
+// Task 7: Mark a page as user-accessible (Ring 3) or supervisor-only (Ring 0)
+// Sets or clears the User/Supervisor bit (bit 2) in the page table entry
+void paging_set_user_page(uint32_t virtual_addr, int user_accessible);
+
 // Align a pointer to the next 4KB boundary
 uint32_t align_4k(uint32_t addr);
 

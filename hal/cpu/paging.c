@@ -107,6 +107,45 @@ void init_paging() {
     s_printf("[PAGING] Enabled (0-64MB Identity Mapped).\n");
 }
 
+// ============================================================================
+// Task 7: Mark pages as user-accessible
+// ============================================================================
+
+void paging_set_user_page(uint32_t virtual_addr, int user_accessible) {
+    if (!current_directory && !kernel_directory) return;
+
+    page_directory_t* dir = current_directory ? current_directory : kernel_directory;
+    if (!dir) return;
+
+    uint32_t table_idx = virtual_addr / 0x400000;
+    uint32_t page_idx = (virtual_addr / 0x1000) % 1024;
+
+    if (table_idx >= 1024) return;
+
+    // If the page table doesn't exist, we can't modify it
+    if (!dir->tables[table_idx]) return;
+
+    uint32_t entry = dir->tables[table_idx]->entries[page_idx];
+
+    if (user_accessible) {
+        // Set the User/Supervisor bit (bit 2) to allow Ring 3 access
+        entry |= PAGING_FLAG_USER;
+    } else {
+        // Clear the User/Supervisor bit - Ring 3 access causes page fault
+        entry &= ~PAGING_FLAG_USER;
+    }
+
+    dir->tables[table_idx]->entries[page_idx] = entry;
+
+    // Invalidate TLB entry for this page
+    asm volatile(
+        "invlpg (%0)"
+        :
+        : "r"(virtual_addr)
+        : "memory"
+    );
+}
+
 // 1. Add this function to map specific regions (like Video RAM)
 void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, uint32_t flags) {
     if (!kernel_directory) return;

@@ -408,6 +408,13 @@ uint32_t scheduler_schedule(registers_t* regs) {
     /* Update TSS kernel stack pointer for Ring 3 transitions */
     extern void tss_set_kernel_stack(uint32_t);
     tss_set_kernel_stack(next->esp);
+
+    /* Task 7: Also update the sysenter MSR kernel stack.
+     * When a Ring 3 task does sysenter, the CPU loads ESP from
+     * IA32_SYSENTER_ESP MSR. We update it here so the next
+     * sysenter from the new task uses the correct kernel stack. */
+    extern uint32_t tss_esp0_for_sysenter;
+    tss_esp0_for_sysenter = next->esp;
     
     /* Signal to the assembly IRQ stub that a context switch is needed.
      * The stub will set ESP = sched_new_esp before doing popa+iret,

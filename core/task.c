@@ -1,6 +1,7 @@
 #include "task.h"
 #include "memory.h"
 #include "string.h"
+#include "scheduler.h"
 
 task_t* current_task = 0;
 task_t* task_list_head = 0;
@@ -120,6 +121,87 @@ void create_user_task(void (*entry)(), const char* name, int uid, int is_app) {
     while(tmp->next != task_list_head) tmp = tmp->next;
     tmp->next = new_task;
     new_task->next = task_list_head;
+}
+
+// ============================================================================
+// Task 7: Create a Ring 3 (user-mode) task
+// ============================================================================
+
+task_t* task_create_user(const char* name, void* entry_point, void* stack_top) {
+    task_t* new_task = (task_t*)kmalloc(sizeof(task_t));
+    if (!new_task) return 0;
+    
+    memset(new_task, 0, sizeof(task_t));
+    new_task->id = next_pid++;
+    new_task->uid = 1000;  // Default non-root user
+    new_task->state = TASK_STATE_READY;
+    new_task->is_app_bundle = 0;
+    if (name) {
+        strncpy(new_task->name, name, 31);
+        new_task->name[31] = '\0';
+    }
+    
+    // Allocate a kernel stack (16KB) for this task.
+    // The kernel stack is used when the task traps to Ring 0.
+    uint32_t kstack_size = 16384;
+    uint8_t* kstack = (uint8_t*)kmalloc(kstack_size);
+    if (!kstack) {
+        kfree(new_task);
+        return 0;
+    }
+    
+    // Setup CPU context on the kernel stack.
+    // Layout must match irq_common_stub / the iret frame.
+    // For Ring 3, we set CS and segment registers to user-mode selectors.
+    uint32_t* top = (uint32_t*)(kstack + kstack_size);
+    
+    // CPU-saved state (for iret)
+    // EFLAGS: IF=1 (bit 9), IOPL=0 (bits 12-13 = 0, no I/O access from Ring 3)
+    *(--top) = 0x202;              // EFLAGS (interrupts enabled, IOPL=0)
+    *(--top) = 0x18 | 3;           // CS = user code segment (0x18) + RPL 3
+    *(--top) = (uint32_t)entry_point; // EIP (entry point in user space)
+    
+    // IRQ macro pushes
+    *(--top) = 0;                  // err_code (no error code)
+    *(--top) = 32;                 // int_no (timer IRQ vector)
+    
+    // pusha layout: eax, ecx, edx, ebx, esp_placeholder, ebp, esi, edi
+    *(--top) = 0;                  // eax
+    *(--top) = 0;                  // ecx
+    *(--top) = 0;                  // edx
+    *(--top) = 0;                  // ebx
+    uint32_t esp_val = (uint32_t)stack_top;  // User stack pointer
+    *(--top) = esp_val;            // esp (will be restored to user ESP)
+    *(--top) = 0;                  // ebp
+    *(--top) = 0;                  // esi
+    *(--top) = 0;                  // edi
+    
+    // Segment registers (user data segment with RPL 3)
+    *(--top) = 0x20 | 3;           // DS = user data segment (0x20) + RPL 3
+    *(--top) = 0x20 | 3;           // ES
+    *(--top) = 0x20 | 3;           // FS
+    *(--top) = 0x20 | 3;           // GS
+    
+    new_task->esp = (uint32_t)top;
+    new_task->priority = 128;
+    new_task->time_slice = 10;
+    new_task->time_used = 0;
+    new_task->sleep_until = 0;
+    new_task->block_reason = 0;
+    new_task->next = 0;
+    
+    // Add to linked list
+    if (task_list_head) {
+        task_t* tmp = task_list_head;
+        while(tmp->next && tmp->next != task_list_head) tmp = tmp->next;
+        tmp->next = new_task;
+        new_task->next = task_list_head;
+    } else {
+        new_task->next = new_task;
+        task_list_head = new_task;
+    }
+    
+    return new_task;
 }
 
 // Simple Round Robin Scheduler
