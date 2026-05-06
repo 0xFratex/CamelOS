@@ -246,6 +246,9 @@ uint32_t* gfx_get_blur_buffer() {
 // Draw a pixel with Alpha (AA Helper)
 void gfx_put_pixel_aa(int x, int y, uint32_t color, uint8_t alpha) {
     if (x < 0 || x >= gfx_ctx.width || y < 0 || y >= gfx_ctx.height) return;
+    // Software clip rectangle — prevents rounded-corner pixels from
+    // leaking outside the window content area during selection box drawing.
+    if (clip_enabled && (x < clip_x1 || x >= clip_x2 || y < clip_y1 || y >= clip_y2)) return;
     // CRITICAL: Must check use_backbuffer before dereferencing back_ptr.
     // When back_ptr is NULL (backbuffer alloc failed), writing through it
     // corrupts low physical memory (first 3MB), overwriting kernel code

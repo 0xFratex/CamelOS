@@ -67,7 +67,11 @@ void selbox_end(selection_box_t* sb) {
     if (!sb || !sb->active) return;
     if (sb->state != SELBOX_DRAGGING) return;
 
-    sb->state = SELBOX_COMPLETED;
+    // Set to INACTIVE so the rubber-band visual disappears on release.
+    // Selected items remain highlighted via their own selection arrays
+    // (desk_selected[] on desktop, is_selected[] in files app) which
+    // are independent of the selbox state.
+    sb->state = SELBOX_INACTIVE;
 
     s_printf("[selbox] end at (%d, %d)\n", sb->cur_x, sb->cur_y);
 }
@@ -88,7 +92,7 @@ void selbox_cancel(selection_box_t* sb) {
 // ============================================================================
 int selbox_get_rect(selection_box_t* sb, int* x, int* y, int* w, int* h) {
     if (!sb) return 0;
-    if (sb->state != SELBOX_DRAGGING && sb->state != SELBOX_COMPLETED) return 0;
+    if (sb->state != SELBOX_DRAGGING) return 0;
 
     // Normalize: find the top-left corner regardless of drag direction
     int left   = sb->start_x < sb->cur_x ? sb->start_x : sb->cur_x;
@@ -129,7 +133,7 @@ int selbox_contains_point(selection_box_t* sb, int px, int py) {
 // ============================================================================
 void selbox_draw(selection_box_t* sb) {
     if (!sb || !sb->active) return;
-    if (sb->state != SELBOX_DRAGGING && sb->state != SELBOX_COMPLETED) return;
+    if (sb->state != SELBOX_DRAGGING) return;
 
     int rx, ry, rw, rh;
     if (!selbox_get_rect(sb, &rx, &ry, &rw, &rh)) return;

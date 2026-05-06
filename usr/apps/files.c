@@ -750,15 +750,15 @@ void files_on_paint(window_t* win, int x, int y, int w, int h) {
 
     // Draw rubber-band selection box if active
     if (fm_cur->selbox_inited) {
-        // Offset the selection box coordinates from window-local to screen
-        // (the selbox stores window-local coords, but selbox_draw uses
-        // absolute screen coords via gfx_fill_rounded_rect)
+        // The selbox stores window-content-local coordinates (same system
+        // as the mouse x/y passed to files_on_mouse).  The paint callback
+        // receives the window's screen position in (x, y), so we simply
+        // add them to convert content-local → screen-absolute.
         selection_box_t* sb = &fm_cur->selbox;
-        if (sb->state == SELBOX_DRAGGING || sb->state == SELBOX_COMPLETED) {
+        if (sb->state == SELBOX_DRAGGING) {
             int rx, ry, rw, rh;
             if (selbox_get_rect(sb, &rx, &ry, &rw, &rh)) {
-                if (rw >= sb->min_drag || rh >= sb->min_drag) {
-                    // Convert from content-local to window-absolute coords
+                if (rw >= sb->min_drag && rh >= sb->min_drag) {
                     gfx_fill_rounded_rect(x + rx, y + ry, rw, rh, sb->color, 4);
                     gfx_draw_rect(x + rx, y + ry, rw, rh, sb->border_color);
                 }
@@ -775,8 +775,9 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
     // Handle mouse-up: end rubber-band selection
     if (btn == 0 && fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING) {
         selbox_end(&fm_cur->selbox);
-        // Selection is kept (COMPLETED state) so items stay highlighted
-        // until the next click cancels it
+        // selbox_end sets INACTIVE so the rubber-band visual disappears.
+        // Selected items remain highlighted via is_selected[] which is
+        // independent of the selbox state.
     }
     
     int win_w = fm_cur->win_w, win_h = fm_cur->win_h - 30;
@@ -866,7 +867,7 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
     // ---- Handle content area clicks ----
     // If the selection box is being dragged, update it and apply selection
     if (fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING && btn == 1) {
-        selbox_update(&fm_cur->selbox, x, y + MARGIN_TOP);
+        selbox_update(&fm_cur->selbox, x, y);
         // Apply selection: mark entries whose icons intersect the selection rect
         int rx, ry, rw, rh;
         if (selbox_get_rect(&fm_cur->selbox, &rx, &ry, &rw, &rh)) {
@@ -946,7 +947,7 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
     } else if (btn == 1) {
         // Start rubber-band selection from this point
         memset(fm_cur->is_selected, 0, sizeof(fm_cur->is_selected));
-        selbox_start(&fm_cur->selbox, x, y + MARGIN_TOP);
+        selbox_start(&fm_cur->selbox, x, y);
     }
 }
 

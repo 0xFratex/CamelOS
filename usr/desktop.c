@@ -421,11 +421,12 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
             }
         }
     } else {
-        // Mouse button not pressed — finish or cancel any active selection
+        // Mouse button not pressed — finish any active selection drag.
+        // selbox_end() sets state to INACTIVE so the rubber-band visual
+        // disappears.  Selected items remain highlighted via desk_selected[]
+        // which is independent of the selbox state.
         if (g_desk_selbox.state == SELBOX_DRAGGING) {
             selbox_end(&g_desk_selbox);
-            // Keep the selection active (COMPLETED state) so items stay
-            // highlighted.  The selection will be cancelled on next click.
         }
     }
 }
