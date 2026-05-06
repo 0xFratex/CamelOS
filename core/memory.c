@@ -337,7 +337,6 @@ void* kmalloc_ap(size_t size, uint32_t* phys) {
     mem_block_t* orig_next = orig_block->next;
 
     // Calculate leading free region
-    uint32_t leading_start = (uint32_t)orig_block;
     uint32_t leading_size = aligned_ptr - ptr;  // Bytes between original data start and alignment
     // The leading block occupies: header + leading_size + guard
     size_t leading_total = sizeof(mem_block_t) + leading_size;

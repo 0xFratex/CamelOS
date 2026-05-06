@@ -4,6 +4,7 @@
 //
 // Physical memory access: CamelOS identity-maps the first 128MB of physical
 // memory, so physical addresses < 0x08000000 can be directly dereferenced.
+// Any ACPI table address outside this range is skipped gracefully.
 
 #include "acpi.h"
 #include "../../common/ports.h"
@@ -11,6 +12,11 @@
 #include "../../core/memory.h"
 #include "../../core/string.h"
 #include <stdint.h>
+
+// Maximum physical address that is identity-mapped and safe to dereference.
+// The paging code in paging.c maps 32 page tables × 1024 pages × 4KB = 128MB.
+// Keep this in sync with the actual identity mapping in init_paging().
+#define IDENTITY_MAP_MAX  0x08000000  // 128 MB
 
 // ========================================================================
 // Internal state
@@ -21,6 +27,20 @@ static fadt_t*  found_fadt = (fadt_t*)0;
 static madt_t*  found_madt = (madt_t*)0;
 static hpet_t*  found_hpet = (hpet_t*)0;
 static int      acpi_available = 0;
+
+// Check whether a physical address is within the identity-mapped region
+// and can be safely dereferenced.  ACPI tables in QEMU/Bochs are always
+// below 1MB, but some firmware may place them in higher memory that is
+// not mapped.  Returns 1 if safe, 0 if the address would page-fault.
+static int acpi_phys_addr_safe(uint32_t addr, uint32_t len) {
+    if (addr == 0) return 0;
+    if (addr >= IDENTITY_MAP_MAX) return 0;
+    if (len > IDENTITY_MAP_MAX) return 0;
+    if (addr + len > IDENTITY_MAP_MAX) return 0;
+    // Check for overflow
+    if (addr + len < addr) return 0;
+    return 1;
+}
 
 // ========================================================================
 // Helpers
@@ -142,7 +162,24 @@ static void parse_rsdt(rsdt_t* rsdt) {
         uint32_t table_addr = ((uint32_t*)((uintptr_t)rsdt + sizeof(acpi_header_t)))[i];
         if (table_addr == 0) continue;
 
+        // Validate the table address is within identity-mapped memory
+        // before dereferencing it.  ACPI tables should always be below
+        // the identity-map limit, but some firmware configurations may
+        // place them in unmapped high memory.
+        if (!acpi_phys_addr_safe(table_addr, sizeof(acpi_header_t))) {
+            s_printf("[ACPI] Table entry %d at 0x%x outside mapped memory, skipping\n",
+                     i, table_addr);
+            continue;
+        }
+
         acpi_header_t* header = (acpi_header_t*)(uintptr_t)table_addr;
+
+        // Validate the full table fits in mapped memory
+        if (!acpi_phys_addr_safe(table_addr, header->length)) {
+            s_printf("[ACPI] Table at 0x%x (len=%d) extends beyond mapped memory, skipping\n",
+                     table_addr, header->length);
+            continue;
+        }
 
         // Validate the table with checksum
         if (acpi_checksum(header, header->length) != 0) {
@@ -189,6 +226,14 @@ void acpi_init(void) {
         return;
     }
 
+    // Validate the RSDP itself is in mapped memory
+    if (!acpi_phys_addr_safe((uint32_t)(uintptr_t)found_rsdp, sizeof(rsdp_t))) {
+        s_printf("[ACPI] RSDP at 0x%x is outside identity-mapped region\n",
+                 (uint32_t)(uintptr_t)found_rsdp);
+        acpi_available = 0;
+        return;
+    }
+
     s_printf("[ACPI] RSDP revision %d, OEM='%.6s'\n",
              found_rsdp->revision, found_rsdp->oem_id);
 
@@ -197,8 +242,18 @@ void acpi_init(void) {
     // For ACPI 2.0+, we could use xsdt_address, but for simplicity
     // and 32-bit OS compatibility, we use RSDT.
     uint32_t rsdt_phys = found_rsdp->rsdt_address;
+    s_printf("[ACPI] RSDT physical address: 0x%x\n", rsdt_phys);
+
     if (rsdt_phys == 0) {
         s_printf("[ACPI] RSDT address is zero\n");
+        acpi_available = 0;
+        return;
+    }
+
+    // Validate RSDT address is within identity-mapped range
+    if (!acpi_phys_addr_safe(rsdt_phys, sizeof(acpi_header_t))) {
+        s_printf("[ACPI] RSDT at 0x%x is outside identity-mapped region (max 0x%x)\n",
+                 rsdt_phys, IDENTITY_MAP_MAX);
         acpi_available = 0;
         return;
     }
@@ -209,6 +264,14 @@ void acpi_init(void) {
     if (!sig_match(found_rsdt->header.signature, "RSDT")) {
         s_printf("[ACPI] RSDT signature mismatch: %.4s\n",
                  found_rsdt->header.signature);
+        acpi_available = 0;
+        return;
+    }
+
+    // Validate that the full RSDT is within mapped memory
+    if (!acpi_phys_addr_safe(rsdt_phys, found_rsdt->header.length)) {
+        s_printf("[ACPI] RSDT body (0x%x, len=%d) extends beyond mapped memory\n",
+                 rsdt_phys, found_rsdt->header.length);
         acpi_available = 0;
         return;
     }

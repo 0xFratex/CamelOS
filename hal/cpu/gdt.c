@@ -53,6 +53,13 @@ struct gdt_entry_struct gdt_entries[GDT_ENTRIES];
 struct gdt_ptr_struct   gdt_ptr;
 struct tss_struct       tss;
 
+// Global kernel stack pointer used by the sysenter MSR.
+// When a Ring-3 task executes sysenter, the CPU loads ESP from
+// IA32_SYSENTER_ESP.  The scheduler updates this variable on
+// every context switch so the next sysenter uses the correct
+// kernel stack for the incoming task.
+uint32_t tss_esp0_for_sysenter = 0;
+
 // Helper to zero memory (Simple memset)
 void gdt_zero(void* ptr, int size) {
     unsigned char* p = (unsigned char*)ptr;

@@ -4,6 +4,7 @@
 #include "font_v2.h"
 #include "font.h"
 #include "string.h"
+#include "../core/memory.h"
 
 // ============================================================================
 // BUILT-IN FONT DATA
@@ -405,7 +406,7 @@ int font_get_kerning(FontFace* font, uint32_t left, uint32_t right) {
 
 TextContext* text_context_create(FontFace* font, uint8_t* framebuffer, 
                                   int width, int height, int pitch) {
-    TextContext* ctx = (TextContext*)malloc(sizeof(TextContext));
+    TextContext* ctx = (TextContext*)kmalloc(sizeof(TextContext));
     if (ctx == NULL) return NULL;
     
     memset(ctx, 0, sizeof(TextContext));
@@ -436,7 +437,7 @@ TextContext* text_context_create(FontFace* font, uint8_t* framebuffer,
 
 void text_context_destroy(TextContext* ctx) {
     if (ctx) {
-        free(ctx);
+        kfree(ctx);
     }
 }
 

@@ -48,8 +48,11 @@ static uint8_t local_mac[6];
 // Static buffers for TX (small)
 static uint8_t tx_buffers[4][TX_BUF_SIZE] __attribute__((aligned(4)));
 
-// Moved RX buffer to HEAP to avoid massive static BSS alignment issues (Kernel Panic)
-static uint8_t* rx_buffer_raw = 0;
+// RX buffer — use static allocation with 32KB alignment.
+// Previous heap-based allocation (kmalloc) could fail when the heap
+// was fragmented after paging init.  A static BSS buffer is always
+// available and avoids the ~67KB contiguous allocation problem.
+static uint8_t rx_buffer_storage[RX_BUF_SIZE + 32768] __attribute__((aligned(32768)));
 static uint8_t* rx_buffer_aligned = 0;
 static uint16_t current_packet_ptr = 0;
 static int tx_cur = 0;
@@ -289,18 +292,14 @@ void rtl8139_init(pci_device_t* dev) {
     // Delay after reset
     for(volatile int i = 0; i < 500000; i++) asm volatile("pause");
     
-    // 3. Init Buffers - allocate from HEAP to avoid alignment issues in binary
-    // Need RX_BUF_SIZE + 32KB padding for 32KB alignment
-    rx_buffer_raw = (uint8_t*)kmalloc(RX_BUF_SIZE + 32768);
-    if (!rx_buffer_raw) {
-        s_printf("[RTL8139] FATAL: Failed to allocate RX buffer!\n");
-        return;
-    }
-    rx_buffer_aligned = (uint8_t*)(((uint32_t)rx_buffer_raw + 32767) & ~32767);
+    // 3. Init Buffers - use statically allocated, 32KB-aligned buffer.
+    // Previously used kmalloc which could fail when the heap was fragmented.
+    // The static buffer in BSS is always available and properly aligned.
+    rx_buffer_aligned = (uint8_t*)(((uint32_t)rx_buffer_storage + 32767) & ~32767);
     memset(rx_buffer_aligned, 0, RX_BUF_SIZE);
     
 #if RTL_DEBUG_INIT
-    s_printf("[RTL8139] rx_buffer allocated and aligned to 32KB\n");
+    s_printf("[RTL8139] rx_buffer using static storage at 0x%x\n", (uint32_t)rx_buffer_aligned);
 #endif
     
     outl(rtl_dev.io_base + RTL_REG_RBSTART, (uint32_t)rx_buffer_aligned);

@@ -11,4 +11,8 @@ void tss_set_kernel_stack(uint32_t esp0);
 #define USER_CODE_SELECTOR 0x18
 #define USER_DATA_SELECTOR 0x20
 
+// Global kernel stack pointer for sysenter MSR.
+// Updated by the scheduler on every context switch.
+extern uint32_t tss_esp0_for_sysenter;
+
 #endif
