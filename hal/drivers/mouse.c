@@ -2,14 +2,11 @@
 // PS/2 Mouse driver with Intellimouse scroll wheel support
 #include "../common/ports.h"
 #include "vga.h"
+#include "types.h"
 
 // Import screen dimensions from graphics subsystem
 extern int screen_w;
 extern int screen_h;
-
-// Define types manually for bare-metal
-typedef unsigned char uint8_t;
-typedef signed char int8_t;
 
 // Mouse state
 uint8_t mouse_cycle = 0;

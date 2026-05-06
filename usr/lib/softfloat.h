@@ -8,10 +8,7 @@
 #ifndef SOFTFLOAT_H
 #define SOFTFLOAT_H
 
-typedef unsigned int uint32_t;
-typedef int int32_t;
-typedef unsigned long long uint64_t;
-typedef long long int64_t;
+#include "types.h"
 
 // ============================================================================
 // IEEE 754 double-precision helpers

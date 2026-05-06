@@ -17,6 +17,10 @@ typedef signed long long   int64_t;
 typedef unsigned int       size_t;
 typedef int                ssize_t;
 
+// Pointer-sized integer types (for pointer <-> integer casts)
+typedef unsigned int       uintptr_t;
+typedef int                intptr_t;
+
 // Null pointer definition
 #ifndef NULL
 #define NULL ((void*)0)

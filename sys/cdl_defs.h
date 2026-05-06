@@ -2,7 +2,7 @@
 #ifndef CDL_DEFS_H
 #define CDL_DEFS_H
 
-typedef unsigned int uint32_t;
+#include "types.h"
 typedef void* win_handle_t;
 
 // Callbacks

@@ -7,7 +7,6 @@
 #include "../core/window_server.h"
 #include "../kernel/assets.h"
 
-typedef unsigned int uintptr_t;
 #include "elf.h"
 #include "../hal/cpu/timer.h"
 #include "socket.h"
@@ -18,12 +17,7 @@ typedef unsigned int uintptr_t;
 
 // Forward declarations
 int internal_load_library(const char* path);
-
-// Built-in VarArgs
-#define va_start(v,l) __builtin_va_start(v,l)
-#define va_end(v)     __builtin_va_end(v)
-#define va_arg(v,l)   __builtin_va_arg(v,l)
-typedef __builtin_va_list va_list;
+void sys_set_launch_args(const char* args);
 
 // Relocation Types
 #ifndef R_386_32

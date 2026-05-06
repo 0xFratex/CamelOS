@@ -1,15 +1,5 @@
 // core/memory.c
-#ifndef MEMORY_H
-#define MEMORY_H
-
-// Basic types for freestanding environment
-typedef unsigned char  uint8_t;
-typedef unsigned int   uint32_t;
-typedef unsigned long  size_t;
-
-#ifndef NULL
-#define NULL ((void*)0)
-#endif
+#include "types.h"
 
 // API
 void* memset(void* ptr, int value, size_t num);
@@ -17,14 +7,12 @@ void* memcpy(void* destination, const void* source, size_t num);
 void  init_heap(uint32_t start_address, uint32_t size);
 void* kmalloc(size_t size);
 void* kzalloc(size_t size);
-void* krealloc(void* ptr, size_t new_size); //
+void* krealloc(void* ptr, size_t new_size);
 void  kfree(void* ptr);
 
 // Monitoring
 uint32_t k_get_free_mem(void);
 uint32_t k_get_total_mem(void);
-
-#endif 
 
 // --- Implementation ---
 

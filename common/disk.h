@@ -1,12 +1,8 @@
 // common/disk.h - Updated for PFS32 compatibility
-#ifndef DISK_H
-#define DISK_H
+#ifndef COMMON_DISK_H
+#define COMMON_DISK_H
 
-// For freestanding environment, define basic types ourselves
-typedef unsigned char  uint8_t;
-typedef unsigned short uint16_t;
-typedef unsigned int   uint32_t;
-typedef unsigned long long uint64_t;
+#include "types.h"
 
 #define DISK_BLOCK_SIZE 512
 

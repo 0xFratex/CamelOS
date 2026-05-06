@@ -10,6 +10,7 @@
 #include "serial.h"
 #include "../../core/memory.h"
 #include "../../core/string.h"
+#include <stdint.h>
 
 // ========================================================================
 // Internal state
