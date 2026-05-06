@@ -645,6 +645,18 @@ void kernel_main(void* mboot_ptr) {
         }
     }
 
+    // Initialize USB HID Boot Protocol driver for USB keyboards and mice
+    // This enables operation on USB-only hardware (no PS/2 required)
+    extern void usb_hid_init(void);
+    usb_hid_init();
+    s_printf("[KERNEL] USB HID Driver Initialized.\n");
+
+    // Initialize Software Update system
+    // Provides background update checking, download, and installation
+    extern void software_update_init(void);
+    software_update_init();
+    s_printf("[KERNEL] Software Update System Initialized.\n");
+
     play_startup_chime();
 
     int boot_to_shell = 0;
@@ -691,6 +703,14 @@ void kernel_main(void* mboot_ptr) {
             // Periodic launchd health check
             extern void launchd_check_health(void);
             launchd_check_health();
+            
+            // Poll USB HID devices for input
+            extern void usb_hid_poll(void);
+            usb_hid_poll();
+            
+            // Background software update check
+            extern void software_update_check_background(void);
+            software_update_check_background();
             
             asm("hlt");  // Halt until next interrupt
         }

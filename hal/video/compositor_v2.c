@@ -166,8 +166,8 @@ void compositor_draw_blur_backdrop_v2(int x, int y, int w, int h) {
     }
     
     // Sample from blur buffer and blend with tint
-    int screen_w = 1024;  // TODO: get from gfx_ctx
-    int screen_h = 768;
+    int screen_w = gfx_get_width();
+    int screen_h = gfx_get_height();
     
     for (int dy = 0; dy < h; dy++) {
         int ly = y + dy;
@@ -206,8 +206,8 @@ void compositor_draw_reflection(int x, int y, int w, int h, float opacity) {
     uint32_t* back_buf = gfx_get_active_buffer();
     if (!back_buf) return;
     
-    int screen_w = 1024;
-    int screen_h = 768;
+    int screen_w = gfx_get_width();
+    int screen_h = gfx_get_height();
     
     // Create a simple reflection by copying pixels with reduced opacity
     int refl_h = h / 3;  // Reflection is 1/3 the height

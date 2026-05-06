@@ -18,6 +18,8 @@
 #include "vmm.h"
 #include "memory.h"
 #include "string.h"
+#include "task.h"
+#include "scheduler.h"
 #include "../hal/cpu/paging.h"
 #include "../hal/drivers/serial.h"
 
@@ -1005,6 +1007,13 @@ int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
     page_directory_t* dir = current_directory;
     if (!dir) return -1;
 
+    /* Resolve the current task's address space for per-process VM operations */
+    task_t* cur_task = scheduler_get_current();
+    address_space_t* cur_space = 0;
+    if (cur_task && cur_task->address_space) {
+        cur_space = (address_space_t*)cur_task->address_space;
+    }
+
     /* --- Case 1: Write to a present page (COW or protection violation) --- */
     if (present && write) {
         uint32_t pte = pt_get_entry(dir, fault_addr);
@@ -1015,7 +1024,7 @@ int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
                 uint32_t phys = pte & 0xFFFFF000;
                 if (cow_ref_get(phys) > 1) {
                     /* More than one reference: must duplicate */
-                    return vmm_cow_duplicate_page(0, fault_addr);
+                    return vmm_cow_duplicate_page(cur_space, fault_addr);
                 } else {
                     /* Only one reference left: reclaim the page as writable */
                     pte &= ~VMM_FLAG_COW;
@@ -1026,7 +1035,7 @@ int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
                 }
             }
             /* No ref counts: always duplicate */
-            return vmm_cow_duplicate_page(0, fault_addr);
+            return vmm_cow_duplicate_page(cur_space, fault_addr);
         }
 
         /* Not COW: genuine protection violation */
@@ -1037,33 +1046,17 @@ int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
 
     /* --- Case 2: Page not present (demand paging or stack growth) --- */
     if (!present) {
-        /* Determine which address space we're in.
-         * In a real scheduler, we'd look up the current task's address space.
-         * For now, if the fault is in user space, assume a user address space
-         * is active.  This will be replaced when the scheduler tracks spaces. */
+        /* Use the current task's address space resolved above.
+         * Falls back to kernel_address_space if no per-process space. */
 
         vma_t* vma = 0;
+        address_space_t* active_space = cur_space ? cur_space : kernel_address_space;
 
-        /* Search for the faulting address in the VMA list.
-         * We need to find the current process's address space.
-         * Since we may not have a direct pointer, search the VMA list
-         * of any known address space.  For the kernel, faults in kernel
-         * space are fatal. */
         if (fault_addr >= KERNEL_SPACE_END) {
-            /* User-space fault: find the VMA.
-             * We iterate through possible address spaces.  In the future,
-             * the task struct should have a pointer to the address space. */
-            /* For now, we try the kernel_address_space's VMA list,
-             * and also check a global "current user space" if available.
-             *
-             * The scheduler should set a global pointer to the current
-             * process's address space.  As a workaround, we scan. */
-            /* TODO: Get current task's address space from the scheduler */
-
-            /* Try to find the VMA by checking if any known address space
-             * contains the faulting address.  This is a placeholder until
-             * the task struct has an address_space pointer. */
-            vma = vmm_find_vma(kernel_address_space, fault_addr);
+            /* User-space fault: find the VMA in the current process's
+             * address space. Falls back to kernel_address_space if no
+             * per-process space is available. */
+            vma = vmm_find_vma(active_space, fault_addr);
         } else {
             /* Kernel-space fault on a non-present page is always fatal */
             VMM_ERR("Kernel page fault at 0x%x (non-present)\n", fault_addr);
@@ -1078,10 +1071,9 @@ int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
             vma_t* svma = 0;
             vma_t* scan = 0;
 
-            /* Find the stack VMA.
-             * Again, this needs the current address space pointer.
-             * We search the kernel space's VMA list as a fallback. */
-            scan = kernel_address_space ? kernel_address_space->vma_list : 0;
+            /* Find the stack VMA in the current process's address space.
+             * Use active_space resolved above from scheduler_get_current(). */
+            scan = active_space ? active_space->vma_list : 0;
             while (scan) {
                 if (scan->type == VMA_TYPE_STACK) { svma = scan; break; }
                 scan = scan->next;

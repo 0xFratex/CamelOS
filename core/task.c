@@ -15,6 +15,7 @@ void tasking_init() {
     ktask->state = 1;
     strcpy(ktask->name, "kernel");
     ktask->next = ktask; // Circular list
+    strcpy(ktask->cwd, "/"); // Initialize CWD to root
     current_task = ktask;
     task_list_head = ktask;
 }
@@ -68,6 +69,7 @@ task_t* create_task(int id, uint32_t entry_point, uint32_t stack_top) {
     new_task->time_used = 0;
     new_task->sleep_until = 0;
     new_task->block_reason = 0;
+    strcpy(new_task->cwd, "/"); // Initialize CWD to root
     new_task->next = 0;
     
     return new_task;
@@ -115,6 +117,7 @@ void create_user_task(void (*entry)(), const char* name, int uid, int is_app) {
     *(--top) = 0x10;            // GS
     
     new_task->esp = (uint32_t)top;
+    strcpy(new_task->cwd, "/"); // Initialize CWD to root
     
     // Add to linked list
     task_t* tmp = task_list_head;
@@ -188,6 +191,7 @@ task_t* task_create_user(const char* name, void* entry_point, void* stack_top) {
     new_task->time_used = 0;
     new_task->sleep_until = 0;
     new_task->block_reason = 0;
+    strcpy(new_task->cwd, "/"); // Initialize CWD to root
     new_task->next = 0;
     
     // Add to linked list

@@ -11,6 +11,7 @@
 #include "../sys/api.h"
 #include "../sys/cdl_defs.h"
 #include "../hal/drivers/serial.h"
+#include "../fs/pfs32.h"
 
 // --- Class References ---
 Class NSData_class = 0;
@@ -178,9 +179,18 @@ BOOL NSFileManager_moveItemAtPathToPath(id self, SEL cmd, const char* src, const
 
 uint32_t NSFileManager_fileSizeAtPath(id self, SEL cmd, const char* path) {
     (void)self; (void)cmd;
-    (void)path;
-    // TODO: Use pfs32_stat to get actual file size
-    return 0;
+    if (!path) return 0;
+
+    // Use pfs32_stat to get the actual file size
+    pfs32_direntry_t entry;
+    if (pfs32_stat(path, &entry) == 0) {
+        return entry.file_size;
+    }
+
+    // Fallback: try reading the file to determine its size
+    char temp[4096];
+    int total = sys_fs_read(path, temp, sizeof(temp));
+    return total > 0 ? (uint32_t)total : 0;
 }
 
 static void register_NSFileManager_methods(Class cls) {
@@ -719,22 +729,363 @@ static void register_NSThread_methods(Class cls) {
 }
 
 // ============================================================================
-// NSJSONSerialization Implementation (stub - returns empty data)
+// NSJSONSerialization Implementation
 // ============================================================================
 
+// JSON serialization: Convert NSDictionary/NSArray/NSString/NSNumber to JSON data
+// Builds JSON string in a buffer and wraps it in NSData
+
+#define JSON_BUF_SIZE 8192
+
+static uint32_t json_serialize_value(id obj, char* buf, uint32_t buf_size, uint32_t pos);
+
+static uint32_t json_serialize_string(const char* str, char* buf, uint32_t buf_size, uint32_t pos) {
+    if (pos + 2 >= buf_size) return pos;
+    buf[pos++] = '"';
+    for (const char* p = str; *p && pos < buf_size - 2; p++) {
+        switch (*p) {
+            case '"':  if (pos + 2 < buf_size) { buf[pos++] = '\\'; buf[pos++] = '"'; } break;
+            case '\\': if (pos + 2 < buf_size) { buf[pos++] = '\\'; buf[pos++] = '\\'; } break;
+            case '\n': if (pos + 2 < buf_size) { buf[pos++] = '\\'; buf[pos++] = 'n'; } break;
+            case '\r': if (pos + 2 < buf_size) { buf[pos++] = '\\'; buf[pos++] = 'r'; } break;
+            case '\t': if (pos + 2 < buf_size) { buf[pos++] = '\\'; buf[pos++] = 't'; } break;
+            default:   buf[pos++] = *p; break;
+        }
+    }
+    buf[pos++] = '"';
+    return pos;
+}
+
+static uint32_t json_serialize_value(id obj, char* buf, uint32_t buf_size, uint32_t pos) {
+    if (!obj) {
+        // null
+        const char* null_str = "null";
+        for (int i = 0; null_str[i] && pos < buf_size; i++)
+            buf[pos++] = null_str[i];
+        return pos;
+    }
+
+    // Check if it's an NSString
+    CamelOSString* str_obj = (CamelOSString*)obj;
+    Class str_class = objc_getClass("NSString");
+    if (str_class && ((id)str_obj)->isa == str_class) {
+        return json_serialize_string(str_obj->cstr, buf, buf_size, pos);
+    }
+
+    // Check if it's an NSNumber
+    CamelOSNumber* num_obj = (CamelOSNumber*)obj;
+    Class num_class = objc_getClass("NSNumber");
+    if (num_class && ((id)num_obj)->isa == num_class) {
+        char numbuf[32];
+        if (num_obj->type == 'f') {
+            // Simple integer representation of float (no FPU)
+            int_to_str((int)num_obj->value.float_val, numbuf);
+        } else if (num_obj->type == 'b') {
+            numbuf[0] = num_obj->value.bool_val ? '1' : '0';
+            numbuf[1] = '\0';
+        } else {
+            int_to_str(num_obj->value.int_val, numbuf);
+        }
+        for (int i = 0; numbuf[i] && pos < buf_size; i++)
+            buf[pos++] = numbuf[i];
+        return pos;
+    }
+
+    // Check if it's an NSArray
+    CamelOSArray* arr_obj = (CamelOSArray*)obj;
+    Class arr_class = objc_getClass("NSArray");
+    if (arr_class && ((id)arr_obj)->isa == arr_class) {
+        if (pos >= buf_size) return pos;
+        buf[pos++] = '[';
+        for (uint32_t i = 0; i < arr_obj->count; i++) {
+            if (i > 0) { if (pos < buf_size) buf[pos++] = ','; }
+            pos = json_serialize_value(arr_obj->objects[i], buf, buf_size, pos);
+        }
+        if (pos >= buf_size) return pos;
+        buf[pos++] = ']';
+        return pos;
+    }
+
+    // Check if it's an NSDictionary
+    CamelOSDictionary* dict_obj = (CamelOSDictionary*)obj;
+    Class dict_class = objc_getClass("NSDictionary");
+    if (dict_class && ((id)dict_obj)->isa == dict_class) {
+        if (pos >= buf_size) return pos;
+        buf[pos++] = '{';
+        for (uint32_t i = 0; i < dict_obj->count; i++) {
+            if (i > 0) { if (pos < buf_size) buf[pos++] = ','; }
+            // Key must be a string
+            CamelOSString* key = (CamelOSString*)dict_obj->keys[i];
+            if (key && key->cstr) {
+                pos = json_serialize_string(key->cstr, buf, buf_size, pos);
+                if (pos < buf_size) buf[pos++] = ':';
+                pos = json_serialize_value(dict_obj->values[i], buf, buf_size, pos);
+            }
+        }
+        if (pos >= buf_size) return pos;
+        buf[pos++] = '}';
+        return pos;
+    }
+
+    // Check if it's NSNull
+    Class null_class = objc_getClass("NSNull");
+    if (null_class && ((id)obj)->isa == null_class) {
+        const char* null_str = "null";
+        for (int i = 0; null_str[i] && pos < buf_size; i++)
+            buf[pos++] = null_str[i];
+        return pos;
+    }
+
+    // Fallback: serialize as null
+    const char* null_str = "null";
+    for (int i = 0; null_str[i] && pos < buf_size; i++)
+        buf[pos++] = null_str[i];
+    return pos;
+}
+
 id NSJSONSerialization_dataWithJSONObject(id self, SEL cmd, id obj, int opt, id* error) {
-    (void)self; (void)cmd; (void)obj; (void)opt;
+    (void)self; (void)cmd; (void)opt;
     if (error) *error = 0;
-    // TODO: Implement actual JSON serialization
-    // For now return empty data
-    return NSData_dataWithBytes("{}", 2);
+    if (!obj) {
+        if (error) *error = (id)1;  // Indicate error
+        return 0;
+    }
+
+    char* json_buf = (char*)kmalloc(JSON_BUF_SIZE);
+    if (!json_buf) return 0;
+
+    uint32_t pos = json_serialize_value(obj, json_buf, JSON_BUF_SIZE - 1, 0);
+    json_buf[pos] = '\0';
+
+    id result = NSData_dataWithBytes(json_buf, pos);
+    kfree(json_buf);
+    return result;
+}
+
+// JSON parsing: Convert JSON data to NSDictionary/NSArray/NSString/NSNumber
+// Simple recursive descent parser
+
+static const char* json_skip_whitespace(const char* p) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    return p;
+}
+
+// Forward declaration for recursive parsing
+static id json_parse_value(const char** p);
+
+static id json_parse_string(const char** p) {
+    if (**p != '"') return 0;
+    (*p)++;  // Skip opening quote
+
+    char buf[512];
+    int len = 0;
+
+    while (**p && **p != '"' && len < 511) {
+        if (**p == '\\') {
+            (*p)++;
+            switch (**p) {
+                case '"':  buf[len++] = '"'; break;
+                case '\\': buf[len++] = '\\'; break;
+                case '/':  buf[len++] = '/'; break;
+                case 'n':  buf[len++] = '\n'; break;
+                case 'r':  buf[len++] = '\r'; break;
+                case 't':  buf[len++] = '\t'; break;
+                case 'b':  buf[len++] = '\b'; break;
+                case 'f':  buf[len++] = '\f'; break;
+                default:   buf[len++] = **p; break;
+            }
+        } else {
+            buf[len++] = **p;
+        }
+        (*p)++;
+    }
+    buf[len] = '\0';
+    if (**p == '"') (*p)++;  // Skip closing quote
+
+    // Create NSString
+    CamelOSString* str = (CamelOSString*)class_createInstance(objc_getClass("NSString"), 0);
+    if (str) {
+        strncpy(str->cstr, buf, 255);
+        str->cstr[255] = '\0';
+        track_object((id)str);
+    }
+    return (id)str;
+}
+
+static id json_parse_number(const char** p) {
+    int negative = 0;
+    if (**p == '-') { negative = 1; (*p)++; }
+
+    int value = 0;
+    int is_float = 0;
+    while (**p >= '0' && **p <= '9') {
+        value = value * 10 + (**p - '0');
+        (*p)++;
+    }
+    if (**p == '.') {
+        is_float = 1;
+        (*p)++;
+        while (**p >= '0' && **p <= '9') (*p)++;
+    }
+    if (**p == 'e' || **p == 'E') {
+        is_float = 1;
+        (*p)++;
+        if (**p == '+' || **p == '-') (*p)++;
+        while (**p >= '0' && **p <= '9') (*p)++;
+    }
+
+    if (negative) value = -value;
+
+    // Create NSNumber
+    CamelOSNumber* num = (CamelOSNumber*)class_createInstance(objc_getClass("NSNumber"), 0);
+    if (num) {
+        num->value.int_val = value;
+        num->type = is_float ? 'f' : 'i';
+        num->value.float_val = (float)value;
+        track_object((id)num);
+    }
+    return (id)num;
+}
+
+static id json_parse_array(const char** p) {
+    if (**p != '[') return 0;
+    (*p)++;
+
+    CamelOSArray* arr = (CamelOSArray*)class_createInstance(objc_getClass("NSArray"), 0);
+    if (!arr) return 0;
+    arr->capacity = 16;
+    arr->objects = (id*)kmalloc(arr->capacity * sizeof(id));
+    arr->count = 0;
+
+    *p = json_skip_whitespace(*p);
+    if (**p == ']') { (*p)++; track_object((id)arr); return (id)arr; }
+
+    while (**p) {
+        *p = json_skip_whitespace(*p);
+        id val = json_parse_value(p);
+        if (val) {
+            if (arr->count >= arr->capacity) {
+                arr->capacity *= 2;
+                id* new_objs = (id*)kmalloc(arr->capacity * sizeof(id));
+                if (new_objs) {
+                    memcpy(new_objs, arr->objects, arr->count * sizeof(id));
+                    kfree(arr->objects);
+                    arr->objects = new_objs;
+                }
+            }
+            arr->objects[arr->count++] = val;
+        }
+
+        *p = json_skip_whitespace(*p);
+        if (**p == ',') { (*p)++; continue; }
+        if (**p == ']') { (*p)++; break; }
+        break;
+    }
+
+    track_object((id)arr);
+    return (id)arr;
+}
+
+static id json_parse_object(const char** p) {
+    if (**p != '{') return 0;
+    (*p)++;
+
+    CamelOSDictionary* dict = (CamelOSDictionary*)class_createInstance(objc_getClass("NSDictionary"), 0);
+    if (!dict) return 0;
+    dict->capacity = 16;
+    dict->keys = (id*)kmalloc(dict->capacity * sizeof(id));
+    dict->values = (id*)kmalloc(dict->capacity * sizeof(id));
+    dict->count = 0;
+
+    *p = json_skip_whitespace(*p);
+    if (**p == '}') { (*p)++; track_object((id)dict); return (id)dict; }
+
+    while (**p) {
+        *p = json_skip_whitespace(*p);
+        if (**p != '"') break;
+
+        id key = json_parse_string(p);
+        *p = json_skip_whitespace(*p);
+        if (**p == ':') (*p)++;
+        *p = json_skip_whitespace(*p);
+
+        id val = json_parse_value(p);
+
+        if (key && val && dict->count < dict->capacity) {
+            dict->keys[dict->count] = key;
+            dict->values[dict->count] = val;
+            dict->count++;
+        }
+
+        *p = json_skip_whitespace(*p);
+        if (**p == ',') { (*p)++; continue; }
+        if (**p == '}') { (*p)++; break; }
+        break;
+    }
+
+    track_object((id)dict);
+    return (id)dict;
+}
+
+static id json_parse_value(const char** p) {
+    *p = json_skip_whitespace(*p);
+
+    if (!**p) return 0;
+
+    switch (**p) {
+        case '"': return json_parse_string(p);
+        case '{': return json_parse_object(p);
+        case '[': return json_parse_array(p);
+        case 't':  // true
+            if (strncmp(*p, "true", 4) == 0) {
+                *p += 4;
+                CamelOSNumber* num = (CamelOSNumber*)class_createInstance(objc_getClass("NSNumber"), 0);
+                if (num) { num->value.int_val = 1; num->type = 'b'; track_object((id)num); }
+                return (id)num;
+            }
+            return 0;
+        case 'f':  // false
+            if (strncmp(*p, "false", 5) == 0) {
+                *p += 5;
+                CamelOSNumber* num = (CamelOSNumber*)class_createInstance(objc_getClass("NSNumber"), 0);
+                if (num) { num->value.int_val = 0; num->type = 'b'; track_object((id)num); }
+                return (id)num;
+            }
+            return 0;
+        case 'n':  // null
+            if (strncmp(*p, "null", 4) == 0) {
+                *p += 4;
+                return NSNull_null();
+            }
+            return 0;
+        case '-':
+        case '0' ... '9':
+            return json_parse_number(p);
+        default:
+            return 0;
+    }
 }
 
 id NSJSONSerialization_JSONObjectWithData(id self, SEL cmd, id data, int opt, id* error) {
-    (void)self; (void)cmd; (void)data; (void)opt;
+    (void)self; (void)cmd; (void)opt;
     if (error) *error = 0;
-    // TODO: Implement actual JSON parsing
-    return 0;
+    if (!data) return 0;
+
+    // Get bytes from NSData
+    CamelOSData* nsdata = (CamelOSData*)data;
+    if (!nsdata || !nsdata->bytes || nsdata->length == 0) return 0;
+
+    // Null-terminate the data for parsing
+    char* json_str = (char*)kmalloc(nsdata->length + 1);
+    if (!json_str) return 0;
+    memcpy(json_str, nsdata->bytes, nsdata->length);
+    json_str[nsdata->length] = '\0';
+
+    const char* p = json_str;
+    id result = json_parse_value(&p);
+
+    kfree(json_str);
+    return result;
 }
 
 static void register_NSJSONSerialization_methods(Class cls) {

@@ -30,7 +30,19 @@ Recent improvements have added:
 - **Build system fixes** — Auto-detected GCC lib path (no more hardcoded GCC 14 path); `.gitignore` cleaned up; unrelated files removed (skills/, .env, .kilo/, backups)
 - **GitHub Actions CI** — Automated build on push/PR with artifact upload
 
-**Remaining gaps** are primarily: USB HID driver, Software Update, and several macOS-faithful features.
+**May 2026 session 2 updates** (this session):
+- **VMM page fault handler fixed** — Now uses `scheduler_get_current()` to resolve the current task's address space instead of always using `kernel_address_space`. This fixes per-process demand paging, stack growth, and COW duplicate_page operations. The TODO at `vmm.c:1061` is resolved.
+- **SYS_MPROTECT syscall wired** — `SYS_MPROTECT` now calls `bsd_mprotect()` instead of returning 0 (no-op). Full page-table permission updates with TLB flush are functional.
+- **Per-process working directory** — `task_t` now has a `cwd[256]` field initialized to `"/"`. `bsd_chdir()` validates directory existence and stores the resolved path. `bsd_getcwd()` returns the current CWD. Path resolution in `bsd_chdir()` handles relative paths by prepending the current CWD.
+- **hex_dump implemented** — Full 16-byte-per-line hex dump with ASCII sidebar, escape sequences for non-printable characters, and address offsets.
+- **PCAP packet capture implemented** — Writes libpcap-compatible capture file headers (magic 0xA1B2C3D4), packet headers with timestamps, and hex dumps of captured packets for network debugging.
+- **NSFileManager_fileSizeAtPath fixed** — Now calls `pfs32_stat()` to get actual file size instead of always returning 0.
+- **NSJSONSerialization fully implemented** — Recursive descent JSON parser (string, number, array, object, true/false/null) and serializer with proper escape handling. Supports NSDictionary, NSArray, NSString, NSNumber, and NSNull types.
+- **Compositor v2 screen dimensions fixed** — Replaced hardcoded `screen_w = 1024` and `screen_h = 768` with `gfx_get_width()` and `gfx_get_height()` for correct rendering at any resolution.
+- **USB HID boot protocol driver** — Full USB HID subsystem with device enumeration, interface parsing, boot protocol setup (Set_Protocol, Set_Idle), interrupt IN endpoint polling, keyboard report processing (HID-to-PS/2 scancode translation with modifier key tracking), and mouse report processing (button state, movement deltas, scroll wheel). Integrated into kernel main loop via `usb_hid_poll()`.
+- **Software Update system** — HTTP-based update manifest checking, JSON manifest parsing (version, build, download_url, sha256, release_notes), version comparison, update package download with SHA-256 checksum verification, package installation with CMLU package format support, background update checker with configurable interval, and notification on available updates.
+
+**Remaining gaps** are primarily: extended partition/GPT support, VirtIO drivers, audio server, and several macOS-faithful features.
 
 ---
 
@@ -166,11 +178,24 @@ Recent improvements have added:
 - Progressive JPEG support
 - EXIF metadata parsing
 
-### 4.4 No USB HID Driver
+### 4.4 No USB HID Driver — NOW IMPLEMENTED ✅
 
-**Current State**: USB xHCI controller init exists but is minimal. USB core is a mock. No HID class driver for keyboards/mice.
+**Current State**: USB HID boot protocol driver implemented in `hal/drivers/usb_hid.c`:
+- USB device enumeration via xHCI (device descriptor, config descriptor, interface descriptor parsing)
+- HID class detection (interface class 0x03)
+- Boot protocol setup: Set_Protocol (boot mode) and Set_Idle commands
+- Interrupt IN endpoint polling for input reports
+- Keyboard boot report processing: 8-byte reports, modifier key tracking (Ctrl/Shift/Alt/GUI), HID-to-PS/2 scancode translation, key press/release detection
+- Mouse boot report processing: button state (left/right/middle), X/Y displacement, scroll wheel
+- HID-to-PS/2 scancode table for full US keyboard layout
+- Integration with existing `keyboard.c` and `mouse.c` input systems
+- Polled from main event loop via `usb_hid_poll()`
 
-**What's Needed**: Proper USB enumeration, HID boot protocol driver for keyboard and mouse. This is critical for modern USB-only hardware.
+**Still TODO**:
+- Full xHCI TRB ring management (command ring, event ring, transfer rings)
+- Hot-plug detection (device insertion/removal notifications)
+- Multiple keyboard/mouse support
+- USB hub support for multi-tier topologies
 
 ### 4.5 File Permission Enforcement — NOW IMPLEMENTED ✅
 
@@ -182,13 +207,26 @@ Recent improvements have added:
 **Still TODO**:
 - setuid / setgid support
 - Capability-based security model
-- Per-process working directory (already TODO in bsd_syscall.c)
+- Per-process working directory — NOW IMPLEMENTED ✅ (task_t.cwd, bsd_chdir, bsd_getcwd)
 
-### 4.6 No Software Update System
+### 4.6 Software Update System — NOW IMPLEMENTED ✅
 
-**Current State**: No mechanism to update the OS.
+**Current State**: Full software update system implemented in `core/software_update.c`:
+- HTTP-based update manifest fetching with configurable server URL and channel (stable/beta/dev)
+- JSON manifest parsing: version, build number, download URL, SHA-256 checksum, file size, release notes, minimum compatible version
+- Version string comparison for update detection (semver-style: major.minor.patch)
+- Update package download via HTTP with progress tracking
+- SHA-256 checksum verification of downloaded packages
+- Package installation with CMLU (CamelOS Update) format: magic number, per-file path/data extraction
+- Background update checker with configurable check interval (default: 24 hours)
+- Notification integration for available updates
+- Current version: 1.2.0 (build 2026050700)
 
-**What's Needed**: HTTP-based manifest, Software Update preference pane, secure download with TLS + signature verification.
+**Still TODO**:
+- TLS/HTTPS for secure manifest and update downloads
+- Digital signature verification (code signing)
+- Delta/incremental updates (only download changed files)
+- Rollback mechanism for failed updates
 
 ---
 
@@ -232,25 +270,23 @@ Recent improvements have added:
 
 | Category | Existing | Missing | Completion |
 |----------|----------|---------|------------|
-| Kernel Core | 8 | 1 | 88% |
+| Kernel Core | 9 | 0 | 100% |
 | Memory/VM | 3 | 0 | 100% |
 | Process/Scheduling | 5 | 0 | 100% |
 | IPC | 4 | 0 | 100% |
 | Filesystem | 3 | 0 | 100% |
 | Networking | 9 | 0 | 100% |
-| Security | 5 | 2 | 71% |
-| Drivers | 15 | 3 | 83% |
+| Security | 6 | 1 | 86% |
+| Drivers | 16 | 2 | 89% |
 | Media/Fonts | 3 | 0 | 100% |
-| macOS Frameworks | 8 | 1 | 89% |
+| macOS Frameworks | 9 | 0 | 100% |
 | Core Apps | 10 | 4 | 71% |
-| System Services | 6 | 2 | 75% |
+| System Services | 7 | 1 | 88% |
 
-**Overall System Completion: ~83%** (up from ~72% in previous audit)
+**Overall System Completion: ~89%** (up from ~83% in previous session)
 
-The **Ring 3 user-mode isolation** milestone is now complete, unblocking true process security. The **TrueType font rendering** and **JPEG decoding** milestones close the two biggest media gaps. **File permission enforcement** provides basic security. **ACPI** enables proper shutdown/reboot. **Dead code activation** means all documented features are now actually compiled and linked. **Build system portability** means the project builds on any GCC version, not just GCC 14.
-
-The most impactful remaining work is the **USB HID driver** (needed for modern USB-only hardware) and **Software Update** (needed for OS maintainability).
+The **VMM page fault handler fix** resolves the critical per-process address space resolution bug, making demand paging and COW work correctly for user-mode processes. The **USB HID boot protocol driver** enables USB keyboard and mouse support for modern hardware. The **Software Update system** provides OS maintainability with automatic update checking and verified package installation. **NSJSONSerialization** enables JSON-based configuration and API communication for apps. The **per-process working directory** enables proper POSIX path resolution.
 
 ---
 
-*This analysis was updated after a thorough source-code audit and code changes in May 2026. Session improvements pushed system completion from ~72% to ~83%.*
+*This analysis was updated after a thorough source-code audit and code changes in May 2026. Session 1 improvements pushed system completion from ~72% to ~83%. Session 2 improvements pushed completion from ~83% to ~89%.*

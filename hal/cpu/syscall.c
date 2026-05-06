@@ -269,7 +269,7 @@ void syscall_handler(syscall_regs_t* regs) {
             break;
             
         case SYS_MPROTECT:
-            result = 0; // Stub - mprotect not yet fully implemented
+            result = bsd_mprotect((void*)arg1, (uint32_t)arg2, (int)arg3);
             break;
             
         // --- Pipe IPC ---

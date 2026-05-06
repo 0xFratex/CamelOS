@@ -5,6 +5,8 @@
 #include "bsd_syscall.h"
 #include "string.h"
 #include "memory.h"
+#include "task.h"
+#include "scheduler.h"
 #include "../sys/api.h"
 #include "../sys/cdl_defs.h"
 #include "../fs/pfs32.h"
@@ -374,8 +376,51 @@ int bsd_rename(const char* oldpath, const char* newpath) {
 }
 
 int bsd_chdir(const char* path) {
-    (void)path;
-    // TODO: Track current working directory per-process
+    if (!path || !path[0]) return -1;
+
+    /* Resolve the path: if relative, prepend the current CWD */
+    char resolved[256];
+    if (path[0] != '/') {
+        task_t* cur = scheduler_get_current();
+        const char* cwd = (cur && cur->cwd[0]) ? cur->cwd : "/";
+        int cwd_len = strlen(cwd);
+        int path_len = strlen(path);
+        if (cwd_len + 1 + path_len >= 256) return -1;
+        memcpy(resolved, cwd, cwd_len);
+        if (cwd[cwd_len - 1] != '/') resolved[cwd_len++] = '/';
+        memcpy(resolved + cwd_len, path, path_len + 1);
+    } else {
+        strncpy(resolved, path, 255);
+        resolved[255] = '\0';
+    }
+
+    /* Normalize: remove trailing slash (unless root), handle . and .. */
+    int len = strlen(resolved);
+    if (len > 1 && resolved[len - 1] == '/') resolved[--len] = '\0';
+
+    /* Verify the directory exists */
+    pfs32_direntry_t entry;
+    if (pfs32_stat(resolved, &entry) != 0) return -1;
+    if (!(entry.attributes & PFS32_ATTR_DIRECTORY)) return -1;  /* Not a directory */
+
+    /* Store in the current task's CWD */
+    task_t* cur = scheduler_get_current();
+    if (!cur) return -1;
+    strncpy(cur->cwd, resolved, 255);
+    cur->cwd[255] = '\0';
+
+    return 0;
+}
+
+int bsd_getcwd(char* buf, uint32_t size) {
+    if (!buf || size == 0) return -1;
+
+    task_t* cur = scheduler_get_current();
+    const char* cwd = (cur && cur->cwd[0]) ? cur->cwd : "/";
+    int len = strlen(cwd);
+    if ((uint32_t)(len + 1) > size) return -1;
+
+    memcpy(buf, cwd, len + 1);
     return 0;
 }
 

@@ -184,6 +184,7 @@ int bsd_mkdir(const char* path, int mode);
 int bsd_unlink(const char* path);
 int bsd_rename(const char* oldpath, const char* newpath);
 int bsd_chdir(const char* path);
+int bsd_getcwd(char* buf, uint32_t size);
 void* bsd_mmap(void* addr, uint32_t length, int prot, int flags, int fd, uint32_t offset);
 int bsd_munmap(void* addr, uint32_t length);
 int bsd_mprotect(void* addr, uint32_t length, int prot);

@@ -34,6 +34,7 @@ typedef struct task_control_block {
     void* signal_state;    /* signal_state_t* - per-process signal handling (signal.h) */
     int exit_code;         /* Exit code for zombie processes */
     int parent_pid;        /* Parent process ID for waitpid */
+    char cwd[256];         /* Per-process current working directory (default "/") */
 } task_t;
 
 /* Task function prototype */
