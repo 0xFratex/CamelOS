@@ -4,13 +4,12 @@
 // Architecture:
 //   - IRQ12 handler (mouse_handler) pushes raw bytes into a ring buffer.
 //     No packet assembly happens in ISR context.
-//   - mouse_process() (called from the main event loop) drains the
-//     IRQ ring buffer, assembles complete packets, and updates
-//     mouse_x/y/buttons/scroll.
-//   - A fallback polling path is also provided for environments where
-//     IRQ12 is unreliable (some VirtualBox configurations).  This path
-//     disables interrupts briefly to avoid a double-read race with the
-//     IRQ handler (see Phase 2 comments below).
+//   - mouse_process() drains the ring buffer only — no direct port polling.
+//     This avoids a double-read race where the IRQ handler and the polling
+//     path both read the same byte from port 0x60.
+//   - The IO-APIC routes GSI 12 → Vector 44 (IRQ12), so the ISR fires
+//     even though the legacy PIC has IRQ12 masked.  All mouse bytes are
+//     delivered via the ring buffer.
 //
 // Supports: QEMU, VirtualBox, Bochs, real hardware (PS/2 + USB HID)
 #include "../common/ports.h"
@@ -34,7 +33,7 @@ int mouse_scroll_delta = 0;  // Scroll wheel: positive = up, negative = down
 // ============================================================================
 // IRQ ring buffer — mouse_handler() pushes bytes, mouse_process() drains them
 // ============================================================================
-#define MOUSE_RING_SIZE 64  // Must be power of 2; 64 bytes > 20 packets/sec * 4 bytes
+#define MOUSE_RING_SIZE 64  // Must be power of 2
 static volatile uint8_t mouse_ring[MOUSE_RING_SIZE];
 static volatile uint32_t mouse_ring_head = 0;  // Written by ISR (producer)
 static volatile uint32_t mouse_ring_tail = 0;  // Read by main loop (consumer)
@@ -76,29 +75,19 @@ void mouse_write(uint8_t a_write) {
     outb(0x60, a_write);
 }
 
-// Read a mouse response byte from port 0x60.
-// IMPORTANT: This checks BOTH OBF (bit 0) AND AUX_OBF (bit 5) to ensure
-// we only read mouse data, not keyboard scancodes.  Without the AUX_OBF
-// check, keyboard bytes could be consumed as mouse responses during init,
-// shifting all subsequent command/response reads and causing the mouse
-// to be misconfigured.
+// Read a response byte from the PS/2 mouse.
+// Simple wait-for-OBF + read — same as the installer's ps2_mouse_read().
+// Safe during init because init_mouse() runs with cli (no IRQ interference).
 uint8_t mouse_read() {
-    uint32_t timeout = 100000;
-    while (timeout--) {
-        uint8_t status = inb(0x64);
-        // OBF=1 (bit 0) AND AUX_OBF=1 (bit 5) → mouse data available
-        if ((status & 0x21) == 0x21) {
-            return inb(0x60);
-        }
-    }
-    return 0xFF;  // Timeout — no mouse data available
+    mouse_wait(0);
+    return inb(0x60);
 }
 
 // ============================================================================
 // mouse_handler() — Called from IRQ12 (ISR context)
 //
-// Minimal work: just push the raw byte into the ring buffer.
-// All packet parsing happens in mouse_process() on the main loop.
+// Pushes the raw byte into the ring buffer.  All packet parsing happens
+// in mouse_process() on the main loop.
 // ============================================================================
 void mouse_handler() {
     uint8_t status = inb(0x64);
@@ -161,28 +150,21 @@ static void mouse_process_packet(void) {
 }
 
 // ============================================================================
-// mouse_process() — Main-loop mouse processing
+// mouse_process() — Main-loop mouse processing (ring buffer only)
 //
-// Call this once per main-loop iteration. It:
-//   1. Drains the IRQ ring buffer (bytes pushed by mouse_handler)
-//   2. Directly polls port 0x60/0x64 for any remaining mouse data
-//      (VirtualBox fallback — some emulators don't reliably deliver IRQ12)
-//   3. Assembles complete packets and updates mouse state
-//
-// Phase 2 (direct polling) briefly disables interrupts to avoid a
-// double-read race: if IRQ12 fires between our status check and data
-// read, the IRQ handler would consume the byte first, and our read
-// would get a stale duplicate, causing packet misalignment.
+// Drains the IRQ ring buffer and assembles complete packets.
+// Does NOT directly poll the PS/2 port — all bytes are delivered by
+// the IRQ12 handler via the IO-APIC (GSI 12 → Vector 44).
 // ============================================================================
 void mouse_process(void) {
     uint8_t packet_len = mouse_has_wheel ? 4 : 3;
 
-    // --- Phase 1: Drain the IRQ ring buffer ---
+    // Drain the IRQ ring buffer
     while (mouse_ring_tail != mouse_ring_head) {
         uint8_t data = mouse_ring[mouse_ring_tail];
         mouse_ring_tail = (mouse_ring_tail + 1) & (MOUSE_RING_SIZE - 1);
 
-        // Packet synchronization: byte 0 must have bit 3 set
+        // Packet synchronization: byte 0 must have bit 3 set (Always-1 bit)
         if (pkt_cycle == 0 && !(data & 0x08)) continue;
 
         pkt_byte[pkt_cycle] = data;
@@ -193,39 +175,10 @@ void mouse_process(void) {
             mouse_process_packet();
         }
     }
-
-    // --- Phase 2: Direct PS/2 port polling (VirtualBox fallback) ---
-    // If the emulator didn't deliver IRQ12 for some bytes, they'll still
-    // be sitting in the PS/2 output buffer.  Read them directly.
-    //
-    // CRITICAL: We must disable interrupts during this polling to prevent
-    // the IRQ12 handler from stealing bytes between our status check and
-    // data read.  Without this, the same byte can be processed twice:
-    //   1. IRQ12 fires → mouse_handler() reads byte → ring buffer
-    //   2. We also read the byte → duplicate in packet assembly
-    // This causes packet misalignment (teleporting + scroll-as-click).
-    // The cli/sti window is extremely short (a few microseconds per byte),
-    // so it does not affect timer accuracy or scheduling.
-    asm volatile("cli");
-    while ((inb(0x64) & 0x21) == 0x21) {  // OBF=1 and AUX_OBF=1
-        uint8_t data = inb(0x60);
-
-        // Packet synchronization
-        if (pkt_cycle == 0 && !(data & 0x08)) continue;
-
-        pkt_byte[pkt_cycle] = data;
-        pkt_cycle++;
-
-        if (pkt_cycle >= packet_len) {
-            pkt_cycle = 0;
-            mouse_process_packet();
-        }
-    }
-    asm volatile("sti");
 }
 
 // ============================================================================
-// Legacy API compatibility — the main loop and some code reference these names
+// Legacy API compatibility
 // ============================================================================
 void mouse_poll_fallback(void) {
     mouse_process();
@@ -233,6 +186,10 @@ void mouse_poll_fallback(void) {
 
 // ============================================================================
 // init_mouse() — PS/2 mouse initialization
+//
+// Matches the installer's proven init_ps2_mouse() sequence exactly.
+// Runs with interrupts disabled to prevent IRQ12 from firing during
+// the PS/2 command/response exchange.
 // ============================================================================
 void init_mouse() {
     // Zero out state
@@ -243,141 +200,105 @@ void init_mouse() {
     pkt_cycle = 0;
     mouse_ring_head = 0;
     mouse_ring_tail = 0;
-    mouse_has_wheel = 0;  // Start with standard 3-byte mode.
-                          // Will be set to 1 after successful Intellimouse
-                          // detection (device_id == 0x03).  Forcing 4-byte
-                          // mode when the mouse only sends 3 bytes causes
-                          // the driver to wait for a 4th byte that never
-                          // comes — the next packet's byte 0 is consumed as
-                          // the scroll byte, misaligning all subsequent
-                          // packets and causing phantom clicks and teleportation.
+    mouse_has_wheel = 0;
+
+    // Disable interrupts during the entire init sequence.
+    // This prevents the IRQ12 handler (routed via IO-APIC GSI 12)
+    // from firing and consuming mouse response bytes during init.
+    // The IO-APIC routes GSI 12 even though the legacy PIC has it masked.
+    asm volatile("cli");
 
     uint8_t _status;
     uint8_t ack __attribute__((unused));
 
-    // Disable interrupts during the entire init sequence.
-    // This prevents the keyboard IRQ handler from stealing mouse response
-    // bytes and ensures the PS/2 controller command/response protocol
-    // is not disrupted.  Init takes ~10-50ms; this is acceptable at boot.
-    asm volatile("cli");
-
+    // Enable auxiliary device (mouse port)
     mouse_wait(1);
-    outb(0x64, 0xA8); // Enable Aux
+    outb(0x64, 0xA8);
 
-    // Drain any stale data from the PS/2 buffer before we start
-    for (volatile int d = 0; d < 1000; d++) {}
-    while (inb(0x64) & 0x01) {
-        inb(0x60);  // Discard
-    }
-
+    // Read and modify Compaq Status Byte:
+    //   Set bit 1  = enable IRQ12
+    //   Clear bit 5 = enable mouse clock
     mouse_wait(1);
-    outb(0x64, 0x20); // Get Compaq Status Byte
+    outb(0x64, 0x20);         // Get Compaq Status
     mouse_wait(0);
     _status = inb(0x60);
-
-    _status |= 2;     // Enable IRQ 12
-    _status &= ~0x20; // Enable mouse clock
-
+    _status |= 2;              // Enable IRQ12
+    _status &= ~0x20;          // Enable mouse clock
     mouse_wait(1);
-    outb(0x64, 0x60); // Set Compaq Status
+    outb(0x64, 0x60);         // Set Compaq Status
     mouse_wait(1);
     outb(0x60, _status);
 
-    // Reset Mouse
-    // The PS/2 mouse responds to 0xFF with:
-    //   0xFA = ACK
-    //   0xAA = BAT (Basic Assurance Test) completion
-    //   0x00 = Default Device ID
-    // We read the ACK, then drain all remaining bytes.  This is more
-    // robust than reading exactly 3 bytes because some controllers
-    // send additional bytes or have different timing.
+    // Reset mouse
     mouse_write(0xFF);
-    ack = mouse_read();   // 0xFA — ACK
+    ack = mouse_read();         // ACK (0xFA)
 
-    // Small delay to let the BAT + Device ID bytes arrive
+    // Small delay after reset to let the mouse controller settle
     for (volatile int d = 0; d < 10000; d++) {}
 
-    // Drain all remaining bytes from the reset response (BAT + Device ID)
+    // Drain any leftover bytes from the reset response
+    // (some mice send BAT completion 0xAA + 0x00 after reset)
     for (volatile int d = 0; d < 5000; d++) {}
     while ((inb(0x64) & 0x21) == 0x21) {
-        inb(0x60);  // Discard (0xAA, 0x00, and any extras)
+        inb(0x60);  // Discard
     }
 
-    // --- Enable Intellimouse (scroll wheel) protocol ---
+    // --- Intellimouse (scroll wheel) negotiation ---
     // The magic sequence: Set Sample Rate 200, then 100, then 80.
     // After this, a Get Device ID command returns 0x03 if the mouse
     // supports the scroll wheel protocol (4-byte packets).
+    mouse_write(0xF3);    // Set Sample Rate
+    ack = mouse_read();    // ACK
+    mouse_write(200);     // Rate = 200
+    ack = mouse_read();    // ACK
 
-    // Step 1: Set sample rate 200
-    mouse_write(0xF3); // Set Sample Rate command
-    ack = mouse_read(); // ACK
-    mouse_write(200);  // Sample rate = 200
-    ack = mouse_read(); // ACK
+    mouse_write(0xF3);    // Set Sample Rate
+    ack = mouse_read();    // ACK
+    mouse_write(100);     // Rate = 100
+    ack = mouse_read();    // ACK
 
-    // Step 2: Set sample rate 100
-    mouse_write(0xF3);
-    ack = mouse_read(); // ACK
-    mouse_write(100);
-    ack = mouse_read(); // ACK
+    mouse_write(0xF3);    // Set Sample Rate
+    ack = mouse_read();    // ACK
+    mouse_write(80);      // Rate = 80
+    ack = mouse_read();    // ACK
 
-    // Step 3: Set sample rate 80
-    mouse_write(0xF3);
-    ack = mouse_read(); // ACK
-    mouse_write(80);
-    ack = mouse_read(); // ACK
+    // Get Device ID
+    mouse_write(0xF2);    // Get Device ID
+    ack = mouse_read();    // ACK (0xFA)
 
-    // Step 4: Read device ID — if 0x03, Intellimouse is supported
-    // The mouse responds to 0xF2 with: ACK (0xFA) + Device ID byte
-    mouse_write(0xF2);       // Get Device ID
-    ack = mouse_read();      // 0xFA — ACK
-
-    // Small delay before reading device ID to avoid consuming
-    // stale bytes from the buffer
+    // Small delay before reading device ID
     for (volatile int d = 0; d < 5000; d++) {}
 
-    uint8_t device_id = mouse_read();
+    uint8_t dev_id = mouse_read();
 
-    if (device_id == 0x03) {
-        // Confirmed Intellimouse — wheel enabled, 4-byte packets
-        mouse_has_wheel = 1;
+    if (dev_id == 0x03) {
+        mouse_has_wheel = 1;  // Intellimouse: 4-byte packets with scroll wheel
     }
-    // If device_id != 0x03, the mouse stays in standard 3-byte
-    // mode.  We MUST keep mouse_has_wheel = 0 — reading 4 bytes
-    // from a 3-byte mouse causes the driver to consume byte 0 of
-    // the next packet as the "scroll" byte, misaligning everything.
+    // If dev_id != 0x03, mouse stays in standard 3-byte mode.
+    // Do NOT force 4-byte mode — that causes the "scroll = click" bug.
 
     // Set a reasonable sample rate
-    mouse_write(0xF3);
-    ack = mouse_read(); // ACK
-    mouse_write(100);  // 100 samples/sec
-    ack = mouse_read(); // ACK
+    mouse_write(0xF3);    // Set Sample Rate
+    ack = mouse_read();    // ACK
+    mouse_write(100);     // 100 samples/sec
+    ack = mouse_read();    // ACK
 
-    // Enable Streaming
-    mouse_write(0xF4);
-    ack = mouse_read(); // ACK
+    // Enable data reporting (streaming mode)
+    mouse_write(0xF4);    // Enable
+    ack = mouse_read();    // ACK
 
-    // Final drain: discard any stale bytes left in the buffer.
-    // Without this, leftover ACK/ID bytes from the init sequence
-    // are misinterpreted as mouse packets, causing teleportation
-    // and phantom clicks on the very first mouse_process() calls.
+    // Final drain: discard any stale bytes left in the buffer
     for (volatile int d = 0; d < 10000; d++) {}
     while ((inb(0x64) & 0x21) == 0x21) {
         inb(0x60);  // Discard
     }
 
-    // Clear ring buffer and packet assembly state one more time
-    // in case IRQ12 fired during init and pushed stale data
+    // Clear ring buffer and packet assembly state
     mouse_ring_head = 0;
     mouse_ring_tail = 0;
     pkt_cycle = 0;
 
-    // Unmask IRQ 12 on PIC (Slave)
-    uint8_t mask = inb(0xA1);
-    outb(0xA1, mask & ~(1 << 4));
-
-    mask = inb(0x21);
-    outb(0x21, mask & ~(1 << 2));
-
-    // Re-enable interrupts now that init is complete
+    // Re-enable interrupts — the IRQ12 handler (via IO-APIC GSI 12)
+    // will now deliver mouse bytes to the ring buffer.
     asm volatile("sti");
 }
