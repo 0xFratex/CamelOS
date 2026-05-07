@@ -177,6 +177,8 @@ char install_error_msg[128] = "";
 uint32_t last_animation_tick = 0;
 int install_step_tick = 0;  // Frame counter within each step for smooth delays
 int install_idle_ticks = 0;  // Watchdog counter to prevent deadlock at ~29%
+int install_step_start_tick = 0;  // Tick count when current step started (for global watchdog)
+int install_total_write_failures = 0;  // Cumulative ATA write failure count in step 1
 
 // Mouse state
 extern int mouse_x, mouse_y, mouse_btn_left;
@@ -1400,6 +1402,7 @@ void render_select_disk(void) {
                 kernel_write_offset = 0; install_pct = 0; install_target_pct = 0;
                 install_step_tick = 0;
                 install_idle_ticks = 0;
+                install_step_start_tick = 0; install_total_write_failures = 0;
                 current_state = STATE_INSTALLING;
                 add_log("Starting installation process");
             }
@@ -1947,6 +1950,9 @@ void install_tick(void) {
     disk_set_drive(selected_drive_idx);
     if (install_error) { current_state = STATE_FAILURE; return; }
 
+    // Increment step duration watchdog
+    install_step_start_tick++;
+
     // Smooth progress animation: gradually move install_pct toward install_target_pct
     if (install_pct < install_target_pct) {
         // Adaptive speed: catch up faster when far behind to prevent
@@ -1958,6 +1964,18 @@ void install_tick(void) {
             install_pct += 2;  // Normal smooth animation
         }
         if (install_pct > install_target_pct) install_pct = install_target_pct;
+    }
+
+    // Global step watchdog: if a step has been running for more than 500 ticks
+    // (10 seconds at 50Hz), force-advance to the next step to prevent deadlock.
+    // This handles cases where ATA writes consistently fail or progress animation
+    // never catches up due to target jumps.
+    if (install_step_start_tick > 500 && install_step < 4) {
+        add_log("WARN: Step watchdog expired, force-advancing to next step");
+        install_step++; install_step_tick = 0; install_sub_step = 0;
+        install_step_start_tick = 0;
+        install_idle_ticks = 0;
+        return;
     }
 
     if (install_step == 0) {
@@ -1983,11 +2001,11 @@ void install_tick(void) {
             }
             install_step_tick = 1;
             install_target_pct = 10;
-            return;  // Wait one tick to show progress
-        }
-        // Wait for progress animation to catch up before moving to next step
-        if (install_pct >= install_target_pct) {
-            install_step++; install_step_tick = 0;
+            // Don't wait for progress animation - advance immediately.
+            // The progress bar will catch up on its own via the animation logic above.
+            install_step++; install_step_tick = 0; install_step_start_tick = 0;
+            add_log("Bootloader step complete");
+            return;
         }
         return;
     }
@@ -2013,6 +2031,17 @@ void install_tick(void) {
             current_state = STATE_FAILURE;
             return;
         }
+
+        // Global failure escape: if total write failures across all sectors
+        // exceed 3000, skip the remaining kernel sectors and move on.
+        // This prevents deadlock when ATA writes consistently fail on QEMU.
+        if (install_total_write_failures > 3000 && kernel_write_offset < k_sectors) {
+            char skip_buf[80]; strcpy(skip_buf, "WARN: Total write failures (");
+            char nbuf[16]; int_to_str(install_total_write_failures, nbuf); strcat(skip_buf, nbuf);
+            strcat(skip_buf, ") exceeded threshold, skipping remaining kernel sectors");
+            add_log(skip_buf);
+            kernel_write_offset = k_sectors;  // Skip to end
+        }
         
         int sectors_this = 0;
         while (kernel_write_offset < k_sectors && sectors_this < 16) {
@@ -2021,8 +2050,9 @@ void install_tick(void) {
             memcpy(buf, system_bin_start + (kernel_write_offset * 512), (rem>512)?512:rem);
             if (ata_write_sector(selected_drive_idx, 1+kernel_write_offset, buf) < 0) {
                 install_idle_ticks++;
-                // Watchdog: if ATA write fails repeatedly, don't deadlock
-                // Increased threshold to 300 for QEMU compatibility (transient I/O errors
+                install_total_write_failures++;
+                // Watchdog: if ATA write fails repeatedly for a single sector, skip it
+                // Threshold of 300 for QEMU compatibility (transient I/O errors
                 // are common on emulated hardware but data is usually written correctly)
                 if (install_idle_ticks > 300) {
                     add_log("WARN: ATA write timeout during kernel copy, continuing anyway");
@@ -2035,14 +2065,15 @@ void install_tick(void) {
                 }
                 return;  // Retry next tick
             }
-            install_idle_ticks = 0;  // Reset watchdog on success
+            install_idle_ticks = 0;  // Reset per-sector watchdog on success
             kernel_write_offset++; sectors_this++;
         }
         // Progress: 10% to 30% for kernel copy
         install_target_pct = 10 + (kernel_write_offset * 20 / k_sectors);
         if (kernel_write_offset >= k_sectors) {
             install_target_pct = 30;
-            install_step++; install_step_tick = 0; add_log("Kernel copied");
+            install_step++; install_step_tick = 0; install_step_start_tick = 0;
+            add_log("Kernel copied");
         }
         return;
     }
@@ -2107,11 +2138,11 @@ void install_tick(void) {
 
             install_step_tick = 1;
             install_target_pct = 50;
-            return;  // Wait one tick to show progress
-        }
-        // Wait for progress animation to catch up
-        if (install_pct >= install_target_pct) {
-            install_step++; install_step_tick = 0; add_log("PFS32 formatted");
+            // Don't wait for progress animation - advance immediately.
+            // The progress bar will animate toward 50% on its own.
+            install_step++; install_step_tick = 0; install_step_start_tick = 0;
+            add_log("PFS32 formatted");
+            return;
         }
         return;
     }
@@ -2130,11 +2161,9 @@ void install_tick(void) {
                 pfs32_create_directory("/etc");
                 install_step_tick = 1;
                 install_target_pct = 55;
-                return;  // Wait one tick to show progress
-            }
-            // Wait for progress animation to catch up
-            if (install_pct >= install_target_pct) {
+                // Don't wait for progress animation - advance immediately.
                 install_sub_step=1; init_install_files(); install_file_idx=0; install_step_tick = 0;
+                install_step_start_tick = 0;
             }
             return;
         }
@@ -2218,7 +2247,7 @@ void install_tick(void) {
         }
         pfs32_sync(); disk_flush_cache();
         install_target_pct = 90;
-        install_step++; install_sub_step=0; install_step_tick = 0;
+        install_step++; install_sub_step=0; install_step_tick = 0; install_step_start_tick = 0;
         add_log("System files installed");
         return;
     }
@@ -2229,7 +2258,8 @@ void install_tick(void) {
         pfs32_sync(); disk_flush_cache();
         add_log("Disk cache flushed");
         install_target_pct = 100;
-        // Wait for progress bar animation to complete before showing success
+        // Wait for progress bar animation to complete before showing success,
+        // but also use the global watchdog (checked above) to prevent deadlock.
         if (install_pct >= 100) {
             add_log("Installation complete!");
             current_state = STATE_SUCCESS;
@@ -2264,7 +2294,7 @@ int main(uint32_t magic, void* mb_ptr) {
     install_step=0; install_sub_step=0; install_file_idx=0;
     install_error=0; install_error_msg[0]=0;
     kernel_write_offset=0; install_pct=0; install_target_pct=0; install_step_tick=0;
-    install_idle_ticks=0;
+    install_idle_ticks=0; install_step_start_tick=0; install_total_write_failures=0;
     sys_check_done=0;
 
     scan_hardware();

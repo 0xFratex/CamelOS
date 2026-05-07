@@ -105,6 +105,28 @@
 #define SYS_USER_EXEC    126  // int exec(const char* path, char* const argv[])
 #define SYS_USER_YIELD   127  // void yield()
 
+// --- Extended File/Process/Scheduler Syscalls (130-149) ---
+#define SYS_stat        130   // Get file status
+#define SYS_chmod       131   // Change file permissions
+#define SYS_chown       132   // Change file owner
+#define SYS_mount       133   // Mount filesystem
+#define SYS_umount      134   // Unmount filesystem
+#define SYS_ioctl       135   // Device I/O control
+#define SYS_gettimeofday 136  // Get time of day
+#define SYS_setuid      137   // Set user ID
+#define SYS_getuid      138   // Get user ID
+#define SYS_chdir       139   // Change working directory
+#define SYS_sync        140   // Sync filesystem to disk
+#define SYS_access      141   // Check file access permissions
+#define SYS_dup         142   // Duplicate file descriptor
+#define SYS_dup2        143   // Duplicate fd to specific fd
+#define SYS_pipe2       144   // Create pipe with flags
+#define SYS_fcntl       145   // File control
+#define SYS_sched_set_policy 146  // Set scheduler policy
+#define SYS_sched_get_policy 147  // Get scheduler policy
+#define SYS_sched_set_nice   148  // Set nice value
+#define SYS_sched_get_nice   149  // Get nice value
+
 // ============================================================================
 // Syscall Register State (pushed by assembly stub)
 // ============================================================================

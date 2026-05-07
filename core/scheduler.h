@@ -46,6 +46,17 @@ typedef enum {
 #define SCHED_DEFAULT_TIME_SLICE   10    /* Default time quantum in ticks */
 #define SCHED_MAX_TIME_SLICE       100   /* Maximum time quantum */
 
+/* Scheduling policies */
+#define SCHED_POLICY_PRIORITY      0     /* Priority-based round-robin (default) */
+#define SCHED_POLICY_EEVDF         1     /* Earliest Eligible Virtual Deadline First */
+
+/* EEVDF configuration */
+#define EEVDF_SCHED_PERIOD         6     /* Base scheduling period in ticks (120ms at 50Hz) */
+#define EEVDF_NICE_MIN            -20    /* Minimum nice value */
+#define EEVDF_NICE_MAX             19    /* Maximum nice value */
+#define EEVDF_NICE_DEFAULT          0    /* Default nice value */
+#define EEVDF_VRUNTIME_SCALE       20    /* Fixed-point shift for vruntime calculations */
+
 /* Scheduler statistics */
 typedef struct {
     uint32_t total_tasks;
@@ -151,6 +162,32 @@ sched_stats_t* scheduler_get_stats(void);
  * Dump scheduler state for debugging
  */
 void scheduler_dump_state(void);
+
+/**
+ * Set the active scheduling policy
+ * @param policy SCHED_POLICY_PRIORITY or SCHED_POLICY_EEVDF
+ */
+void scheduler_set_policy(int policy);
+
+/**
+ * Get the active scheduling policy
+ * @return Current policy (SCHED_POLICY_PRIORITY or SCHED_POLICY_EEVDF)
+ */
+int scheduler_get_policy(void);
+
+/**
+ * Set the nice value for a task (EEVDF mode)
+ * @param task  Pointer to task control block
+ * @param nice  Nice value (-20 to 19, lower = higher priority)
+ */
+void scheduler_set_nice(task_t* task, int nice);
+
+/**
+ * Get the nice value for a task (EEVDF mode)
+ * @param task Pointer to task control block
+ * @return Nice value (-20 to 19)
+ */
+int scheduler_get_nice(task_t* task);
 
 /* Assembly context switch function */
 extern void context_switch_asm(uint32_t* old_esp_ptr, uint32_t new_esp);

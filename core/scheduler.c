@@ -22,6 +22,12 @@ static task_t* priority_tails[NUM_PRIORITIES];   /* Tail pointers for O(1) inser
 static uint8_t highest_ready_priority = 255;     /* Track highest priority with ready tasks */
 static int scheduler_initialized = 0;
 
+/* Current scheduling policy (default: priority-based) */
+static int sched_policy = SCHED_POLICY_PRIORITY;
+
+/* Global minimum vruntime for EEVDF */
+static uint32_t eevdf_min_vruntime = 0;
+
 /* Context switch flag - read by assembly IRQ stub after isr_handler returns.
  * If non-zero, the assembly stub switches ESP to sched_new_esp before popa+iret.
  * This must be a global symbol visible to assembly. */
@@ -43,6 +49,12 @@ static void enqueue_task(task_t* task, uint8_t priority);
 static task_t* dequeue_task(uint8_t priority);
 static task_t* pick_next_task(void);
 static void update_highest_priority(void);
+static void eevdf_task_init(task_t* task);
+static uint32_t eevdf_nice_to_weight(int nice);
+static uint32_t eevdf_calc_slice(task_t* task);
+static void eevdf_update_min_vruntime(void);
+static task_t* eevdf_pick_next(void);
+static void eevdf_update_current(void);
 
 /**
  * Initialize the scheduler
@@ -68,6 +80,9 @@ void scheduler_init(void) {
         idle->time_used = 0;
         idle->state = TASK_STATE_READY;
         strcpy(idle->name, "idle");
+        eevdf_task_init(idle);
+        idle->eevdf_nice = 19;  /* Lowest nice for idle */
+        idle->eevdf_weight = eevdf_nice_to_weight(19);
         enqueue_task(idle, SCHED_PRIORITY_IDLE);
         current_running = idle;
         idle->state = TASK_STATE_RUNNING;
@@ -91,6 +106,9 @@ void scheduler_add_task(task_t* task, uint8_t priority) {
     task->state = TASK_STATE_READY;
     task->time_slice = SCHED_DEFAULT_TIME_SLICE;
     task->time_used = 0;
+    
+    /* Initialize EEVDF fields for the new task */
+    eevdf_task_init(task);
     
     enqueue_task(task, priority);
     stats.total_tasks++;
@@ -318,10 +336,19 @@ void scheduler_check_sleepers(void);
 void scheduler_tick(void) {
     if (!scheduler_initialized || !current_running) return;
     
-    /* Decrement time slice */
-    if (current_running->time_slice > 0) {
-        current_running->time_slice--;
+    if (sched_policy == SCHED_POLICY_EEVDF) {
+        /* EEVDF: advance vruntime and check if slice expired */
+        eevdf_update_current();
         current_running->time_used++;
+        if (current_running->time_slice > 0) {
+            current_running->time_slice--;
+        }
+    } else {
+        /* Priority-based: decrement time slice */
+        if (current_running->time_slice > 0) {
+            current_running->time_slice--;
+            current_running->time_used++;
+        }
     }
     
     /* Check for sleeping tasks that should wake up */
@@ -371,8 +398,13 @@ uint32_t scheduler_schedule(registers_t* regs) {
         }
     }
     
-    /* Pick next task */
-    task_t* next = pick_next_task();
+    /* Pick next task (use EEVDF or priority-based depending on policy) */
+    task_t* next;
+    if (sched_policy == SCHED_POLICY_EEVDF) {
+        next = eevdf_pick_next();
+    } else {
+        next = pick_next_task();
+    }
     
     if (!next) {
         /* No tasks available - stay with current */
@@ -507,4 +539,202 @@ void scheduler_dump_state(void) {
     s_printf("Total tasks: active\n");
     s_printf("Context switches: counted\n");
     s_printf("======================\n");
+}
+
+/* ====================================================================
+ * EEVDF (Earliest Eligible Virtual Deadline First) Scheduler
+ * ====================================================================
+ * Modern fair scheduling algorithm (Linux 6.6+).
+ * Each task has a virtual runtime (vruntime) that advances at a rate
+ * proportional to its weight. The task with the earliest eligible
+ * virtual deadline is selected to run next.
+ *
+ * Weight table: maps nice values (-20..19) to scheduling weights.
+ * Higher weight = more CPU time = lower nice value.
+ * Based on the Linux kernel prio_to_weight table.
+ */
+
+static const uint32_t eevdf_prio_to_weight[40] = {
+     88,    97,   107,   118,   130,   143,   158,   174,
+    192,   212,   234,   258,   285,   314,   347,   382,
+    421,   465,   513,   567,   626,   690,   761,   840,
+    926,  1021,  1127,  1242,  1369,  1510,  1665,  1834,
+   2020,  2226,  2453,  2703,  2979,  3284,  3620,  3991
+};
+
+/* Get weight from nice value */
+static uint32_t eevdf_nice_to_weight(int nice) {
+    if (nice < EEVDF_NICE_MIN) nice = EEVDF_NICE_MIN;
+    if (nice > EEVDF_NICE_MAX) nice = EEVDF_NICE_MAX;
+    return eevdf_prio_to_weight[nice + 20];
+}
+
+/* Calculate time slice for a task based on its weight relative to total weight.
+ * slice = sched_period * weight / total_weight
+ * We compute total_weight by scanning all runnable tasks. */
+static uint32_t eevdf_calc_slice(task_t* task) {
+    uint32_t total_weight = 0;
+    for (int i = 0; i < NUM_PRIORITIES; i++) {
+        task_t* t = priority_queues[i];
+        while (t) {
+            if (t->state == TASK_STATE_READY || t->state == TASK_STATE_RUNNING) {
+                total_weight += t->eevdf_weight;
+            }
+            t = t->next;
+        }
+    }
+    if (total_weight == 0) total_weight = 1;
+
+    /* slice = period * weight / total_weight, minimum 1 tick */
+    uint32_t slice = (EEVDF_SCHED_PERIOD * task->eevdf_weight) / total_weight;
+    if (slice < 1) slice = 1;
+    if (slice > SCHED_MAX_TIME_SLICE) slice = SCHED_MAX_TIME_SLICE;
+    return slice;
+}
+
+/* Initialize EEVDF fields for a task (called when adding a task) */
+static void eevdf_task_init(task_t* task) {
+    task->eevdf_nice = EEVDF_NICE_DEFAULT;
+    task->eevdf_weight = eevdf_nice_to_weight(EEVDF_NICE_DEFAULT);
+    task->eevdf_vruntime = eevdf_min_vruntime;  /* Start at min so new tasks don't monopolize */
+    task->eevdf_slice = EEVDF_SCHED_PERIOD;
+    task->eevdf_deadline = eevdf_min_vruntime + task->eevdf_slice;
+    task->eevdf_start_tick = 0;
+}
+
+/* Update min_vruntime: find the minimum vruntime among all runnable tasks.
+ * This is the eligibility threshold. */
+static void eevdf_update_min_vruntime(void) {
+    uint32_t min_vr = 0xFFFFFFFF;
+    int found = 0;
+    for (int i = 0; i < NUM_PRIORITIES; i++) {
+        task_t* t = priority_queues[i];
+        while (t) {
+            if (t->state == TASK_STATE_READY || t->state == TASK_STATE_RUNNING) {
+                if (t->eevdf_vruntime < min_vr) {
+                    min_vr = t->eevdf_vruntime;
+                    found = 1;
+                }
+            }
+            t = t->next;
+        }
+    }
+    if (found) {
+        /* Only advance min_vruntime, never go backwards */
+        if (min_vr > eevdf_min_vruntime) {
+            eevdf_min_vruntime = min_vr;
+        }
+    }
+}
+
+/* EEVDF: Pick the next task to run.
+ * A task is eligible if its vruntime <= min_vruntime (approximate fairness).
+ * Among eligible tasks, pick the one with the smallest deadline.
+ * If no task is eligible, pick the one with the smallest vruntime (to advance). */
+static task_t* eevdf_pick_next(void) {
+    task_t* best = 0;
+    uint32_t best_deadline = 0xFFFFFFFF;
+
+    /* First pass: find eligible task with earliest deadline */
+    for (int i = 0; i < NUM_PRIORITIES; i++) {
+        task_t* t = priority_queues[i];
+        while (t) {
+            if (t->state == TASK_STATE_READY) {
+                /* Eligibility check: vruntime <= min_vruntime + margin
+                 * The margin prevents starvation when all tasks are close */
+                if (t->eevdf_vruntime <= eevdf_min_vruntime + t->eevdf_slice) {
+                    if (t->eevdf_deadline < best_deadline) {
+                        best_deadline = t->eevdf_deadline;
+                        best = t;
+                    }
+                }
+            }
+            t = t->next;
+        }
+    }
+
+    /* If no eligible task, fall back to smallest vruntime */
+    if (!best) {
+        uint32_t min_vr = 0xFFFFFFFF;
+        for (int i = 0; i < NUM_PRIORITIES; i++) {
+            task_t* t = priority_queues[i];
+            while (t) {
+                if (t->state == TASK_STATE_READY && t->eevdf_vruntime < min_vr) {
+                    min_vr = t->eevdf_vruntime;
+                    best = t;
+                }
+                t = t->next;
+            }
+        }
+    }
+
+    return best;
+}
+
+/* EEVDF: Update the running task's vruntime on each tick.
+ * vruntime advances by (1 << SCALE) / weight per tick.
+ * This means high-weight (low-nice) tasks have slow vruntime growth,
+ * so they get more CPU time before their deadline expires. */
+static void eevdf_update_current(void) {
+    if (!current_running) return;
+
+    task_t* t = current_running;
+    uint32_t weight = t->eevdf_weight;
+    if (weight == 0) weight = 1;
+
+    /* Advance vruntime: proportional to 1/weight */
+    uint32_t delta = (1 << EEVDF_VRUNTIME_SCALE) / weight;
+    t->eevdf_vruntime += delta;
+
+    /* Recalculate deadline */
+    t->eevdf_slice = eevdf_calc_slice(t);
+    t->eevdf_deadline = t->eevdf_vruntime + t->eevdf_slice;
+
+    /* Update min_vruntime */
+    eevdf_update_min_vruntime();
+}
+
+/* Set scheduling policy */
+void scheduler_set_policy(int policy) {
+    if (policy < SCHED_POLICY_PRIORITY || policy > SCHED_POLICY_EEVDF) return;
+    int old = sched_policy;
+    sched_policy = policy;
+
+    if (policy == SCHED_POLICY_EEVDF && old != SCHED_POLICY_EEVDF) {
+        /* Initialize EEVDF fields for all existing tasks */
+        eevdf_min_vruntime = 0;
+        for (int i = 0; i < NUM_PRIORITIES; i++) {
+            task_t* t = priority_queues[i];
+            while (t) {
+                eevdf_task_init(t);
+                t = t->next;
+            }
+        }
+        s_printf("[SCHED] Switched to EEVDF policy\n");
+    } else if (policy == SCHED_POLICY_PRIORITY && old != SCHED_POLICY_PRIORITY) {
+        s_printf("[SCHED] Switched to priority policy\n");
+    }
+}
+
+/* Get scheduling policy */
+int scheduler_get_policy(void) {
+    return sched_policy;
+}
+
+/* Set nice value for a task */
+void scheduler_set_nice(task_t* task, int nice) {
+    if (!task) return;
+    if (nice < EEVDF_NICE_MIN) nice = EEVDF_NICE_MIN;
+    if (nice > EEVDF_NICE_MAX) nice = EEVDF_NICE_MAX;
+    task->eevdf_nice = nice;
+    task->eevdf_weight = eevdf_nice_to_weight(nice);
+    task->eevdf_slice = eevdf_calc_slice(task);
+    /* Recalculate deadline with new weight */
+    task->eevdf_deadline = task->eevdf_vruntime + task->eevdf_slice;
+}
+
+/* Get nice value for a task */
+int scheduler_get_nice(task_t* task) {
+    if (!task) return EEVDF_NICE_DEFAULT;
+    return task->eevdf_nice;
 }

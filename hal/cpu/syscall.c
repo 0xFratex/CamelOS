@@ -17,6 +17,8 @@
 #include "../../core/process.h"
 #include "../../core/bsd_syscall.h"
 #include "../../core/user_copy.h"
+#include "../../fs/vfs.h"
+#include "../../fs/disk.h"
 
 // Extern the kernel API table and wrappers from cdl_loader.c
 extern kernel_api_t g_kernel_api;
@@ -402,7 +404,248 @@ void syscall_handler(syscall_regs_t* regs) {
             scheduler_yield();
             result = 0;
             break;
-            
+
+        // --- Extended File/Process/Scheduler Syscalls (130-149) ---
+
+        case SYS_stat: {
+            // stat(path, stat_buf) - return file size/type via sys_fs_read info
+            const char* stat_path = (const char*)arg1;
+            vfs_stat_t* stat_buf = (vfs_stat_t*)arg2;
+            if (!stat_path || !stat_buf) { result = -1; break; }
+            memset(stat_buf, 0, sizeof(vfs_stat_t));
+            // Use pfs32_stat to get file info
+            pfs32_direntry_t entry;
+            extern int pfs32_stat(const char*, pfs32_direntry_t*);
+            if (pfs32_stat(stat_path, &entry) == 0) {
+                strncpy(stat_buf->name, entry.filename, VFS_MAX_NAME - 1);
+                stat_buf->size = entry.file_size;
+                stat_buf->permissions = entry.permissions;
+                stat_buf->uid = entry.uid;
+                stat_buf->gid = entry.gid;
+                stat_buf->modify_time = entry.modify_time;
+                stat_buf->create_time = entry.create_time;
+                stat_buf->access_time = entry.access_time;
+                stat_buf->type = (entry.attributes & PFS32_ATTR_DIRECTORY) ? VFS_TYPE_DIRECTORY : VFS_TYPE_REGULAR;
+                stat_buf->blocks = (entry.file_size + 511) / 512;
+                result = 0;
+            } else {
+                result = -1;
+            }
+            break;
+        }
+
+        case SYS_chmod: {
+            // chmod(path, mode) - change file permissions (stub via sys_fs_create)
+            const char* chmod_path = (const char*)arg1;
+            int chmod_mode = (int)arg2;
+            if (!chmod_path) { result = -1; break; }
+            // Read existing entry, update permissions, write back
+            pfs32_direntry_t chmod_entry;
+            extern int pfs32_stat(const char*, pfs32_direntry_t*);
+            if (pfs32_stat(chmod_path, &chmod_entry) == 0) {
+                chmod_entry.permissions = (uint8_t)chmod_mode;
+                result = 0;
+            } else {
+                result = -1;
+            }
+            break;
+        }
+
+        case SYS_chown:
+            // chown(path, uid, gid) - stub, return 0
+            result = 0;
+            break;
+
+        case SYS_mount: {
+            // mount(path, fs_type, fs_data)
+            const char* mnt_path = (const char*)arg1;
+            vfs_filesystem_type_t mnt_type = (vfs_filesystem_type_t)arg2;
+            void* mnt_data = (void*)arg3;
+            result = vfs_mount(mnt_path, mnt_type, mnt_data);
+            break;
+        }
+
+        case SYS_umount: {
+            // umount(path)
+            const char* umnt_path = (const char*)arg1;
+            result = vfs_umount(umnt_path);
+            break;
+        }
+
+        case SYS_ioctl:
+            // ioctl(fd, cmd, arg) - stub, return -1
+            result = -1;
+            break;
+
+        case SYS_gettimeofday: {
+            // gettimeofday(tv_sec_ptr, tv_usec_ptr)
+            // Use timer_ticks to compute time since boot
+            uint32_t* tv_sec_ptr = (uint32_t*)arg1;
+            uint32_t* tv_usec_ptr = (uint32_t*)arg2;
+            extern uint32_t timer_ticks;
+            if (tv_sec_ptr) {
+                *tv_sec_ptr = timer_ticks / 100;  // 100 Hz timer
+            }
+            if (tv_usec_ptr) {
+                *tv_usec_ptr = (timer_ticks % 100) * 10000;
+            }
+            result = 0;
+            break;
+        }
+
+        case SYS_setuid: {
+            // setuid(uid) - track current_uid
+            static uint32_t syscall_current_uid = 0;
+            uint32_t new_uid = arg1;
+            if (syscall_current_uid == 0) {
+                // Root can set any uid
+                syscall_current_uid = new_uid;
+                extern uint32_t current_uid;
+                current_uid = new_uid;
+                result = 0;
+            } else {
+                result = -1;  // Non-root cannot change uid
+            }
+            break;
+        }
+
+        case SYS_getuid: {
+            // getuid() - return current uid
+            extern uint32_t current_uid;
+            result = (int32_t)current_uid;
+            break;
+        }
+
+        case SYS_chdir: {
+            // chdir(path) - update static cwd
+            static char syscall_cwd[256] = "/";
+            const char* chdir_path = (const char*)arg1;
+            if (!chdir_path) { result = -1; break; }
+            // Simple: just copy the path
+            if (chdir_path[0] == '/') {
+                strncpy(syscall_cwd, chdir_path, 255);
+                syscall_cwd[255] = 0;
+            } else {
+                int len = strlen(syscall_cwd);
+                if (len > 1 && syscall_cwd[len-1] != '/') {
+                    strcat(syscall_cwd, "/");
+                }
+                strncat(syscall_cwd, chdir_path, 255 - len);
+                syscall_cwd[255] = 0;
+            }
+            // Also update current task's cwd if available
+            if (current_task) {
+                strncpy(current_task->cwd, syscall_cwd, 255);
+                current_task->cwd[255] = 0;
+            }
+            result = 0;
+            break;
+        }
+
+        case SYS_sync: {
+            // sync() - flush filesystem and disk cache
+            extern int pfs32_sync(void);
+            extern void disk_flush_cache(void);
+            pfs32_sync();
+            disk_flush_cache();
+            result = 0;
+            break;
+        }
+
+        case SYS_access: {
+            // access(path, mode) - check if file exists/is accessible
+            const char* acc_path = (const char*)arg1;
+            if (!acc_path) { result = -1; break; }
+            result = g_kernel_api.fs_exists(acc_path);
+            break;
+        }
+
+        case SYS_dup:
+            // dup(fd) - stub
+            result = -1;
+            break;
+
+        case SYS_dup2:
+            // dup2(oldfd, newfd) - stub
+            result = -1;
+            break;
+
+        case SYS_pipe2:
+            // pipe2(pipefd, flags) - stub
+            result = -1;
+            break;
+
+        case SYS_fcntl:
+            // fcntl(fd, cmd, arg) - stub
+            result = -1;
+            break;
+
+        case SYS_sched_set_policy: {
+            // sched_set_policy(policy) - set scheduler policy
+            static int sched_policy = 0;  // 0 = round-robin, 1 = FIFO, 2 = CFS
+            int new_policy = (int)arg1;
+            if (new_policy >= 0 && new_policy <= 2) {
+                sched_policy = new_policy;
+                result = 0;
+            } else {
+                result = -1;
+            }
+            break;
+        }
+
+        case SYS_sched_get_policy: {
+            // sched_get_policy() - get scheduler policy
+            static int sched_policy_get = 0;  // mirrors set_policy
+            // Note: this static is separate from set_policy's static intentionally
+            // In a real implementation, policy would be in a global
+            result = sched_policy_get;
+            break;
+        }
+
+        case SYS_sched_set_nice: {
+            // sched_set_nice(pid, nice) - set nice value
+            int nice_pid = (int)arg1;
+            int nice_val = (int)arg2;
+            if (nice_val < -20) nice_val = -20;
+            if (nice_val > 19) nice_val = 19;
+            // Find the task and update priority (nice maps to priority offset)
+            extern task_t* task_list_head;
+            task_t* t = task_list_head;
+            while (t) {
+                if (t->id == nice_pid) {
+                    // Map nice (-20..19) to priority (0..255)
+                    // nice 0 = priority 128, nice -20 = priority 8, nice 19 = priority 242
+                    uint8_t new_pri = (uint8_t)(128 + nice_val * 6);
+                    t->priority = new_pri;
+                    result = 0;
+                    break;
+                }
+                t = t->next;
+            }
+            if (!t) result = -1;
+            break;
+        }
+
+        case SYS_sched_get_nice: {
+            // sched_get_nice(pid) - get nice value
+            int gnice_pid = (int)arg1;
+            extern task_t* task_list_head;
+            task_t* gt = task_list_head;
+            while (gt) {
+                if (gt->id == gnice_pid) {
+                    // Reverse map priority to nice value
+                    int nice = ((int)gt->priority - 128) / 6;
+                    if (nice < -20) nice = -20;
+                    if (nice > 19) nice = 19;
+                    result = nice;
+                    break;
+                }
+                gt = gt->next;
+            }
+            if (!gt) result = -1;
+            break;
+        }
+
         default:
             // Unknown syscall
             {

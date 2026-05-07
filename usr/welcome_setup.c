@@ -13,6 +13,7 @@
 #include "../fs/disk.h"
 #include "../hal/drivers/serial.h"
 #include "../hal/drivers/keyboard.h"
+#include "../core/theme.h"
 
 // External API
 extern kernel_api_t* sys;
@@ -154,7 +155,7 @@ static TimeZone timezones[] = {
 };
 #define TIMEZONE_COUNT (sizeof(timezones) / sizeof(TimeZone))
 
-// Theme definitions
+// Theme definitions - simplified to Dark/Light mode only
 typedef struct {
     const char* name;
     uint32_t primary;
@@ -163,11 +164,8 @@ typedef struct {
 } ThemeDef;
 
 static ThemeDef themes[THEME_COUNT] = {
-    {"Aqua",     0xFF007AFF, 0xFF5AC8FA, 0xFF007AFF},  // Classic blue
-    {"Graphite", 0xFF8E8E93, 0xFF636366, 0xFF636366},  // Grey
-    {"Sunset",   0xFFFF9500, 0xFFFF6B00, 0xFFFF9500},  // Orange
-    {"Ocean",    0xFF00C7BE, 0xFF30D5C8, 0xFF00C7BE},  // Teal
-    {"Forest",   0xFF34C759, 0xFF30B350, 0xFF34C759}   // Green
+    {"Light", 0xFF007AFF, 0xFF5AC8FA, 0xFF007AFF},  // Light mode (macOS Aqua blue)
+    {"Dark",  0xFF0A84FF, 0xFF5AC8FA, 0xFF0A84FF}   // Dark mode (macOS Dark blue)
 };
 
 // Keyboard layout display names (matching keyboard.h KBD_LAYOUT_COUNT = 32)
@@ -216,7 +214,7 @@ void welcome_setup_set_defaults(void) {
     strcpy(g_setup.config.computer_name, "CamelOS");
     g_setup.config.password_hash[0] = 0;
     memcpy(&g_setup.config.timezone, &timezones[0], sizeof(TimeZone));
-    g_setup.config.theme = THEME_AQUA;
+    g_setup.config.theme = THEME_LIGHT;
     g_setup.config.is_configured = 0;
     g_setup.config.auto_lock = 1;
     g_setup.config.lock_timeout = 10;
@@ -715,6 +713,14 @@ int welcome_setup_finish(void) {
     
     // Configure screenlock with user and hashed password
     screenlock_create_user(g_setup.config.username, g_setup.config.password_hash, g_setup.config.theme);
+    
+    // Apply the selected theme (Light/Dark) to the system theme engine
+    extern void theme_set(int theme_id);
+    if (g_setup.config.theme == THEME_DARK) {
+        theme_set(1);  // THEME_DARK = 1 in core/theme.h
+    } else {
+        theme_set(0);  // THEME_LIGHT = 0 in core/theme.h
+    }
     
     // Configure screenlock timeout
     screenlock_set_inactivity_timeout(g_setup.config.lock_timeout);

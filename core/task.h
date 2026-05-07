@@ -29,6 +29,14 @@ typedef struct task_control_block {
     uint32_t sleep_until;  /* Tick count to wake up (for sleeping tasks) */
     int block_reason;      /* Why task is blocked (0 = not blocked) */
 
+    /* EEVDF scheduler fields */
+    uint32_t eevdf_vruntime;   /* Virtual runtime (monotonically increasing) */
+    uint32_t eevdf_deadline;   /* Virtual deadline = vruntime + slice */
+    uint32_t eevdf_weight;     /* Weight based on nice value */
+    int eevdf_nice;            /* Nice value (-20 to 19, default 0) */
+    uint32_t eevdf_slice;      /* Time slice in ticks for this task */
+    uint32_t eevdf_start_tick; /* Tick when this task last started running */
+
     /* Process resources (VMM, signals, pipes) */
     void* address_space;   /* address_space_t* - per-process virtual memory (vmm.h) */
     void* signal_state;    /* signal_state_t* - per-process signal handling (signal.h) */

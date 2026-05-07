@@ -7,6 +7,11 @@
 #include "../core/app_registry.h"
 #include "../core/sys_dirs.h"
 #include <string.h>
+#include "../core/scheduler.h"
+#include "../core/process.h"
+#include "../core/signal.h"
+#include "../fs/vfs.h"
+#include "../core/theme.h"
 
 // CDL loader declaration
 extern int sys_load_library(const char* path);
@@ -20,6 +25,55 @@ extern int app_installer_open_dmg(const char* dmg_path);
 
 // Desktop installer for .app/.cdl auto-install
 extern void desktop_install_app(const char* source_path);
+
+// System info externs
+extern uint32_t k_get_free_mem(void);
+extern uint32_t k_get_total_mem(void);
+extern uint32_t timer_ticks;
+
+// Theme externs
+extern void theme_set(int theme_id);
+extern int theme_get_id(void);
+
+// Disk/filesystem externs
+extern void disk_flush_cache(void);
+extern uint32_t disk_total_blocks;
+
+// stdlib
+extern int atoi(const char* str);
+
+// Helper: print an integer with zero-padded width
+static void print_zpad(int val, int width) {
+    if (val < 0) { sys_print("-"); val = -val; }
+    char tmp[16];
+    int_to_str(val, tmp);
+    int len = strlen(tmp);
+    for (int i = len; i < width; i++) sys_print("0");
+    sys_print(tmp);
+}
+
+// Helper: print an integer right-aligned with spaces
+static void print_rpad(int val, int width) {
+    char tmp[16];
+    int_to_str(val, tmp);
+    int len = strlen(tmp);
+    for (int i = len; i < width; i++) sys_print(" ");
+    sys_print(tmp);
+}
+
+// Environment variables (in-memory, not persistent)
+#define MAX_ENV_VARS 32
+#define MAX_ENV_NAME 32
+#define MAX_ENV_VALUE 128
+static char env_names[MAX_ENV_VARS][MAX_ENV_NAME];
+static char env_values[MAX_ENV_VARS][MAX_ENV_VALUE];
+static int env_count = 0;
+
+// Command history
+#define MAX_HISTORY 50
+static char cmd_history[MAX_HISTORY][128];
+static int history_count = 0;
+static int history_pos = 0;
 
 // Simple file concatenation
 void cmd_cat(const char* arg) {
@@ -475,6 +529,14 @@ void shell_main() {
             }
         }
 
+        // Record command in history
+        if (pos > 0) {
+            strncpy(cmd_history[history_pos], cmd_buffer, 127);
+            cmd_history[history_pos][127] = 0;
+            history_pos = (history_pos + 1) % MAX_HISTORY;
+            if (history_count < MAX_HISTORY) history_count++;
+        }
+
         // 1. Mark heap before processing command
         unsigned int mark = k_get_heap_mark();
 
@@ -540,6 +602,7 @@ void shell_main() {
         }
         else if (strcmp(cmd, "help") == 0) {
             sys_print("CamelOS Shell Commands:\n");
+            sys_print("  --- File Operations ---\n");
             sys_print("  ls [dir]          - List directory contents\n");
             sys_print("  cd <path>         - Change directory\n");
             sys_print("  cat <file>        - Display file contents\n");
@@ -548,10 +611,39 @@ void shell_main() {
             sys_print("  cp <src> <dst>    - Copy file\n");
             sys_print("  mv <old> <new>    - Move/rename file\n");
             sys_print("  pwd               - Print working directory\n");
+            sys_print("  touch <file>      - Create empty file or update timestamp\n");
+            sys_print("  head <file>       - Show first 10 lines of file\n");
+            sys_print("  tail <file>       - Show last 10 lines of file\n");
+            sys_print("  wc <file>         - Count lines, words, bytes\n");
+            sys_print("  grep <pat> <file> - Search for pattern in file\n");
+            sys_print("  find <dir> <name> - Find files matching name\n");
+            sys_print("  chmod <mode> <path> - Change file permissions\n");
+            sys_print("  hexdump <file>    - Hex dump a file\n");
+            sys_print("  --- System Info ---\n");
+            sys_print("  date              - Show current date/time\n");
+            sys_print("  whoami            - Show current username\n");
+            sys_print("  hostname          - Show system hostname\n");
+            sys_print("  uname             - Show kernel version info\n");
+            sys_print("  uptime            - Show system uptime\n");
+            sys_print("  df                - Show disk usage\n");
+            sys_print("  free              - Show memory info\n");
+            sys_print("  sysinfo           - Show detailed system info\n");
+            sys_print("  --- Process Management ---\n");
+            sys_print("  ps                - List processes\n");
+            sys_print("  kill <pid> <sig>  - Send signal to process\n");
+            sys_print("  top               - Show process list with CPU\n");
+            sys_print("  --- Environment ---\n");
+            sys_print("  env               - Show environment variables\n");
+            sys_print("  export VAR=val    - Set environment variable\n");
             sys_print("  echo <text>       - Print text\n");
+            sys_print("  history           - Show command history\n");
+            sys_print("  --- System Control ---\n");
+            sys_print("  reboot            - Reboot system\n");
+            sys_print("  shutdown          - Halt system\n");
+            sys_print("  theme dark|light  - Switch dark/light mode\n");
+            sys_print("  --- Applications ---\n");
             sys_print("  gui               - Start graphical environment\n");
             sys_print("  clear             - Clear screen\n");
-            sys_print("  reboot            - Reboot system\n");
             sys_print("  ./<file>          - Execute program\n");
             sys_print("  run <app>         - Run an application\n");
             sys_print("  open <url|app>    - Open URL or app\n");
@@ -565,7 +657,6 @@ void shell_main() {
             sys_print("    caml info <name>    - Show package info\n");
             sys_print("    caml verify <pkg>   - Verify package file\n");
             sys_print("    caml rebuild        - Rebuild package database\n");
-            sys_print("  hexdump <file>    - Hex dump a file\n");
         }
         else if (strcmp(cmd, "./") == 0 || strcmp(cmd, "run") == 0) {
             // Execute program/bundle
@@ -1021,6 +1112,537 @@ void shell_main() {
                     }
                     kfree(hbuf);
                 }
+            }
+        }
+        // ====================================================================
+        // System information commands
+        // ====================================================================
+        else if (strcmp(cmd, "date") == 0) {
+            int h, m, s, year, month, day;
+            sys_get_time(&h, &m, &s);
+            sys_get_date(&year, &month, &day);
+            int tz = sys_get_tz_offset();
+            print_zpad(year, 4); sys_print("-");
+            print_zpad(month, 2); sys_print("-");
+            print_zpad(day, 2); sys_print(" ");
+            print_zpad(h, 2); sys_print(":");
+            print_zpad(m, 2); sys_print(":");
+            print_zpad(s, 2); sys_print(" UTC");
+            if (tz >= 0) sys_print("+");
+            else { sys_print("-"); tz = -tz; }
+            print_zpad(tz / 60, 2); sys_print(":");
+            print_zpad(tz % 60, 2);
+            sys_print("\n");
+        }
+        else if (strcmp(cmd, "whoami") == 0) {
+            char ubuf[256];
+            memset(ubuf, 0, 256);
+            int ulen = sys_fs_read("/Library/Preferences/system.conf", ubuf, 255);
+            if (ulen > 0) {
+                char* line = strstr(ubuf, "username=");
+                if (line) {
+                    line += 9;
+                    char* end = line;
+                    while(*end && *end != '\n' && *end != '\r') end++;
+                    *end = 0;
+                    sys_print(line);
+                } else {
+                    sys_print("user");
+                }
+            } else {
+                sys_print("user");
+            }
+            sys_print("\n");
+        }
+        else if (strcmp(cmd, "hostname") == 0) {
+            char hbuf[64];
+            memset(hbuf, 0, 64);
+            int hlen = sys_fs_read("/etc/hostname", hbuf, 63);
+            if (hlen > 0) {
+                char* end = hbuf;
+                while(*end && *end != '\n' && *end != '\r') end++;
+                *end = 0;
+                sys_print(hbuf);
+            } else {
+                sys_print("camelos");
+            }
+            sys_print("\n");
+        }
+        else if (strcmp(cmd, "uname") == 0) {
+            if (strlen(arg1) > 0 && strcmp(arg1, "-a") == 0) {
+                sys_print("CamelOS 1.2.0 camelos i386\n");
+            } else if (strlen(arg1) > 0 && strcmp(arg1, "-r") == 0) {
+                sys_print("1.2.0\n");
+            } else if (strlen(arg1) > 0 && strcmp(arg1, "-s") == 0) {
+                sys_print("CamelOS\n");
+            } else {
+                sys_print("CamelOS\n");
+            }
+        }
+        else if (strcmp(cmd, "uptime") == 0) {
+            uint32_t ticks = timer_ticks;
+            uint32_t secs = ticks / 100;
+            uint32_t mins = secs / 60;
+            uint32_t hrs = mins / 60;
+            mins = mins % 60;
+            secs = secs % 60;
+            sys_print("up ");
+            print_zpad(hrs, 1); sys_print(":");
+            print_zpad(mins, 2); sys_print(":");
+            print_zpad(secs, 2);
+            sched_stats_t* stats = scheduler_get_stats();
+            if (stats) {
+                sys_print(", ");
+                print_rpad(stats->total_tasks, 0);
+                sys_print(" tasks, ");
+                print_rpad(stats->context_switches, 0);
+                sys_print(" switches");
+            }
+            sys_print("\n");
+        }
+        else if (strcmp(cmd, "df") == 0) {
+            pfs32_stats_t dstats;
+            memset(&dstats, 0, sizeof(dstats));
+            pfs32_get_stats(&dstats);
+            uint32_t total_kb = (dstats.blocks_free + dstats.total_sectors_used) / 2;
+            uint32_t used_kb = dstats.total_sectors_used / 2;
+            uint32_t free_kb = dstats.blocks_free / 2;
+            int pct = 0;
+            if (total_kb > 0) pct = (used_kb * 100) / total_kb;
+            sys_print("Filesystem     1K-blocks       Used   Available  Use%  Mounted on\n");
+            sys_print("/dev/pfs32     ");
+            print_rpad(total_kb, 8); sys_print("  ");
+            print_rpad(used_kb, 8); sys_print("  ");
+            print_rpad(free_kb, 8); sys_print("   ");
+            print_rpad(pct, 2); sys_print("%  /\n");
+        }
+        else if (strcmp(cmd, "free") == 0) {
+            uint32_t free_mem = k_get_free_mem();
+            uint32_t total_mem = k_get_total_mem();
+            uint32_t used_mem = total_mem - free_mem;
+            sys_print("              total        used        free\n");
+            sys_print("Mem:     ");
+            print_rpad(total_mem / 1024, 8); sys_print("  ");
+            print_rpad(used_mem / 1024, 8); sys_print("  ");
+            print_rpad(free_mem / 1024, 8); sys_print("\n");
+        }
+        else if (strcmp(cmd, "ps") == 0) {
+            process_info_t pinfo[64];
+            int count = process_list(pinfo, 64);
+            sys_print("  PID  PPID  UID  STATE        NAME\n");
+            for (int pi = 0; pi < count; pi++) {
+                const char* state_str;
+                switch (pinfo[pi].state) {
+                    case 0: state_str = "READY"; break;
+                    case 1: state_str = "RUNNING"; break;
+                    case 2: state_str = "BLOCKED"; break;
+                    case 3: state_str = "ZOMBIE"; break;
+                    case 4: state_str = "SLEEPING"; break;
+                    default: state_str = "UNKNOWN"; break;
+                }
+                print_rpad(pinfo[pi].pid, 5); sys_print(" ");
+                print_rpad(pinfo[pi].ppid, 5); sys_print(" ");
+                print_rpad(pinfo[pi].uid, 4); sys_print("  ");
+                sys_print(state_str);
+                for (int pad = strlen(state_str); pad < 12; pad++) sys_print(" ");
+                sys_print(pinfo[pi].name);
+                sys_print("\n");
+            }
+        }
+        else if (strcmp(cmd, "kill") == 0) {
+            char k_arg2[16] = {0};
+            int ki = 0, kj = 0;
+            char* k_rest = cmd_buffer;
+            while(k_rest[ki] && k_rest[ki] != ' ') ki++;
+            if(k_rest[ki] == ' ') ki++;
+            while(k_rest[ki] && k_rest[ki] != ' ') ki++;
+            if(k_rest[ki] == ' ') ki++;
+            while(k_rest[ki] && k_rest[ki] != ' ' && kj < 15) k_arg2[kj++] = k_rest[ki++];
+
+            if (strlen(arg1) == 0 || strlen(k_arg2) == 0) {
+                sys_print("Usage: kill <pid> <signal>\n");
+            } else {
+                int pid = atoi(arg1);
+                int sig = atoi(k_arg2);
+                int result = process_kill(pid, sig);
+                if (result == 0) {
+                    sys_print("Signal sent.\n");
+                } else {
+                    sys_print("Failed to send signal.\n");
+                }
+            }
+        }
+        else if (strcmp(cmd, "top") == 0) {
+            sys_print("CamelOS Top - ");
+            char tmbuf[16];
+            int_to_str(k_get_total_mem() / 1024, tmbuf);
+            sys_print(tmbuf);
+            sys_print(" KB total memory\n\n");
+            process_info_t pinfo[64];
+            int count = process_list(pinfo, 64);
+            sys_print("  PID  STATE          TICKS  NAME\n");
+            for (int ti = 0; ti < count; ti++) {
+                const char* state_str;
+                switch (pinfo[ti].state) {
+                    case 0: state_str = "READY"; break;
+                    case 1: state_str = "RUNNING"; break;
+                    case 2: state_str = "BLOCKED"; break;
+                    case 3: state_str = "ZOMBIE"; break;
+                    case 4: state_str = "SLEEPING"; break;
+                    default: state_str = "UNKNOWN"; break;
+                }
+                print_rpad(pinfo[ti].pid, 5); sys_print("  ");
+                sys_print(state_str);
+                for (int pad = strlen(state_str); pad < 12; pad++) sys_print(" ");
+                print_rpad(pinfo[ti].cpu_ticks, 6); sys_print("  ");
+                sys_print(pinfo[ti].name);
+                sys_print("\n");
+            }
+        }
+        else if (strcmp(cmd, "env") == 0) {
+            // Read from /etc/profile
+            char ebuf[2048];
+            memset(ebuf, 0, 2048);
+            int elen = sys_fs_read("/etc/profile", ebuf, 2047);
+            if (elen > 0) {
+                char* line = ebuf;
+                while (line < ebuf + elen) {
+                    char* eol = line;
+                    while (*eol && *eol != '\n') eol++;
+                    int was_n = (*eol == '\n');
+                    *eol = 0;
+                    if (strncmp(line, "export ", 7) == 0) {
+                        sys_print(line + 7); sys_print("\n");
+                    } else if (strstr(line, "=") && line[0] != '#') {
+                        sys_print(line); sys_print("\n");
+                    }
+                    if (was_n) line = eol + 1; else break;
+                }
+            }
+            // Also show in-memory env vars
+            for (int ei = 0; ei < env_count; ei++) {
+                sys_print(env_names[ei]);
+                sys_print("=");
+                sys_print(env_values[ei]);
+                sys_print("\n");
+            }
+            if (elen <= 0 && env_count == 0) {
+                sys_print("No environment variables set.\n");
+            }
+        }
+        else if (strcmp(cmd, "export") == 0) {
+            char* rest = strstr(cmd_buffer, "export ");
+            if (rest) {
+                rest += 7;
+                char* eq = 0;
+                const char* p = rest;
+                while (*p && *p != ' ') {
+                    if (*p == '=') { eq = (char*)p; break; }
+                    p++;
+                }
+                if (eq) {
+                    int nlen = eq - rest;
+                    char ename[32] = {0};
+                    if (nlen > 31) nlen = 31;
+                    memcpy(ename, rest, nlen);
+                    char* val = eq + 1;
+                    if (*val == '"') val++;
+                    int vlen = strlen(val);
+                    if (vlen > 0 && val[vlen-1] == '"') vlen--;
+                    if (env_count < MAX_ENV_VARS) {
+                        strncpy(env_names[env_count], ename, MAX_ENV_NAME - 1);
+                        if (vlen > MAX_ENV_VALUE - 1) vlen = MAX_ENV_VALUE - 1;
+                        memcpy(env_values[env_count], val, vlen);
+                        env_values[env_count][vlen] = 0;
+                        env_count++;
+                    } else {
+                        sys_print("Environment table full.\n");
+                    }
+                } else {
+                    sys_print("Usage: export VAR=value\n");
+                }
+            } else {
+                sys_print("Usage: export VAR=value\n");
+            }
+        }
+        else if (strcmp(cmd, "touch") == 0) {
+            if (strlen(arg1) == 0) {
+                sys_print("Usage: touch <file>\n");
+            } else {
+                char tpath[256];
+                if (arg1[0] != '/') {
+                    strcpy(tpath, current_path);
+                    int plen = strlen(tpath);
+                    if (plen > 1 && tpath[plen-1] != '/') strcat(tpath, "/");
+                    strcat(tpath, arg1);
+                } else {
+                    strcpy(tpath, arg1);
+                }
+                if (sys_fs_exists(tpath)) {
+                    sys_print("Timestamp updated: ");
+                    sys_print(tpath);
+                    sys_print("\n");
+                } else {
+                    if (sys_fs_create(tpath, 0) == 0) {
+                        sys_print("Created: ");
+                        sys_print(tpath);
+                        sys_print("\n");
+                    } else {
+                        sys_print("Failed to create file.\n");
+                    }
+                }
+            }
+        }
+        else if (strcmp(cmd, "head") == 0) {
+            if (strlen(arg1) == 0) {
+                sys_print("Usage: head <file>\n");
+            } else {
+                char* hbuf2 = (char*)kmalloc(8192);
+                if (hbuf2) {
+                    memset(hbuf2, 0, 8192);
+                    int hlen2 = sys_fs_read(arg1, hbuf2, 8191);
+                    if (hlen2 > 0) {
+                        int lc = 0;
+                        for (int hi = 0; hi < hlen2 && lc < 10; hi++) {
+                            char t[2] = {hbuf2[hi], 0};
+                            sys_print(t);
+                            if (hbuf2[hi] == '\n') lc++;
+                        }
+                        if (hlen2 > 0 && hbuf2[hlen2-1] != '\n') sys_print("\n");
+                    } else {
+                        sys_print("File not found or empty.\n");
+                    }
+                    kfree(hbuf2);
+                }
+            }
+        }
+        else if (strcmp(cmd, "tail") == 0) {
+            if (strlen(arg1) == 0) {
+                sys_print("Usage: tail <file>\n");
+            } else {
+                char* tbuf2 = (char*)kmalloc(8192);
+                if (tbuf2) {
+                    memset(tbuf2, 0, 8192);
+                    int tlen2 = sys_fs_read(arg1, tbuf2, 8191);
+                    if (tlen2 > 0) {
+                        int lc2 = 0;
+                        int start = tlen2;
+                        for (int ti = tlen2 - 1; ti >= 0; ti--) {
+                            if (tbuf2[ti] == '\n') {
+                                lc2++;
+                                if (lc2 >= 10) { start = ti + 1; break; }
+                            }
+                        }
+                        if (lc2 < 10) start = 0;
+                        for (int ti = start; ti < tlen2; ti++) {
+                            char t[2] = {tbuf2[ti], 0};
+                            sys_print(t);
+                        }
+                        if (tlen2 > 0 && tbuf2[tlen2-1] != '\n') sys_print("\n");
+                    } else {
+                        sys_print("File not found or empty.\n");
+                    }
+                    kfree(tbuf2);
+                }
+            }
+        }
+        else if (strcmp(cmd, "wc") == 0) {
+            if (strlen(arg1) == 0) {
+                sys_print("Usage: wc <file>\n");
+            } else {
+                char* wbuf = (char*)kmalloc(8192);
+                if (wbuf) {
+                    memset(wbuf, 0, 8192);
+                    int wlen = sys_fs_read(arg1, wbuf, 8191);
+                    if (wlen > 0) {
+                        int lines = 0, words = 0, in_word = 0;
+                        for (int wi = 0; wi < wlen; wi++) {
+                            if (wbuf[wi] == '\n') lines++;
+                            if (wbuf[wi] == ' ' || wbuf[wi] == '\t' || wbuf[wi] == '\n' || wbuf[wi] == '\r') {
+                                in_word = 0;
+                            } else {
+                                if (!in_word) { words++; in_word = 1; }
+                            }
+                        }
+                        print_rpad(lines, 7); sys_print(" ");
+                        print_rpad(words, 7); sys_print(" ");
+                        print_rpad(wlen, 7); sys_print(" ");
+                        sys_print(arg1);
+                        sys_print("\n");
+                    } else {
+                        sys_print("File not found or empty.\n");
+                    }
+                    kfree(wbuf);
+                }
+            }
+        }
+        else if (strcmp(cmd, "grep") == 0) {
+            char g_arg2[64] = {0};
+            int gi = 0, gj = 0;
+            char* g_rest = cmd_buffer;
+            while(g_rest[gi] && g_rest[gi] != ' ') gi++;
+            if(g_rest[gi] == ' ') gi++;
+            while(g_rest[gi] && g_rest[gi] != ' ') gi++;
+            if(g_rest[gi] == ' ') gi++;
+            while(g_rest[gi] && g_rest[gi] != ' ' && gj < 63) g_arg2[gj++] = g_rest[gi++];
+
+            if (strlen(arg1) == 0 || strlen(g_arg2) == 0) {
+                sys_print("Usage: grep <pattern> <file>\n");
+            } else {
+                char* gbuf = (char*)kmalloc(8192);
+                if (gbuf) {
+                    memset(gbuf, 0, 8192);
+                    int glen = sys_fs_read(g_arg2, gbuf, 8191);
+                    if (glen > 0) {
+                        char* gline = gbuf;
+                        while (gline < gbuf + glen) {
+                            char* eol = gline;
+                            while (*eol && *eol != '\n') eol++;
+                            int was_n = (*eol == '\n');
+                            *eol = 0;
+                            if (strstr(gline, arg1)) {
+                                sys_print(gline); sys_print("\n");
+                            }
+                            if (was_n) gline = eol + 1; else break;
+                        }
+                    } else {
+                        sys_print("File not found.\n");
+                    }
+                    kfree(gbuf);
+                }
+            }
+        }
+        else if (strcmp(cmd, "find") == 0) {
+            char f_arg2[64] = {0};
+            int fi = 0, fj = 0;
+            char* f_rest = cmd_buffer;
+            while(f_rest[fi] && f_rest[fi] != ' ') fi++;
+            if(f_rest[fi] == ' ') fi++;
+            while(f_rest[fi] && f_rest[fi] != ' ') fi++;
+            if(f_rest[fi] == ' ') fi++;
+            while(f_rest[fi] && f_rest[fi] != ' ' && fj < 63) f_arg2[fj++] = f_rest[fi++];
+
+            if (strlen(arg1) == 0 || strlen(f_arg2) == 0) {
+                sys_print("Usage: find <dir> <name_pattern>\n");
+            } else {
+                pfs32_direntry_t entries[64];
+                int fcount = sys_fs_list_dir(arg1, entries, 64);
+                if (fcount > 0) {
+                    for (int fei = 0; fei < fcount; fei++) {
+                        if (entries[fei].filename[0] == 0) continue;
+                        if (strstr(entries[fei].filename, f_arg2)) {
+                            sys_print(arg1);
+                            if (arg1[strlen(arg1)-1] != '/') sys_print("/");
+                            sys_print(entries[fei].filename);
+                            sys_print("\n");
+                        }
+                    }
+                } else {
+                    sys_print("Directory not found or empty.\n");
+                }
+            }
+        }
+        else if (strcmp(cmd, "chmod") == 0) {
+            char c_arg2[64] = {0};
+            int ci2 = 0, cj2 = 0;
+            char* c_rest = cmd_buffer;
+            while(c_rest[ci2] && c_rest[ci2] != ' ') ci2++;
+            if(c_rest[ci2] == ' ') ci2++;
+            while(c_rest[ci2] && c_rest[ci2] != ' ') ci2++;
+            if(c_rest[ci2] == ' ') ci2++;
+            while(c_rest[ci2] && c_rest[ci2] != ' ' && cj2 < 63) c_arg2[cj2++] = c_rest[ci2++];
+
+            if (strlen(arg1) == 0 || strlen(c_arg2) == 0) {
+                sys_print("Usage: chmod <mode> <path>\n");
+            } else {
+                pfs32_direntry_t entry;
+                if (pfs32_stat(c_arg2, &entry) == 0) {
+                    int mode = 0;
+                    const char* mp = arg1;
+                    while(*mp >= '0' && *mp <= '7') mode = mode * 8 + (*mp++ - '0');
+                    entry.permissions = (uint8_t)mode;
+                    sys_print("Mode changed: ");
+                    sys_print(c_arg2);
+                    sys_print("\n");
+                } else {
+                    sys_print("File not found.\n");
+                }
+            }
+        }
+        else if (strcmp(cmd, "reboot") == 0) {
+            sys_print("Rebooting system...\n");
+            sys_reboot();
+        }
+        else if (strcmp(cmd, "shutdown") == 0) {
+            sys_print("Shutting down...\n");
+            sys_shutdown();
+        }
+        else if (strcmp(cmd, "theme") == 0) {
+            if (strcmp(arg1, "dark") == 0) {
+                theme_set(THEME_DARK);
+                sys_print("Theme set to dark mode.\n");
+            } else if (strcmp(arg1, "light") == 0) {
+                theme_set(THEME_LIGHT);
+                sys_print("Theme set to light mode.\n");
+            } else {
+                int current = theme_get_id();
+                sys_print("Current theme: ");
+                sys_print(current == THEME_DARK ? "dark" : "light");
+                sys_print("\nUsage: theme dark|light\n");
+            }
+        }
+        else if (strcmp(cmd, "sysinfo") == 0) {
+            sys_print("=== CamelOS System Information ===\n");
+            sys_print("Kernel:    CamelOS 1.2.0 i386\n");
+            sys_print("CPU:       x86 (i386 compatible)\n");
+
+            uint32_t total_mem = k_get_total_mem();
+            uint32_t free_mem = k_get_free_mem();
+            char sbuf[16];
+            int_to_str(total_mem / 1024, sbuf);
+            sys_print("Memory:    "); sys_print(sbuf); sys_print(" KB total, ");
+            int_to_str(free_mem / 1024, sbuf);
+            sys_print(sbuf); sys_print(" KB free\n");
+
+            pfs32_stats_t dstats;
+            memset(&dstats, 0, sizeof(dstats));
+            pfs32_get_stats(&dstats);
+            int_to_str((dstats.blocks_free + dstats.total_sectors_used) / 2, sbuf);
+            sys_print("Disk:      "); sys_print(sbuf); sys_print(" KB total, ");
+            int_to_str(dstats.blocks_free / 2, sbuf);
+            sys_print(sbuf); sys_print(" KB free\n");
+
+            uint32_t ticks = timer_ticks;
+            uint32_t secs = ticks / 100;
+            uint32_t mins = secs / 60;
+            uint32_t hrs = mins / 60;
+            mins = mins % 60;
+            secs = secs % 60;
+            sys_print("Uptime:    ");
+            print_zpad(hrs, 1); sys_print(":");
+            print_zpad(mins, 2); sys_print(":");
+            print_zpad(secs, 2); sys_print("\n");
+
+            sched_stats_t* sstats = scheduler_get_stats();
+            if (sstats) {
+                int_to_str(sstats->total_tasks, sbuf);
+                sys_print("Tasks:     "); sys_print(sbuf); sys_print(" running, ");
+                int_to_str(sstats->context_switches, sbuf);
+                sys_print(sbuf); sys_print(" context switches\n");
+            }
+            sys_print("Scheduler: Priority-based preemptive (round-robin)\n");
+            sys_print("===================================\n");
+        }
+        else if (strcmp(cmd, "history") == 0) {
+            int start = 0;
+            if (history_count >= MAX_HISTORY) {
+                start = history_pos;
+            }
+            for (int hi = 0; hi < history_count; hi++) {
+                int idx = (start + hi) % MAX_HISTORY;
+                print_rpad(hi + 1, 4); sys_print("  ");
+                sys_print(cmd_history[idx]);
+                sys_print("\n");
             }
         }
         else if(strlen(cmd) > 0) {

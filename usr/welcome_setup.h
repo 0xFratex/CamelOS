@@ -10,13 +10,10 @@
 #define SETUP_TIMEZONE_MAX  64
 #define SETUP_PASSWORD_MAX  32
 
-// Theme options
+// Theme options - simplified to Dark/Light mode only
 typedef enum {
-    THEME_AQUA,       // Classic blue
-    THEME_GRAPHITE,   // Grey professional
-    THEME_SUNSET,     // Orange warm
-    THEME_OCEAN,      // Teal calm
-    THEME_FOREST,     // Green nature
+    THEME_LIGHT,     // Light mode (default)
+    THEME_DARK,      // Dark mode
     THEME_COUNT
 } ThemeType;
 
