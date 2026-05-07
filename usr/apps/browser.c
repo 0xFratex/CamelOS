@@ -406,7 +406,7 @@ static void tab_close(int idx) {
 // SECTION 5: HTTP Fetch with HTTPS support
 // ============================================================
 
-#define BROWSER_RESPONSE_SIZE 32768
+#define BROWSER_RESPONSE_SIZE 262144  // 256KB — modern pages are 100KB+; 32KB was too small
 
 static void browser_load_page(const char* url) {
     // Empty URL = new tab page
@@ -571,9 +571,11 @@ static void browser_load_page(const char* url) {
     rlen += sprintf(request + rlen, "GET %s HTTP/1.1\r\n", path);
     rlen += sprintf(request + rlen, "Host: %s\r\n", host);
     rlen += sprintf(request + rlen, "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n");
-    rlen += sprintf(request + rlen, "Accept: text/html,application/xhtml+xml,*/*\r\n");
+    rlen += sprintf(request + rlen, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n");
     rlen += sprintf(request + rlen, "Accept-Language: en-US,en;q=0.9\r\n");
+    rlen += sprintf(request + rlen, "Accept-Encoding: gzip, deflate\r\n");
     rlen += sprintf(request + rlen, "Connection: close\r\n");
+    rlen += sprintf(request + rlen, "Upgrade-Insecure-Requests: 1\r\n");
     rlen += sprintf(request + rlen, "\r\n");
 
     int send_result;
@@ -606,8 +608,8 @@ static void browser_load_page(const char* url) {
     int total_read = 0;
 
     uint32_t browser_recv_start = get_tick_count();
-    #define BROWSER_RECV_TIMEOUT 1000
-    for (int retry = 0; retry < 300 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
+    #define BROWSER_RECV_TIMEOUT 8000  // 8 seconds — large pages need more time
+    for (int retry = 0; retry < 1200 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         if (get_tick_count() - browser_recv_start > BROWSER_RECV_TIMEOUT) break;
         extern void rtl8139_poll(); rtl8139_poll();
         int n;
@@ -709,10 +711,69 @@ static void browser_load_page(const char* url) {
         }
     }
 
-    // Save source HTML for view source (limit 8KB)
+    // Check for gzip Content-Encoding and decompress if needed
+    int header_len = body - response;
+    int is_gzip = 0;
+    {
+        // Scan headers for Content-Encoding: gzip
+        char* h = response;
+        while (h < body) {
+            if ((h[0]=='C'||h[0]=='c') && (h[1]=='o'||h[1]=='O') && (h[2]=='n'||h[2]=='N') &&
+                (h[3]=='t'||h[3]=='T') && (h[4]=='e'||h[4]=='E') && (h[5]=='n'||h[5]=='N') &&
+                (h[6]=='t'||h[6]=='T') && (h[7]=='-'||h[7]=='-') && (h[8]=='E'||h[8]=='e') &&
+                (h[9]=='n'||h[9]=='N') && (h[10]=='c'||h[10]=='C') && (h[11]=='o'||h[11]=='O') &&
+                (h[12]=='d'||h[12]=='D') && (h[13]=='i'||h[13]=='I') && (h[14]=='n'||h[14]=='N') &&
+                (h[15]=='g'||h[15]=='G') && h[16]==':') {
+                // Found Content-Encoding header — check value
+                char* val = h + 17;
+                while (*val == ' ') val++;
+                if ((val[0]=='g'||val[0]=='G') && (val[1]=='z'||val[1]=='Z') &&
+                    (val[2]=='i'||val[2]=='I') && (val[3]=='p'||val[3]=='P')) {
+                    is_gzip = 1;
+                }
+                break;
+            }
+            // Advance to next header line
+            while (h < body && *h != '\n') h++;
+            if (h < body) h++;
+        }
+    }
+
+    if (is_gzip && body[0] == 0x1F && body[1] == 0x8B) {
+        // Decompress gzip body
+        int body_len = total_read - (body - response);
+        uint32_t decompressed_len = 0;
+        // Allocate a new buffer for decompressed data
+        char* decompressed = (char*)kmalloc(BROWSER_RESPONSE_SIZE);
+        if (decompressed) {
+            extern int gzip_inflate(const uint8_t* src, uint32_t src_len,
+                                    uint8_t* dst, uint32_t dst_cap,
+                                    uint32_t* dst_len);
+            int result = gzip_inflate((const uint8_t*)body, body_len,
+                                     (uint8_t*)decompressed, BROWSER_RESPONSE_SIZE - 1,
+                                     &decompressed_len);
+            if (result == 0 && decompressed_len > 0) {
+                // Copy decompressed data back over the body area of the response buffer
+                // We need the headers too for redirect handling, so copy decompressed
+                // body to a fresh buffer and replace the response
+                decompressed[decompressed_len] = 0;
+                // Rebuild response: headers + decompressed body
+                int new_total = header_len + decompressed_len;
+                if (new_total < BROWSER_RESPONSE_SIZE) {
+                    memcpy(body, decompressed, decompressed_len + 1);
+                    total_read = new_total;
+                }
+                s_printf("[Browser] Gzip decompressed: %d -> %d bytes\n", body_len, decompressed_len);
+            }
+            kfree(decompressed);
+            // Re-find body pointer (it hasn't moved since we copied in place)
+        }
+    }
+
+    // Save source HTML for view source (limit 32KB — was 8KB, too small for modern pages)
     {
         int src_len = total_read - (body - response);
-        if (src_len > 8192) src_len = 8192;
+        if (src_len > 32768) src_len = 32768;
         if (src_len > 0) {
             source_html = (char*)kmalloc(src_len + 1);
             if (source_html) { memcpy(source_html, body, src_len); source_html[src_len] = 0; source_len = src_len; }

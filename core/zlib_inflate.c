@@ -677,3 +677,132 @@ int zlib_inflate(const uint8_t* src, uint32_t src_len,
     *dst_len = state.dst_pos;
     return 0;
 }
+
+// =========================================================================
+// Raw Deflate Decompression (no header or trailer)
+// =========================================================================
+
+int raw_deflate_inflate(const uint8_t* src, uint32_t src_len,
+                        uint8_t* dst, uint32_t dst_cap,
+                        uint32_t* dst_len) {
+    if (!src || !dst || src_len == 0) {
+        *dst_len = 0;
+        return -1;
+    }
+
+    inflate_state_t state;
+    memset(&state, 0, sizeof(state));
+    bs_init(&state.bs, src, src_len);
+    state.dst     = dst;
+    state.dst_cap = dst_cap;
+    state.dst_pos = 0;
+
+    // Process deflate blocks
+    int bfinal = 0;
+    while (!bfinal) {
+        int bf   = bs_read(&state.bs, 1);
+        int btype = bs_read(&state.bs, 2);
+        if (bf < 0 || btype < 0) {
+            *dst_len = state.dst_pos; // Return partial data
+            return 0;
+        }
+        bfinal = bf;
+
+        int result;
+        switch (btype) {
+            case 0: result = inflate_stored(&state);   break;
+            case 1: result = inflate_fixed(&state);    break;
+            case 2: result = inflate_dynamic(&state);  break;
+            default:
+                *dst_len = state.dst_pos; // Return partial data
+                return 0;
+        }
+
+        if (result < 0) {
+            *dst_len = state.dst_pos; // Return partial data on error
+            return 0;
+        }
+    }
+
+    *dst_len = state.dst_pos;
+    return 0;
+}
+
+// =========================================================================
+// Gzip Decompression (RFC 1952)
+// =========================================================================
+// Gzip format:
+//   Magic:    0x1F 0x8B
+//   Method:   1 byte (8 = deflate)
+//   Flags:    1 byte (bit0=FTEXT, bit1=FHCRC, bit2=FEXTRA, bit3=FNAME, bit4=FCOMMENT)
+//   MTIME:    4 bytes
+//   XFL:      1 byte
+//   OS:       1 byte
+//   [FEXTRA]: 2-byte length + extra data
+//   [FNAME]:  zero-terminated string
+//   [FCOMMENT]: zero-terminated string
+//   [FHCRC]:  2 bytes
+//   <deflate data>
+//   CRC32:    4 bytes
+//   ISIZE:    4 bytes (original size mod 2^32)
+
+int gzip_inflate(const uint8_t* src, uint32_t src_len,
+                 uint8_t* dst, uint32_t dst_cap,
+                 uint32_t* dst_len) {
+    *dst_len = 0;
+
+    if (!src || !dst || src_len < 18) {
+        // Need at least 10-byte header + 8-byte trailer
+        return -1;
+    }
+
+    // Verify magic number
+    if (src[0] != 0x1F || src[1] != 0x8B) {
+        return -1;
+    }
+
+    // Verify method (must be deflate = 8)
+    if (src[2] != 8) {
+        return -1;
+    }
+
+    uint8_t flags = src[3];
+    uint32_t offset = 10; // Skip fixed header (magic + method + flags + mtime + xfl + os)
+
+    // Skip optional fields based on flags
+    // FEXTRA (bit 2)
+    if (flags & 0x04) {
+        if (offset + 2 > src_len) return -1;
+        uint16_t xlen = (uint16_t)(src[offset] | (src[offset + 1] << 8));
+        offset += 2 + xlen;
+        if (offset > src_len) return -1;
+    }
+
+    // FNAME (bit 3) — zero-terminated string
+    if (flags & 0x08) {
+        while (offset < src_len && src[offset] != 0) offset++;
+        offset++; // Skip the null terminator
+        if (offset > src_len) return -1;
+    }
+
+    // FCOMMENT (bit 4) — zero-terminated string
+    if (flags & 0x10) {
+        while (offset < src_len && src[offset] != 0) offset++;
+        offset++; // Skip the null terminator
+        if (offset > src_len) return -1;
+    }
+
+    // FHCRC (bit 1) — 2-byte header CRC
+    if (flags & 0x02) {
+        offset += 2;
+        if (offset > src_len) return -1;
+    }
+
+    // The deflate data runs from offset to (src_len - 8)
+    // (last 8 bytes are CRC32 + ISIZE)
+    if (offset + 8 > src_len) return -1;
+
+    uint32_t deflate_len = src_len - offset - 8;
+
+    return raw_deflate_inflate(src + offset, deflate_len, dst, dst_cap, dst_len);
+}
