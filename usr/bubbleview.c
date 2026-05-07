@@ -1346,6 +1346,13 @@ void start_bubble_view() {
         extern void rtl8139_poll(void);
         rtl8139_poll();
 
+        // Poll PS/2 mouse (pure polling — IRQ12 is masked)
+        extern void mouse_poll_fallback(void);
+        mouse_poll_fallback();
+        // Poll USB HID devices (keyboard/mouse)
+        extern void usb_hid_poll(void);
+        usb_hid_poll();
+
         int mask = sys_mouse_read(&mx, &my, &dummy);
 
         int lb = mask & 1;
