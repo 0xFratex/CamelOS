@@ -214,14 +214,14 @@ void init_mouse() {
     pkt_cycle = 0;
     mouse_ring_head = 0;
     mouse_ring_tail = 0;
-    mouse_has_wheel = 1;  // Default to Intellimouse (4-byte) mode —
-                          // all modern emulators (QEMU, VirtualBox, Bochs)
-                          // support the scroll wheel protocol.  Prevents
-                          // the "scroll sends a click" bug that occurs when
-                          // the mouse sends 4-byte packets but the driver
-                          // only reads 3 (the extra scroll byte is consumed
-                          // as byte 0 of the next packet and can have bit 0
-                          // set, causing phantom left-clicks).
+    mouse_has_wheel = 0;  // Start with standard 3-byte mode.
+                          // Will be set to 1 after successful Intellimouse
+                          // detection (device_id == 0x03).  Forcing 4-byte
+                          // mode when the mouse only sends 3 bytes causes
+                          // the driver to wait for a 4th byte that never
+                          // comes — the next packet's byte 0 is consumed as
+                          // the scroll byte, misaligning all subsequent
+                          // packets and causing phantom clicks and teleportation.
 
     uint8_t _status;
     uint8_t ack __attribute__((unused));
@@ -279,14 +279,13 @@ void init_mouse() {
     uint8_t device_id = mouse_read();
 
     if (device_id == 0x03) {
-        // Confirmed Intellimouse — wheel already enabled above
+        // Confirmed Intellimouse — wheel enabled, 4-byte packets
         mouse_has_wheel = 1;
     }
-    // Even if device_id != 0x03, keep mouse_has_wheel = 1.
-    // QEMU/VirtualBox sometimes fail the detection sequence but
-    // still send 4-byte packets.  Reading 3 bytes when 4 are
-    // sent causes the scroll byte to be misinterpreted as a
-    // button click (the "scroll sends click" bug).
+    // If device_id != 0x03, the mouse stays in standard 3-byte
+    // mode.  We MUST keep mouse_has_wheel = 0 — reading 4 bytes
+    // from a 3-byte mouse causes the driver to consume byte 0 of
+    // the next packet as the "scroll" byte, misaligning everything.
 
     // Set a reasonable sample rate
     mouse_write(0xF3);

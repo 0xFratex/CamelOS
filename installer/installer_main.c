@@ -28,6 +28,7 @@
 #include "../core/memory.h"
 #include "../hal/cpu/idt.h"
 #include "../hal/drivers/mouse.h"
+#include "../hal/drivers/vga.h"
 #include "../kernel/assets.h"
 #include "disk_tools.h"
 #include "disk_health.h"
@@ -256,24 +257,149 @@ void add_log(const char* msg) {
 #define PS2_MOUSE_PORT   0x60
 #define PS2_STATUS_PORT  0x64
 
+// Detected mouse type: 0x00 = standard PS/2 (3-byte), 0x03 = Intellimouse (4-byte)
+static uint8_t ps2_mouse_id = 0x00;
+
+// PS/2 controller helper functions (polling-only, no IRQs needed for installer)
+static void ps2_mouse_wait(uint8_t type) {
+    uint32_t timeout = 100000;
+    if (type == 0) {
+        while (timeout--) {
+            if ((inb(0x64) & 1) == 1) return;
+        }
+    } else {
+        while (timeout--) {
+            if ((inb(0x64) & 2) == 0) return;
+        }
+    }
+}
+
+static void ps2_mouse_write(uint8_t val) {
+    ps2_mouse_wait(1);
+    outb(0x64, 0xD4);      // Tell controller: next byte goes to mouse
+    ps2_mouse_wait(1);
+    outb(0x60, val);
+}
+
+static uint8_t ps2_mouse_read(void) {
+    ps2_mouse_wait(0);
+    return inb(0x60);
+}
+
+// Full PS/2 mouse initialization including Intellimouse scroll wheel negotiation.
+// Must be called once at startup before poll_input().
+static void init_ps2_mouse(void) {
+    ps2_mouse_id = 0x00;  // Default: standard 3-byte PS/2 mouse
+
+    // Enable auxiliary device (mouse port)
+    ps2_mouse_wait(1);
+    outb(0x64, 0xA8);
+
+    // Read and modify Compaq Status Byte:
+    //   Set bit 1  = enable IRQ12 (won't fire without IDT, but good practice)
+    //   Clear bit 5 = enable mouse clock
+    ps2_mouse_wait(1);
+    outb(0x64, 0x20);         // Get Compaq Status
+    ps2_mouse_wait(0);
+    uint8_t status = inb(0x60);
+    status |= 2;              // Enable IRQ12
+    status &= ~0x20;          // Enable mouse clock
+    ps2_mouse_wait(1);
+    outb(0x64, 0x60);         // Set Compaq Status
+    ps2_mouse_wait(1);
+    outb(0x60, status);
+
+    // Reset mouse
+    ps2_mouse_write(0xFF);
+    ps2_mouse_read();          // ACK (0xFA)
+
+    // Small delay after reset to let the controller settle
+    for (volatile int d = 0; d < 10000; d++) {}
+
+    // Drain any leftover bytes from the reset response
+    // (some mice send BAT completion 0xAA + 0x00 after reset)
+    for (volatile int d = 0; d < 5000; d++) {}
+    while ((inb(0x64) & 0x21) == 0x21) {
+        inb(0x60);  // Discard
+    }
+
+    // --- Intellimouse (scroll wheel) negotiation ---
+    // The magic sequence: Set Sample Rate 200, then 100, then 80.
+    // After this, a Get Device ID command returns 0x03 if the mouse
+    // supports the scroll wheel protocol (4-byte packets).
+    ps2_mouse_write(0xF3);    // Set Sample Rate
+    ps2_mouse_read();          // ACK
+    ps2_mouse_write(200);     // Rate = 200
+    ps2_mouse_read();          // ACK
+
+    ps2_mouse_write(0xF3);    // Set Sample Rate
+    ps2_mouse_read();          // ACK
+    ps2_mouse_write(100);     // Rate = 100
+    ps2_mouse_read();          // ACK
+
+    ps2_mouse_write(0xF3);    // Set Sample Rate
+    ps2_mouse_read();          // ACK
+    ps2_mouse_write(80);      // Rate = 80
+    ps2_mouse_read();          // ACK
+
+    // Get Device ID
+    ps2_mouse_write(0xF2);    // Get Device ID
+    ps2_mouse_read();          // ACK
+
+    // Small delay before reading device ID
+    for (volatile int d = 0; d < 5000; d++) {}
+
+    uint8_t dev_id = ps2_mouse_read();
+
+    if (dev_id == 0x03) {
+        ps2_mouse_id = 0x03;  // Intellimouse: 4-byte packets with scroll wheel
+    }
+    // If dev_id != 0x03, mouse stays in standard 3-byte mode.
+    // Do NOT force 4-byte mode — that causes the "scroll = click" bug.
+
+    // Set a reasonable sample rate
+    ps2_mouse_write(0xF3);    // Set Sample Rate
+    ps2_mouse_read();          // ACK
+    ps2_mouse_write(100);     // 100 samples/sec
+    ps2_mouse_read();          // ACK
+
+    // Enable data reporting (streaming mode)
+    ps2_mouse_write(0xF4);    // Enable
+    ps2_mouse_read();          // ACK
+
+    // Final drain: discard any stale bytes left in the buffer
+    for (volatile int d = 0; d < 10000; d++) {}
+    while ((inb(0x64) & 0x21) == 0x21) {
+        inb(0x60);  // Discard
+    }
+}
+
 void poll_input(void) {
-    static uint8_t packet[4];  // 4 bytes for Intellimouse scroll wheel
+    static uint8_t packet[4];  // Up to 4 bytes for Intellimouse scroll wheel
     static int cycle = 0;
-    static uint8_t mouse_id = 0x03;  // Always use Intellimouse (4-byte) mode
-                                      // to prevent scroll-to-click bug
 
     mb_prev = mb_left;
     mb_clicked = 0;  // Reset click flag each poll
 
-    while ((inb(PS2_STATUS_PORT) & 1)) {
+    // CRITICAL: Check BOTH bit 0 (OBF) AND bit 5 (AUX_OBF).
+    // Bit 0 = Output Buffer Full (data available at port 0x60)
+    // Bit 5 = Auxiliary Device Output Buffer Full (data is from mouse, NOT keyboard)
+    // Without checking bit 5, keyboard scancodes would be read as mouse data,
+    // causing phantom clicks and cursor teleportation.
+    while ((inb(PS2_STATUS_PORT) & 0x21) == 0x21) {
         uint8_t b = inb(PS2_MOUSE_PORT);
-        if (cycle == 0 && !(b & 0x08)) { cycle = 0; continue; }
+
+        // Packet synchronization: byte 0 must have bit 3 set (Always-1 bit)
+        if (cycle == 0 && !(b & 0x08)) continue;
         packet[cycle++] = b;
-        
-        uint8_t packet_len = (mouse_id == 0x03) ? 4 : 3;
+
+        uint8_t packet_len = (ps2_mouse_id == 0x03) ? 4 : 3;
         if (cycle >= packet_len) {
             cycle = 0;
+
+            // Overflow bits set? Discard packet (unreliable data)
             if (packet[0] & 0xC0) continue;
+
             // Parse X movement with 9-bit sign extension
             // PS/2 X/Y deltas are 9-bit signed values; the sign bits live in
             // byte 0 (bit 4 = X sign, bit 5 = Y sign).  Without this extension,
@@ -283,21 +409,22 @@ void poll_input(void) {
             int rel_y = packet[2];
             if (packet[0] & 0x20) rel_y -= 256;
             mx += rel_x;
-            my -= rel_y;
+            my -= rel_y;  // PS/2 Y is positive-up, screen Y is positive-down
+
+            // Button state: rising-edge detection
             int new_left = packet[0] & 1;
-            // Detect rising edge: button just pressed this packet
             if (new_left && !mb_left) mb_clicked = 1;
             mb_left = new_left;
+
+            // Clamp to screen bounds
             if (mx < 0) mx = 0;
             if (mx >= WIN_W) mx = WIN_W - 1;
             if (my < 0) my = 0;
             if (my >= WIN_H) my = WIN_H - 1;
-            
-            // Read scroll wheel data (byte 3) for Intellimouse
-            if (mouse_id == 0x03 && packet_len == 4) {
-                // Scroll data is available but not used in installer UI
-                // (no scrollable lists in installer screens)
-            }
+
+            // Scroll wheel data (byte 3) consumed for Intellimouse — not used
+            // in installer UI (no scrollable lists), but we must read it to
+            // prevent it from leaking into the next packet.
         }
     }
 }
@@ -2287,7 +2414,8 @@ int main(uint32_t magic, void* mb_ptr) {
 
     gfx_init_hal(mb_ptr);
     init_serial();
-    outb(0x64, 0xA8); outb(0x64, 0xD4); outb(0x60, 0xF4);  // Enable mouse
+    vga_mute_log(1);      // Suppress VGA text output — installer uses GUI only
+    init_ps2_mouse();     // Full PS/2 mouse init with Intellimouse negotiation
 
     // Initialize health system
     disk_health_init();
