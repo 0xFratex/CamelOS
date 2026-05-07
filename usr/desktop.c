@@ -59,7 +59,7 @@ static int g_desk_selbox_inited = 0;
 // Pre-computed gradient eliminates per-pixel arithmetic every frame.
 // This is the #1 fix for window flickering on move.
 static uint32_t* wallpaper_cache = 0;
-static int wallpaper_cache_w = 0;
+int wallpaper_cache_w = 0;
 static int wallpaper_cache_h = 0;
 
 int desktop_is_ctx_open() {

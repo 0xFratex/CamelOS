@@ -38,4 +38,7 @@ extern void desktop_refresh();
 extern void desktop_install_app(const char* source_path);
 extern int desktop_is_droppable(int x, int y); // Check if position is the Applications drop zone
 
+// Wallpaper cache dimension — used by theme.c to invalidate cache on theme switch
+extern int wallpaper_cache_w;
+
 #endif

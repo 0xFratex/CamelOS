@@ -13,6 +13,7 @@
 
 volatile uint32_t ticks = 0;
 uint32_t ticks_per_ms = 0;
+uint32_t timer_ticks = 0;  // Alias for compatibility (used by mouse.c, window_server.c)
 
 // Forward declaration for network polling
 extern void rtl8169_poll();
@@ -28,6 +29,7 @@ extern uint32_t scheduler_schedule(registers_t* regs);
 // Now receives registers pointer for context switching
 void timer_callback(registers_t* regs) {
     ticks++;
+    timer_ticks++;  // Keep in sync with ticks for compatibility
     
     // Call scheduler tick handler
     scheduler_tick();
