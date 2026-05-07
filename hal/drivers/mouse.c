@@ -2,14 +2,16 @@
 // PS/2 Mouse driver with Intellimouse scroll wheel support
 //
 // Architecture:
-//   - IRQ12 handler (mouse_handler) pushes raw bytes into a ring buffer.
-//     No packet assembly happens in ISR context.
-//   - mouse_process() drains the ring buffer only — no direct port polling.
-//     This avoids a double-read race where the IRQ handler and the polling
-//     path both read the same byte from port 0x60.
-//   - The IO-APIC routes GSI 12 → Vector 44 (IRQ12), so the ISR fires
-//     even though the legacy PIC has IRQ12 masked.  All mouse bytes are
-//     delivered via the ring buffer.
+//   Pure polling — same approach as the installer's proven poll_input().
+//   IRQ12 is masked in the PIC so it never fires.  All mouse data is read
+//   directly from port 0x60 in mouse_process(), which is called from the
+//   main event loop.  This avoids the double-read race condition between
+//   an IRQ12 handler and a polling path, and matches the installer's
+//   battle-tested implementation.
+//
+//   The mouse_handler() stub still exists (called from isr.c if IRQ12
+//   somehow fires, e.g. via IO-APIC on some hardware) — it just reads
+//   and discards the byte to prevent an IRQ storm.
 //
 // Supports: QEMU, VirtualBox, Bochs, real hardware (PS/2 + USB HID)
 #include "../common/ports.h"
@@ -31,14 +33,8 @@ int mouse_btn_middle = 0;
 int mouse_scroll_delta = 0;  // Scroll wheel: positive = up, negative = down
 
 // ============================================================================
-// IRQ ring buffer — mouse_handler() pushes bytes, mouse_process() drains them
-// ============================================================================
-#define MOUSE_RING_SIZE 64  // Must be power of 2
-static volatile uint8_t mouse_ring[MOUSE_RING_SIZE];
-static volatile uint32_t mouse_ring_head = 0;  // Written by ISR (producer)
-static volatile uint32_t mouse_ring_tail = 0;  // Read by main loop (consumer)
-
 // Intellimouse support flag
+// ============================================================================
 static uint8_t mouse_has_wheel = 0;
 
 // ============================================================================
@@ -76,34 +72,28 @@ void mouse_write(uint8_t a_write) {
 }
 
 // Read a response byte from the PS/2 mouse.
-// Simple wait-for-OBF + read — same as the installer's ps2_mouse_read().
-// Safe during init because init_mouse() runs with cli (no IRQ interference).
+// Wait for OBF (bit 0) — same as installer's ps2_mouse_read().
 uint8_t mouse_read() {
     mouse_wait(0);
     return inb(0x60);
 }
 
 // ============================================================================
-// mouse_handler() — Called from IRQ12 (ISR context)
+// mouse_handler() — Called from IRQ12 (ISR context) as a safety net
 //
-// Pushes the raw byte into the ring buffer.  All packet parsing happens
-// in mouse_process() on the main loop.
+// IRQ12 is masked in the PIC (see init_mouse), so this should never fire
+// on QEMU or VirtualBox.  On real hardware with IO-APIC routing GSI 12,
+// it might still fire — in that case, just read and discard the byte to
+// prevent an IRQ storm.  The real data will be picked up by the polling
+// path in mouse_process().
 // ============================================================================
 void mouse_handler() {
+    // Read status to check if there's really mouse data
     uint8_t status = inb(0x64);
-
-    // Only proceed if the output buffer has mouse data (AUX_OBF = bit 5)
-    if (!(status & 0x20)) return;
-
-    uint8_t data = inb(0x60);
-
-    // Push into ring buffer (lock-free single-producer/single-consumer)
-    uint32_t next_head = (mouse_ring_head + 1) & (MOUSE_RING_SIZE - 1);
-    if (next_head != mouse_ring_tail) {
-        mouse_ring[mouse_ring_head] = data;
-        mouse_ring_head = next_head;
+    if (status & 0x21) {
+        // Output buffer full with mouse data — read and discard it
+        inb(0x60);
     }
-    // If ring is full, byte is dropped — extremely unlikely at 100 samples/sec
 }
 
 // ============================================================================
@@ -150,24 +140,27 @@ static void mouse_process_packet(void) {
 }
 
 // ============================================================================
-// mouse_process() — Main-loop mouse processing (ring buffer only)
+// mouse_process() — Main-loop mouse processing (pure polling)
 //
-// Drains the IRQ ring buffer and assembles complete packets.
-// Does NOT directly poll the PS/2 port — all bytes are delivered by
-// the IRQ12 handler via the IO-APIC (GSI 12 → Vector 44).
+// Identical to the installer's proven poll_input() approach:
+// directly reads mouse bytes from port 0x60 by checking the PS/2 status
+// register for OBF + AUX_OBF.  No ring buffer, no IRQ dependency.
 // ============================================================================
 void mouse_process(void) {
     uint8_t packet_len = mouse_has_wheel ? 4 : 3;
 
-    // Drain the IRQ ring buffer
-    while (mouse_ring_tail != mouse_ring_head) {
-        uint8_t data = mouse_ring[mouse_ring_tail];
-        mouse_ring_tail = (mouse_ring_tail + 1) & (MOUSE_RING_SIZE - 1);
+    // Check BOTH bit 0 (OBF) AND bit 5 (AUX_OBF).
+    // Bit 0 = Output Buffer Full (data available at port 0x60)
+    // Bit 5 = Auxiliary Device Output Buffer Full (data is from mouse, NOT keyboard)
+    // Without checking bit 5, keyboard scancodes would be read as mouse data,
+    // causing phantom clicks and cursor teleportation.
+    while ((inb(0x64) & 0x21) == 0x21) {
+        uint8_t b = inb(0x60);
 
         // Packet synchronization: byte 0 must have bit 3 set (Always-1 bit)
-        if (pkt_cycle == 0 && !(data & 0x08)) continue;
+        if (pkt_cycle == 0 && !(b & 0x08)) continue;
 
-        pkt_byte[pkt_cycle] = data;
+        pkt_byte[pkt_cycle] = b;
         pkt_cycle++;
 
         if (pkt_cycle >= packet_len) {
@@ -188,8 +181,10 @@ void mouse_poll_fallback(void) {
 // init_mouse() — PS/2 mouse initialization
 //
 // Matches the installer's proven init_ps2_mouse() sequence exactly.
-// Runs with interrupts disabled to prevent IRQ12 from firing during
-// the PS/2 command/response exchange.
+// After init, IRQ12 is MASKED in the PIC so that all mouse data is
+// delivered via pure polling in mouse_process(), not via interrupts.
+// This matches the installer's proven approach and avoids the race
+// conditions that plague the IRQ12 + polling hybrid.
 // ============================================================================
 void init_mouse() {
     // Zero out state
@@ -198,14 +193,11 @@ void init_mouse() {
     mouse_btn_middle = 0;
     mouse_scroll_delta = 0;
     pkt_cycle = 0;
-    mouse_ring_head = 0;
-    mouse_ring_tail = 0;
     mouse_has_wheel = 0;
 
     // Disable interrupts during the entire init sequence.
-    // This prevents the IRQ12 handler (routed via IO-APIC GSI 12)
-    // from firing and consuming mouse response bytes during init.
-    // The IO-APIC routes GSI 12 even though the legacy PIC has it masked.
+    // This prevents the IRQ12 handler from firing and consuming
+    // mouse response bytes during init.
     asm volatile("cli");
 
     uint8_t _status;
@@ -216,13 +208,13 @@ void init_mouse() {
     outb(0x64, 0xA8);
 
     // Read and modify Compaq Status Byte:
-    //   Set bit 1  = enable IRQ12
+    //   Set bit 1  = enable IRQ12 (needed for controller to accept mouse commands)
     //   Clear bit 5 = enable mouse clock
     mouse_wait(1);
     outb(0x64, 0x20);         // Get Compaq Status
     mouse_wait(0);
     _status = inb(0x60);
-    _status |= 2;              // Enable IRQ12
+    _status |= 2;              // Enable IRQ12 in controller
     _status &= ~0x20;          // Enable mouse clock
     mouse_wait(1);
     outb(0x64, 0x60);         // Set Compaq Status
@@ -293,12 +285,20 @@ void init_mouse() {
         inb(0x60);  // Discard
     }
 
-    // Clear ring buffer and packet assembly state
-    mouse_ring_head = 0;
-    mouse_ring_tail = 0;
+    // Clear packet assembly state
     pkt_cycle = 0;
 
-    // Re-enable interrupts — the IRQ12 handler (via IO-APIC GSI 12)
-    // will now deliver mouse bytes to the ring buffer.
+    // ================================================================
+    // MASK IRQ12 in the PIC — we use pure polling, not interrupts.
+    // IRQ12 is on the slave PIC (port 0xA1), bit 4.
+    // This prevents the IRQ12 handler from firing and racing with
+    // the polling path in mouse_process().
+    // ================================================================
+    uint8_t slave_mask = inb(0xA1);
+    slave_mask |= 0x10;    // Set bit 4 to mask IRQ12
+    outb(0xA1, slave_mask);
+
+    // Re-enable interrupts — but IRQ12 won't fire because it's masked.
+    // All other interrupts (timer, keyboard, network) work normally.
     asm volatile("sti");
 }
