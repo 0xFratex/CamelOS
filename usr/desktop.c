@@ -8,6 +8,7 @@
 #include "desktop.h"
 #include "../hal/drivers/serial.h"
 #include "../hal/video/gfx_hal.h"
+#include "../core/theme.h"
 
 // DMG mounter for .dmg install support
 #include "../core/dmg_mount.h"
@@ -233,9 +234,11 @@ static void wallpaper_cache_ensure(int w, int h) {
         wallpaper_cache_w = w;
         wallpaper_cache_h = h;
     }
-    // Fill cached gradient
+    // Fill cached gradient using theme desktop_bg color
+    const theme_t* theme = theme_get_current();
+    uint32_t base = theme->desktop_bg;
     for(int y=0; y<h; y++) {
-        uint32_t col = 0xFF3b80c6 - (y/4); // Blue gradient
+        uint32_t col = base - (y/4); // Gradient from base color
         for(int x=0; x<w; x++) wallpaper_cache[y*w+x] = col;
     }
 }
@@ -247,9 +250,11 @@ void desktop_fill_wallpaper_region(uint32_t* buffer, int rx, int ry, int rw, int
     int h = gfx_ctx.height;
     wallpaper_cache_ensure(w, h);
     if (!wallpaper_cache) {
-        // Fallback: compute per-pixel for just the region
+        // Fallback: compute per-pixel for just the region using theme color
+        const theme_t* theme_fb = theme_get_current();
+        uint32_t base_fb = theme_fb->desktop_bg;
         for(int y=ry; y<ry+rh && y<h; y++) {
-            uint32_t col = 0xFF3b80c6 - (y/4);
+            uint32_t col = base_fb - (y/4);
             for(int x=rx; x<rx+rw && x<w; x++) buffer[y*w+x] = col;
         }
         return;
@@ -344,9 +349,11 @@ void desktop_draw(uint32_t* buffer) {
     if (wallpaper_cache) {
         memcpy(buffer, wallpaper_cache, w * h * 4);
     } else {
-        // Fallback if kmalloc failed
+        // Fallback if kmalloc failed — use theme color
+        const theme_t* theme_dd = theme_get_current();
+        uint32_t base_dd = theme_dd->desktop_bg;
         for(int y=0; y<h; y++) {
-            uint32_t col = 0xFF3b80c6 - (y/4);
+            uint32_t col = base_dd - (y/4);
             for(int x=0; x<w; x++) buffer[y*w+x] = col;
         }
     }

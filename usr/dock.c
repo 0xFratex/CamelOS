@@ -4,14 +4,14 @@
 #include "../hal/video/gfx_hal.h"
 #include "../core/window_server.h"
 #include "../core/string.h"
+#include "../core/theme.h"
 
 // Externs
 extern void execute_program(const char* path);
 extern window_t* active_win;
 
 // --- Visual Configuration (Big Sur Style) ---
-#define DOCK_BG_COLOR    0x50F0F0F0 // Translucent White/Light Grey (Glass)
-#define DOCK_SHINE       0x20FFFFFF // Subtle inner highlight
+// Note: DOCK_BG_COLOR and DOCK_SHINE now come from theme->dock_bg
 #define DOCK_INDICATOR   0xFF404040 // Dark Grey Dot for active apps
 #define DOCK_BASE_SIZE   54
 #define DOCK_MAX_SIZE    90
@@ -196,14 +196,13 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     int shelf_w = total_w + (padding_x * 2);
     int shelf_x = (w - shelf_w) / 2;
 
-    // 1. Draw Background (Glass Effect)
-    // We use a high-transparency fill. 
-    // IMPORTANT: To fix artifacts, the GFX HAL needs to handle blending properly (Source Over Destination).
-    gfx_fill_rounded_rect(shelf_x, shelf_y, shelf_w, shelf_h, DOCK_BG_COLOR, 22);
+    // 1. Draw Background (Glass Effect) — uses theme dock colors
+    const theme_t* theme = theme_get_current();
+    gfx_fill_rounded_rect(shelf_x, shelf_y, shelf_w, shelf_h, theme->dock_bg, 22);
     
     // 2. Inner Shine (Top Highlight)
     // Drawn slightly smaller to look like a bevel
-    gfx_fill_rounded_rect(shelf_x+2, shelf_y+2, shelf_w-4, shelf_h-4, DOCK_SHINE, 20);
+    gfx_fill_rounded_rect(shelf_x+2, shelf_y+2, shelf_w-4, shelf_h-4, theme->dock_border, 20);
 
     for(int i=0; i<dock_count; i++) {
         int sz = sizes[i];

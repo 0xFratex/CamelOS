@@ -9,6 +9,8 @@
 #include "../dock.h"
 #include "../../fs/pfs32.h"
 #include "../../core/window_server.h"
+#include "../../core/theme.h"
+#include "../../core/notification_center.h"
 
 // Tab IDs
 #define TAB_ABOUT    0
@@ -40,6 +42,9 @@ static int save_btn_x = 0, save_btn_y = 0, save_btn_w = 100, save_btn_h = 32;
 static int save_btn_hover = 0;
 static int save_feedback_timer = 0;  // Ticks remaining for "Saved!" feedback
 static char save_feedback_text[32] = "";
+
+// Theme toggle region
+static int theme_toggle_x = 0, theme_toggle_y = 0, theme_toggle_w = 0, theme_toggle_h = 0;
 
 // System info
 static char sys_mem_str[32] = "";
@@ -290,9 +295,49 @@ static void draw_user_tab(int x, int y, int w, int h) {
 
 static void draw_display_tab(int x, int y, int w, int h) {
     int cy = y + 20;
+    const theme_t* theme = theme_get_current();
     
-    gfx_draw_string(x + 20, cy, "Theme:", 0xFF888888);
-    gfx_draw_string(x + 90, cy, cfg_theme, 0xFF333333);
+    // Theme toggle section
+    gfx_draw_string(x + 20, cy, "Appearance", theme->accent_color);
+    cy += 28;
+    
+    // Theme toggle button
+    {
+        int toggle_x = x + 20;
+        int toggle_y = cy;
+        int toggle_w = 200;
+        int toggle_h = 36;
+        int is_dark = (theme_get_id() == THEME_DARK);
+        
+        // Toggle background
+        gfx_fill_rounded_rect(toggle_x, toggle_y, toggle_w, toggle_h, 
+                              is_dark ? 0xFF48484A : 0xFFE5E5EA, toggle_h / 2);
+        
+        // Toggle knob
+        int knob_w = 90;
+        int knob_x = is_dark ? toggle_x + toggle_w - knob_w - 4 : toggle_x + 4;
+        gfx_fill_rounded_rect(knob_x, toggle_y + 3, knob_w, toggle_h - 6, 
+                              0xFFFFFFFF, (toggle_h - 6) / 2);
+        
+        // Labels
+        gfx_draw_string(toggle_x + 20, toggle_y + 10, "Light", 
+                       is_dark ? theme->text_secondary : theme->accent_color);
+        gfx_draw_string(toggle_x + toggle_w - 56, toggle_y + 10, "Dark", 
+                       is_dark ? theme->accent_color : theme->text_secondary);
+        
+        // Store toggle region for mouse handler
+        theme_toggle_x = toggle_x;
+        theme_toggle_y = toggle_y;
+        theme_toggle_w = toggle_w;
+        theme_toggle_h = toggle_h;
+    }
+    cy += 50;
+    
+    gfx_draw_rect(x + 20, cy, w - 40, 1, theme->separator);
+    cy += 15;
+    
+    gfx_draw_string(x + 20, cy, "Accent Color:", 0xFF888888);
+    gfx_draw_string(x + 130, cy, "System Blue", theme->accent_color);
     cy += 35;
     
     // Theme preview
@@ -630,6 +675,16 @@ static void settings_on_mouse(window_t* win, int x, int y, int btn) {
                 break;
             }
         }
+    }
+
+    // Theme toggle click on Display tab
+    if (current_tab == TAB_DISPLAY &&
+        x >= theme_toggle_x && x <= theme_toggle_x + theme_toggle_w &&
+        y >= theme_toggle_y && y <= theme_toggle_y + theme_toggle_h) {
+        theme_toggle();
+        // Post a notification about the theme change
+        const char* mode = theme_get_id() == THEME_DARK ? "Dark" : "Light";
+        notif_post("Settings", "Appearance Changed", mode, NOTIF_TYPE_INFO);
     }
 
     // Save button click on Display tab

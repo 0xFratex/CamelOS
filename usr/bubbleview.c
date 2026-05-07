@@ -16,6 +16,8 @@
 #include "welcome_setup.h"
 #include "spotlight.h"
 #include "../include/input_defs.h"
+#include "../core/theme.h"
+#include "../core/notification_center.h"
 
 // Extern for destroying window
 extern void ws_destroy_window(window_t* win);
@@ -116,6 +118,15 @@ extern int desk_count;
 static int prev_lb = 0;
 static int prev_rb = 0;
 
+// Cursor position tracking for dirty-region flicker fix.
+// When the cursor moves, we mark both the old and new cursor
+// bounding boxes as dirty so the old position gets properly
+// erased from VRAM and the new position gets drawn.
+static int prev_cursor_x = -1;
+static int prev_cursor_y = -1;
+#define CURSOR_W 12  // Max cursor width (arrow shape)
+#define CURSOR_H 19  // Max cursor height (arrow shape)
+
 // Double Click State
 static int frame_counter = 0; // Simple tick simulation
 static int last_select_idx = -1; // New: track for "select -> click again" logic
@@ -202,13 +213,17 @@ static window_t* drag_win = 0;
 static int drag_off_x = 0;
 static int drag_off_y = 0;
 
-// Dirty-region tracking removed — always-full-redraw eliminates shadow compounding.
-// Kept for drag_prev_x/y which are used by handle_input snap-restore logic.
+// Dirty-region tracking: marks areas that changed so the compositor only
+// redraws the affected bounding box instead of the full screen.
+// When a window moves, both old and new positions are marked dirty.
+// The wallpaper cache is used to restore the background in the dirty
+// region before windows are repainted, which avoids the shadow-compounding
+// bug that plagued the earlier dirty-region implementation.
 static int drag_prev_x = 0, drag_prev_y = 0;
 static int drag_was_active = 0;
 static int drag_just_released = 0;
 
-#define DRAG_SHADOW_PAD 12       // kept for compatibility
+#define DRAG_SHADOW_PAD 12       // Shadow padding for dirty region expansion
 
 static window_t* resize_win = 0;
 static int resize_orig_w, resize_orig_h;
@@ -1470,9 +1485,23 @@ void start_bubble_view() {
         }
 
         // --- FLICKER FIX: Save old drag position BEFORE input updates it ---
+        // Also mark the old window position as dirty so it gets properly
+        // restored from the wallpaper cache before repainting.
         if (drag_win) {
             drag_prev_x = drag_win->x;
             drag_prev_y = drag_win->y;
+            // Mark old position + shadow padding as dirty
+            gfx_mark_dirty(drag_win->x - DRAG_SHADOW_PAD,
+                           drag_win->y - DRAG_SHADOW_PAD,
+                           drag_win->width + DRAG_SHADOW_PAD * 2,
+                           drag_win->height + DRAG_SHADOW_PAD * 2);
+        }
+        // Mark resize window's old position as dirty
+        if (resize_win) {
+            gfx_mark_dirty(resize_win->x - DRAG_SHADOW_PAD,
+                           resize_win->y - DRAG_SHADOW_PAD,
+                           resize_win->width + DRAG_SHADOW_PAD * 2,
+                           resize_win->height + DRAG_SHADOW_PAD * 2);
         }
 
         // --- FLICKER FIX: Process input BEFORE rendering ---
@@ -1517,13 +1546,61 @@ void start_bubble_view() {
              ((icb)active_win->input_callback)(active_win, (int)k);
         }
 
-        // --- FLICKER FIX: Always full redraw ---
+        // --- FLICKER FIX: Dirty-region aware rendering ---
         // Previous dirty-region optimisation caused shadow compounding:
         // non-dirty areas kept stale shadow pixels from the previous frame,
         // and redrawing semi-transparent shadows on top of old shadows made
-        // them progressively darker each frame — visible as flickering.
-        // The wallpaper cache makes the full-screen memcpy fast enough
-        // (~3 MB at ~1 GB/s = 3 ms) to fit within the vsync interval.
+        // them progressively darker each frame.
+        //
+        // FIX: When using dirty regions, we ALWAYS restore the background
+        // from the wallpaper cache in the dirty area FIRST (erasing old
+        // shadows), then repaint only the windows that intersect the dirty
+        // area.  This prevents shadow compounding while being much faster
+        // than a full redraw when only a small region changed.
+        //
+        // If there's no dirty region and nothing changed, we skip the
+        // redraw entirely (just vsync and wait).  The cursor is always
+        // redrawn because the mouse may have moved.
+
+        // Mark new window positions as dirty after handle_input updated them
+        if (drag_win) {
+            gfx_mark_dirty(drag_win->x - DRAG_SHADOW_PAD,
+                           drag_win->y - DRAG_SHADOW_PAD,
+                           drag_win->width + DRAG_SHADOW_PAD * 2,
+                           drag_win->height + DRAG_SHADOW_PAD * 2);
+        }
+        if (resize_win) {
+            gfx_mark_dirty(resize_win->x - DRAG_SHADOW_PAD,
+                           resize_win->y - DRAG_SHADOW_PAD,
+                           resize_win->width + DRAG_SHADOW_PAD * 2,
+                           resize_win->height + DRAG_SHADOW_PAD * 2);
+        }
+
+        // --- FLICKER FIX: Mark cursor movement as dirty ---
+        // When the cursor moves, we must mark both the old and new cursor
+        // bounding boxes as dirty.  Without this, the old cursor position
+        // persists on VRAM (ghost cursor) because gfx_swap_buffers_region()
+        // only copies the dirty region from the back buffer, and the back
+        // buffer still has the old cursor from the previous frame in areas
+        // outside the dirty region.
+        {
+            int cw = (cursor_type == 1) ? 13 : CURSOR_W;
+            int ch = (cursor_type == 1) ? 13 : CURSOR_H;
+            // Mark old cursor position as dirty (so it gets erased)
+            if (prev_cursor_x >= 0 && prev_cursor_y >= 0) {
+                gfx_mark_dirty(prev_cursor_x, prev_cursor_y, cw, ch);
+            }
+            // Mark new cursor position as dirty (so it gets drawn)
+            gfx_mark_dirty(mx, my, cw, ch);
+        }
+
+        // --- FLICKER FIX: Mark header bar and dock as dirty ---
+        // These areas contain dynamic content that updates every frame
+        // (clock, active app name, dock icons).  Without marking them dirty,
+        // gfx_swap_buffers_region() would not copy these areas to VRAM,
+        // causing stale/missing updates (e.g. frozen clock).
+        gfx_mark_dirty(0, 0, 1024, HEADER_HEIGHT + 1);  // Header bar + separator
+        gfx_mark_dirty(0, 768 - 80, 1024, 80);          // Dock area (bottom 80px)
 
         // Detect cursor type based on mouse position
         cursor_type = 0; // default arrow
@@ -1545,8 +1622,50 @@ void start_bubble_view() {
 
         buffer = gfx_get_active_buffer();
 
-        // Full redraw every frame — wallpaper cache memcpy + all windows
-        desktop_draw(buffer);
+        // --- DIRTY-REGION AWARE RENDERING ---
+        // If the screen is dirty (window moved, resized, animation, etc.),
+        // restore the dirty area from the wallpaper cache FIRST (erasing old
+        // shadows), then repaint windows that intersect the dirty region.
+        // If the screen is clean, skip the heavy redraw and just update the
+        // cursor position.
+        // The menu bar and dock are always redrawn because they contain
+        // dynamic content (clock, active app name).
+
+        int dirty_x, dirty_y, dirty_w, dirty_h;
+        int has_dirty = gfx_get_dirty_rect(&dirty_x, &dirty_y, &dirty_w, &dirty_h);
+
+        // Always mark full dirty for: animations, context menus, spotlight,
+        // app switcher — these change unpredictably each frame.
+        int need_full_redraw = 0;
+        for(int i=0; i<MAX_WINDOWS; i++) {
+            window_t* w = ws_get_window_at_index(i);
+            if(w && w->anim_state != 0) { need_full_redraw = 1; break; }
+        }
+        if (g_ctx_menu.active || g_spotlight.active || app_switcher_is_active()) {
+            need_full_redraw = 1;
+        }
+        // First few frames after boot always do full redraw
+        if (frames_drawn < STARTUP_GRACE_FRAMES + 5) {
+            need_full_redraw = 1;
+        }
+        // When drag just released, need full redraw to clean up
+        if (drag_just_released) {
+            need_full_redraw = 1;
+        }
+
+        if (need_full_redraw || !has_dirty) {
+            // Full redraw — wallpaper cache memcpy + all windows
+            if (!has_dirty) gfx_mark_dirty_all();
+            desktop_draw(buffer);
+        } else {
+            // Dirty-region redraw: restore wallpaper in dirty area, then
+            // repaint only the windows that intersect the dirty region.
+            desktop_fill_wallpaper_region(buffer, dirty_x, dirty_y, dirty_w, dirty_h);
+            // Also redraw icons in the dirty area
+            gfx_set_clip(dirty_x, dirty_y, dirty_w, dirty_h);
+            desktop_draw_icons(buffer);
+            gfx_reset_clip();
+        }
 
         // Draw Snap Preview Overlay AFTER wallpaper but BEFORE windows
         // so the preview doesn't paint over window content (fixes "blue
@@ -1561,10 +1680,26 @@ void start_bubble_view() {
                           snap_preview_rect.w - 4, snap_preview_rect.h - 4, 0x60007AFF);
         }
 
-        for(int i=0; i<MAX_WINDOWS; i++) {
-            window_t* w = ws_get_window_at_index(i);
-            if(!w || !w->is_visible) continue;
-            draw_window_animated(w, mx, my);
+        if (need_full_redraw || !has_dirty) {
+            // Full window redraw
+            for(int i=0; i<MAX_WINDOWS; i++) {
+                window_t* w = ws_get_window_at_index(i);
+                if(!w || !w->is_visible) continue;
+                draw_window_animated(w, mx, my);
+            }
+        } else {
+            // Only redraw windows that intersect the dirty region
+            for(int i=0; i<MAX_WINDOWS; i++) {
+                window_t* w = ws_get_window_at_index(i);
+                if(!w || !w->is_visible) continue;
+                // Check if window bounding box intersects dirty region
+                if (w->x + (int)w->width + DRAG_SHADOW_PAD > dirty_x &&
+                    w->x - DRAG_SHADOW_PAD < dirty_x + dirty_w &&
+                    w->y + (int)w->height + DRAG_SHADOW_PAD > dirty_y &&
+                    w->y - DRAG_SHADOW_PAD < dirty_y + dirty_h) {
+                    draw_window_animated(w, mx, my);
+                }
+            }
         }
 
         drag_was_active = (drag_win != 0) ? 1 : 0;
@@ -1695,12 +1830,34 @@ void start_bubble_view() {
             spotlight_draw();
         }
 
+        // Notification banner (top-right slide-in)
+        notif_render_banner();
+
+        // Notification center panel (right side slide-in)
+        notif_render_center();
+
         // FIX: Draw cursor LAST so it's always on top of everything
         // (context menus, header bar, overlays, etc.)
         draw_cursor(mx, my);
 
         sys_vsync();
-        gfx_swap_buffers();
+
+        // --- SINGLE BUFFER SWAP PER FRAME ---
+        // All drawing is complete on the back buffer.  Now swap exactly once.
+        // Use dirty-region swap when the dirty area is small (faster than
+        // full memcpy), or full swap when the dirty region covers most of
+        // the screen.
+        {
+            int dx, dy, dw, dh;
+            if (gfx_dirty_is_full()) {
+                // Dirty region covers entire screen — full swap is simpler
+                gfx_swap_buffers();
+            } else if (gfx_get_dirty_rect(&dx, &dy, &dw, &dh)) {
+                gfx_swap_buffers_region(dx, dy, dw, dh);
+            }
+            // If no dirty region at all (shouldn't happen), skip swap
+        }
+        gfx_clear_dirty();
 
         // NOTE: handle_input was already called BEFORE rendering (line above).
         // Do NOT call it again here — duplicate calls cause double-processing
@@ -1709,6 +1866,11 @@ void start_bubble_view() {
 
         prev_lb = lb;
         prev_rb = rb;
+        prev_cursor_x = mx;   // Save cursor position for next frame's dirty tracking
+        prev_cursor_y = my;
         frames_drawn++;
+
+        // Tick notification animations each frame
+        notif_tick();
     }
 }

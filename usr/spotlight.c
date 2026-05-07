@@ -11,6 +11,7 @@
 #include "../hal/drivers/serial.h"
 #include "../include/input_defs.h"
 #include "../sys/cdl_defs.h"
+#include "../core/theme.h"
 
 // External references
 extern kernel_api_t* sys;
@@ -33,22 +34,13 @@ static int registered_count = 0;
 #define SPOTLIGHT_BORDER_R     12
 #define SPOTLIGHT_PADDING      16
 
-// Colors (macOS Spotlight-inspired)
-#define COLOR_OVERLAY          0x40000000
-#define COLOR_SEARCH_BG        0xFFE8E8ED
-#define COLOR_SEARCH_BORDER    0xFFC7C7CC
-#define COLOR_SEARCH_FOCUS     0xFF007AFF
-#define COLOR_TEXT_PRIMARY     0xFF1C1C1E
-#define COLOR_TEXT_SECONDARY   0xFF8E8E93
-#define COLOR_TEXT_PLACEHOLDER 0xFFAEAEB2
-#define COLOR_SELECTED_BG      0xFF007AFF
-#define COLOR_SELECTED_TEXT    0xFFFFFFFF
+// Colors now come from theme system (see core/theme.h)
+// Kept as fallback for icon colors only
 #define COLOR_ICON_APP         0xFF007AFF
 #define COLOR_ICON_FILE        0xFF34C759
 #define COLOR_ICON_COMMAND     0xFFFF9500
 #define COLOR_ICON_SETTING     0xFF5856D6
 #define COLOR_ICON_CONTACT     0xFFFF2D55
-#define COLOR_SEARCH_ICON      0xFF8E8E93
 
 // Forward declarations for app launch helpers
 static void launch_terminal(void);
@@ -346,6 +338,18 @@ static void draw_text(int x, int y, const char* str, uint32_t color) {
 
 void spotlight_draw(void) {
     if (!g_spotlight.active) return;
+
+    const theme_t* theme = theme_get_current();
+    uint32_t COLOR_OVERLAY       = 0x40000000;
+    uint32_t COLOR_SEARCH_BG     = theme->spotlight_bg;
+    uint32_t COLOR_SEARCH_BORDER = theme->separator;
+    uint32_t COLOR_SEARCH_FOCUS  = theme->accent_color;
+    uint32_t COLOR_TEXT_PRIMARY  = theme->text_primary;
+    uint32_t COLOR_TEXT_SECONDARY= theme->text_secondary;
+    uint32_t COLOR_TEXT_PLACEHOLDER = theme->text_secondary;
+    uint32_t COLOR_SELECTED_BG   = theme->accent_color;
+    uint32_t COLOR_SELECTED_TEXT = 0xFFFFFFFF;
+    uint32_t COLOR_SEARCH_ICON   = theme->text_secondary;
 
     int cx = (screen_w - SPOTLIGHT_WIDTH) / 2;
     int cy = screen_h / 4;

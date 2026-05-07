@@ -6,6 +6,8 @@
 #include "../core/memory.h"
 #include "../common/time.h"
 #include "../hal/drivers/serial.h"
+#include "../core/theme.h"
+#include "../core/notification_center.h"
 
 MenuBarState g_menu_bar;
 
@@ -42,7 +44,8 @@ static void draw_gradient_rect(int x, int y, int w, int h, uint32_t top_color, u
 
 static void draw_apple_logo(int x, int y) {
     // Simple apple-like shape using circles
-    uint32_t color = MENU_BAR_TEXT;
+    const theme_t* theme = theme_get_current();
+    uint32_t color = theme->menubar_text;
     
     // Apple body (overlapping circles)
     sys->draw_rect(x + 6, y + 4, 4, 8, color);   // Left
@@ -55,7 +58,8 @@ static void draw_apple_logo(int x, int y) {
 }
 
 static void draw_wifi_icon(int x, int y, int strength) {
-    uint32_t color = strength > 0 ? MENU_BAR_TEXT : MENU_BAR_TEXT_DIM;
+    const theme_t* theme = theme_get_current();
+    uint32_t color = strength > 0 ? theme->menubar_text : theme->text_secondary;
     
     // WiFi arcs
     if (strength >= 1) sys->draw_rect(x + 6, y + 12, 4, 2, color);
@@ -65,7 +69,8 @@ static void draw_wifi_icon(int x, int y, int strength) {
 }
 
 static void draw_volume_icon(int x, int y, int level) {
-    uint32_t color = MENU_BAR_TEXT;
+    const theme_t* theme = theme_get_current();
+    uint32_t color = theme->menubar_text;
     
     // Speaker body
     sys->draw_rect(x + 2, y + 4, 4, 8, color);
@@ -78,18 +83,19 @@ static void draw_volume_icon(int x, int y, int level) {
 }
 
 static void draw_battery_icon(int x, int y, int percent) {
+    const theme_t* theme = theme_get_current();
     uint32_t color = percent > 20 ? 0xFF34C759 : 0xFFFF3B30; // Green or red
     
     // Battery body
-    sys->draw_rect(x, y + 2, 20, 10, MENU_BAR_TEXT);
-    sys->draw_rect(x + 1, y + 3, 18, 8, MENU_BAR_BG_TOP);
+    sys->draw_rect(x, y + 2, 20, 10, theme->menubar_text);
+    sys->draw_rect(x + 1, y + 3, 18, 8, theme->menubar_bg);
     
     // Fill level
     int fill = (percent * 16) / 100;
     if (fill > 0) sys->draw_rect(x + 2, y + 4, fill, 6, color);
     
     // Terminal
-    sys->draw_rect(x + 20, y + 5, 2, 6, MENU_BAR_TEXT);
+    sys->draw_rect(x + 20, y + 5, 2, 6, theme->menubar_text);
 }
 
 // ============================================================================
@@ -290,12 +296,14 @@ void menubar_refresh(void) {
 // ============================================================================
 
 void menubar_draw(void) {
-    // Draw gradient background
+    const theme_t* theme = theme_get_current();
+    
+    // Draw gradient background using theme colors
     int sw = screen_w ? screen_w : 1024;
-    draw_gradient_rect(0, 0, sw, MENU_BAR_HEIGHT, MENU_BAR_BG_TOP, MENU_BAR_BG_BOTTOM);
+    draw_gradient_rect(0, 0, sw, MENU_BAR_HEIGHT, theme->menubar_bg, theme->menubar_bg);
     
     // Draw bottom border
-    sys->draw_rect(0, MENU_BAR_HEIGHT - 1, sw, 1, 0xFFC6C6C8);
+    sys->draw_rect(0, MENU_BAR_HEIGHT - 1, sw, 1, theme->separator);
     
     int x = 12;
     
@@ -304,7 +312,7 @@ void menubar_draw(void) {
     x += 24;
     
     // Draw active app name (bold)
-    sys->draw_text(x, 8, g_menu_bar.active_app, MENU_BAR_TEXT);
+    sys->draw_text(x, 8, g_menu_bar.active_app, theme->menubar_text);
     x += strlen(g_menu_bar.active_app) * 8 + 24;
     
     // Draw menus
@@ -314,10 +322,10 @@ void menubar_draw(void) {
         
         // Highlight if open or hover
         if (i == g_menu_bar.open_menu_idx || i == g_menu_bar.hover_menu_idx) {
-            sys->draw_rect_rounded(x, 4, w, 20, 4, MENU_BAR_ACCENT);
+            sys->draw_rect_rounded(x, 4, w, 20, 4, theme->accent_color);
             sys->draw_text(x + 8, 8, menu->title, 0xFFFFFFFF);
         } else {
-            sys->draw_text(x + 8, 8, menu->title, MENU_BAR_TEXT);
+            sys->draw_text(x + 8, 8, menu->title, theme->menubar_text);
         }
         
         // Store position for menu drawing
@@ -332,7 +340,34 @@ void menubar_draw(void) {
     // Clock
     menubar_update_clock();
     tray_x -= g_menu_bar.clock_width + TRAY_SPACING;
-    sys->draw_text(tray_x, 8, g_menu_bar.clock_text, MENU_BAR_TEXT);
+    sys->draw_text(tray_x, 8, g_menu_bar.clock_text, theme->menubar_text);
+    
+    // Notification bell icon with unread badge
+    {
+        int bell_x = tray_x - TRAY_ICON_SIZE - TRAY_SPACING;
+        int bell_y = 5;
+        // Bell shape
+        uint32_t bell_col = theme->menubar_text;
+        sys->draw_rect(bell_x + 4, bell_y + 2, 8, 2, bell_col);     // Top arc
+        sys->draw_rect(bell_x + 3, bell_y + 4, 10, 2, bell_col);    // Upper body
+        sys->draw_rect(bell_x + 2, bell_y + 6, 12, 4, bell_col);    // Lower body
+        sys->draw_rect(bell_x + 4, bell_y + 10, 8, 2, bell_col);    // Bottom edge
+        sys->draw_rect(bell_x + 6, bell_y + 12, 4, 2, bell_col);    // Clapper
+        
+        // Unread badge (red circle with count)
+        int unread = notif_unread_count();
+        if (unread > 0) {
+            uint32_t badge_col = 0xFFFF3B30;  // Red
+            sys->draw_rect(bell_x + 10, bell_y + 0, 8, 8, badge_col);
+            // Show count (single digit)
+            char count_str[4];
+            extern void int_to_str(int, char*);
+            int_to_str(unread > 9 ? 9 : unread, count_str);
+            sys->draw_text(bell_x + 12, bell_y + 1, count_str, 0xFFFFFFFF);
+        }
+        
+        tray_x = bell_x - TRAY_SPACING;
+    }
     
     // Tray icons (right to left)
     for (int i = g_menu_bar.tray_count - 1; i >= 0; i--) {
@@ -359,6 +394,7 @@ void menubar_draw(void) {
 void menubar_draw_menu(Menu* menu, int x, int y) {
     if (!menu || menu->item_count == 0) return;
     
+    const theme_t* theme = theme_get_current();
     int w = 200;
     int h = menu->item_count * 24 + 8;
     
@@ -366,7 +402,7 @@ void menubar_draw_menu(Menu* menu, int x, int y) {
     sys->draw_rect_rounded(x + 4, y + 4, w, h, 8, 0x40000000);
     
     // Background
-    sys->draw_rect_rounded(x, y, w, h, 8, 0xFFF2F2F7);
+    sys->draw_rect_rounded(x, y, w, h, 8, theme->notification_bg);
     sys->draw_rect(x + 1, y + 1, w - 2, h - 2, 0xFFFFFFFF);
     
     // Items
@@ -375,20 +411,20 @@ void menubar_draw_menu(Menu* menu, int x, int y) {
         MenuItem* item = &menu->items[i];
         
         if (item->type == MENU_ITEM_SEPARATOR) {
-            sys->draw_rect(x + 12, iy + 11, w - 24, 1, 0xFFE5E5EA);
+            sys->draw_rect(x + 12, iy + 11, w - 24, 1, theme->separator);
         } else {
             // Highlight
             if (i == menu->hover_idx) {
-                sys->draw_rect_rounded(x + 4, iy, w - 8, 22, 4, MENU_BAR_ACCENT);
+                sys->draw_rect_rounded(x + 4, iy, w - 8, 22, 4, theme->accent_color);
                 sys->draw_text(x + 12, iy + 6, item->label, 0xFFFFFFFF);
             } else {
-                uint32_t color = item->enabled ? MENU_BAR_TEXT : MENU_BAR_TEXT_DIM;
+                uint32_t color = item->enabled ? theme->menubar_text : theme->text_secondary;
                 sys->draw_text(x + 12, iy + 6, item->label, color);
             }
             
             // Shortcut
             if (item->shortcut[0]) {
-                sys->draw_text(x + w - 60, iy + 6, item->shortcut, MENU_BAR_TEXT_DIM);
+                sys->draw_text(x + w - 60, iy + 6, item->shortcut, theme->text_secondary);
             }
         }
         
@@ -444,7 +480,19 @@ int menubar_handle_mouse(int mx, int my, int click, int pressed) {
     // Check system tray
     int tray_x = screen_w ? screen_w : 1024;
     tray_x -= TRAY_RIGHT_MARGIN;
+    
+    // Clock position
     tray_x -= g_menu_bar.clock_width + TRAY_SPACING;
+    
+    // Notification bell position (between clock and tray icons)
+    int bell_x = tray_x - TRAY_ICON_SIZE - TRAY_SPACING;
+    if (mx >= bell_x && mx < bell_x + TRAY_ICON_SIZE && my < MENU_BAR_HEIGHT) {
+        if (click) {
+            notif_center_toggle();
+        }
+        return 1;
+    }
+    tray_x = bell_x - TRAY_SPACING;
     
     for (int i = g_menu_bar.tray_count - 1; i >= 0; i--) {
         TrayItem* item = &g_menu_bar.tray_items[i];

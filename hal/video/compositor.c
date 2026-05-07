@@ -7,6 +7,7 @@
 #include "../../core/string.h"
 #include "../../core/memory.h"
 #include "../../core/window_server.h"
+#include "../../core/theme.h"
 
 // ============================================================================
 // Soft Shadow Drawing (macOS-style multi-layer shadow)
@@ -61,7 +62,8 @@ void compositor_draw_window(window_t* win) {
     }
     
     // 2. Main Window Body with rounded corners
-    uint32_t bg_color = win->background_color ? win->background_color : 0xFFF6F6F6;
+    const theme_t* theme = theme_get_current();
+    uint32_t bg_color = win->background_color ? win->background_color : theme->window_body;
     
     // Apply window opacity
     if (win->opacity < 1.0f) {
@@ -84,9 +86,16 @@ void compositor_draw_window(window_t* win) {
         int r2 = r * r;
         
         for (int row = 0; row < 28; row++) {
-            // Smooth gradient from 0xFFF0F0F0 to 0xFFE8E8E8
-            uint8_t gray = (uint8_t)(0xF0 + (0xE8 - 0xF0) * row / 27);
-            uint32_t header_col = (0xFF << 24) | (gray << 16) | (gray << 8) | gray;
+            // Smooth gradient using theme titlebar colors
+            uint32_t top_col = win->is_focused ? theme->window_titlebar : theme->window_titlebar_unfocused;
+            uint32_t bot_col = theme->window_titlebar_unfocused;
+            // Interpolate
+            uint8_t top_r = (top_col >> 16) & 0xFF, top_g = (top_col >> 8) & 0xFF, top_b = top_col & 0xFF;
+            uint8_t bot_r = (bot_col >> 16) & 0xFF, bot_g = (bot_col >> 8) & 0xFF, bot_b = bot_col & 0xFF;
+            uint8_t gray_r = top_r + ((bot_r - top_r) * row) / 27;
+            uint8_t gray_g = top_g + ((bot_g - top_g) * row) / 27;
+            uint8_t gray_b = top_b + ((bot_b - top_b) * row) / 27;
+            uint32_t header_col = (0xFF << 24) | (gray_r << 16) | (gray_g << 8) | gray_b;
             
             if (row < r) {
                 // Use the exact same per-pixel circle test as gfx_fill_rounded_rect_aa
@@ -121,8 +130,8 @@ void compositor_draw_window(window_t* win) {
         }
     }
     
-    // Header separator line (thin, subtle)
-    gfx_draw_line(win->x + 1, win->y + 28, win->x + win->width - 1, win->y + 28, 0xFFD4D4D4);
+    // Header separator line (thin, subtle) — uses theme
+    gfx_draw_line(win->x + 1, win->y + 28, win->x + win->width - 1, win->y + 28, theme->separator);
     
     // 4. Traffic Lights (macOS-style with hover icons)
     int traffic_y = win->y + 10;
@@ -178,8 +187,8 @@ void compositor_draw_window(window_t* win) {
         
         // Title shadow (subtle)
         gfx_draw_string(title_x + 1, title_y + 1, win->title, 0x30000000);
-        // Title text - gray when unfocused
-        uint32_t title_col = win->is_focused ? 0xFF333333 : 0xFF999999;
+        // Title text - uses theme colors
+        uint32_t title_col = win->is_focused ? theme->window_title_text : theme->window_title_text_unfocused;
         gfx_draw_string(title_x, title_y, win->title, title_col);
     }
     
@@ -188,10 +197,10 @@ void compositor_draw_window(window_t* win) {
     if (win->state != WIN_STATE_MAXIMIZED) {
         if (win->is_focused) {
             // Focused: subtle rounded border with slight shadow effect
-            gfx_stroke_rounded_rect(win->x, win->y, win->width, win->height, 0xFFB8B8B8, corner_radius, 1);
+            gfx_stroke_rounded_rect(win->x, win->y, win->width, win->height, theme->window_border, corner_radius, 1);
         } else {
             // Unfocused: lighter rounded border
-            gfx_stroke_rounded_rect(win->x, win->y, win->width, win->height, 0xFFD0D0D0, corner_radius, 1);
+            gfx_stroke_rounded_rect(win->x, win->y, win->width, win->height, theme->window_border_unfocused, corner_radius, 1);
         }
     }
 }

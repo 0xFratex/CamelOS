@@ -35,6 +35,10 @@
 #include "../core/sys_dirs.h"
 #include "../core/package_manager.h"
 #include "../core/app_registry.h"
+#include "../core/app_bootstrap.h"
+#include "../core/theme.h"
+#include "../core/notification_center.h"
+#include "../core/audio_mixer.h"
 
 extern int kbd_ctrl_pressed;
 extern int kbd_shift_pressed;
@@ -294,55 +298,160 @@ int kernel_launch_builtin_app(const char* name) {
     return -1;  // Unknown app
 }
 
+// ====================================================================
+// boot_print: Dual-output boot message (VGA + serial)
+// ====================================================================
+// Outputs a message to both the VGA console (visible to the user
+// during text-mode boot) and the serial port (for remote logging).
+// Also tracks the boot log line count for screen management.
+
+static int boot_log_lines = 0;
+
+static void boot_print(const char* msg) {
+    if (!msg) return;
+    // VGA output (visible on screen during text-mode boot)
+    extern void sys_print(const char* str);
+    sys_print(msg);
+    // Serial output (for remote debugging / logging)
+    s_printf("%s", msg);
+    // Track line count (count newlines)
+    for (const char* p = msg; *p; p++) {
+        if (*p == '\n') boot_log_lines++;
+    }
+}
+
 void kernel_main(void* mboot_ptr) {
     kernel_init_hal(); 
     s_printf("\n[KERNEL] Entry successful.\n");
 
+    // ====================================================================
+    // BOOT LOGGING: VGA-visible boot progress for the user
+    // ====================================================================
+    // boot_print() outputs to both VGA (sys_print) and serial (s_printf),
+    // so the user sees boot progress on screen during the text-mode phase.
+    // Once the GUI starts, VGA logging is muted by bubbleview.
+    extern void int_to_str(int, char*);
+    extern uint32_t k_get_free_mem();
+    char boot_buf[32];
+    int boot_step = 0;
+    int boot_total = 12;  // Total major steps for progress indicator
+
+    boot_print("\n=== CamelOS v1.2.0 ===\n");
+
+    // Step 1: Memory
+    boot_step++;
+    {
+        uint32_t free_mem = k_get_free_mem();
+        int free_mb = (int)(free_mem / 1024 / 1024);
+        int free_kb = (int)(free_mem / 1024);
+        boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+        if (free_mb > 0) {
+            boot_print("%] Memory: "); int_to_str(free_mb, boot_buf); boot_print(boot_buf);
+            boot_print(" MB free\n");
+        } else {
+            boot_print("%] Memory: "); int_to_str(free_kb, boot_buf); boot_print(boot_buf);
+            boot_print(" KB free\n");
+        }
+    }
+
+    // Step 2: CPU detection
+    boot_step++;
+    {
+        extern void cpu_info_detect(void);
+        extern const char* cpu_info_vendor_name(void);
+        extern const char* cpu_info_arch_name(void);
+        extern cpu_info_t* cpu_info_get(void);
+        cpu_info_detect();
+        const char* vendor = cpu_info_vendor_name();
+        const char* arch = cpu_info_arch_name();
+        cpu_info_t* cpu = cpu_info_get();
+        boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+        boot_print("%] CPU: "); boot_print(vendor); boot_print(" ");
+        // Print brand string (first 40 chars)
+        if (cpu->brand[0]) {
+            boot_print(cpu->brand);
+        } else {
+            boot_print(arch);
+        }
+        boot_print(" ("); int_to_str(cpu->num_cores, boot_buf); boot_print(boot_buf);
+        boot_print(" cores)\n");
+    }
+
     extern void gfx_init_hal(void*);
     gfx_init_hal(mboot_ptr);
 
+    // Step 3: PCI devices
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] ");
     pci_init();
     acpi_init();
+
+    // Step 4: Disk
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] ");
     disk_init();
+    // Print disk summary to VGA
+    {
+        for (int d = 0; d < 2; d++) {
+            if (ide_devices[d].present) {
+                boot_print("  Disk "); int_to_str(d, boot_buf); boot_print(boot_buf);
+                boot_print(": "); boot_print(ide_devices[d].model);
+                unsigned int size_mb = (unsigned int)(ide_devices[d].sectors / 2048);
+                boot_print(" ("); int_to_str((int)size_mb, boot_buf); boot_print(boot_buf);
+                boot_print(" MB)\n");
+            }
+        }
+    }
     s_printf("[DISK] total_blocks=");
-    char buf[32];
-    int_to_str(disk_total_blocks, buf);
-    s_printf(buf);
+    int_to_str(disk_total_blocks, boot_buf);
+    s_printf(boot_buf);
     s_printf(" present=");
-    int_to_str(ide_devices[0].present, buf);
-    s_printf(buf);
+    int_to_str(ide_devices[0].present, boot_buf);
+    s_printf(boot_buf);
     s_printf("\n");
 
     // DEBUG MOUNT
     uint8_t mbr[512];
     s_printf("[DBG] disk_total_blocks=");
-    int_to_str(disk_total_blocks, buf);
-    s_printf(buf);
+    int_to_str(disk_total_blocks, boot_buf);
+    s_printf(boot_buf);
     s_printf(" free_mem=");
-    int_to_str(k_get_free_mem(), buf);
-    s_printf(buf);
+    int_to_str(k_get_free_mem(), boot_buf);
+    s_printf(boot_buf);
     s_printf("\n");
 
     disk_read_block(0, mbr);
     s_printf("[DBG] LBA0 sig=");
-    int_to_str(mbr[510], buf);
-    s_printf(buf);
+    int_to_str(mbr[510], boot_buf);
+    s_printf(boot_buf);
     s_printf(" ");
-    int_to_str(mbr[511], buf);
-    s_printf(buf);
+    int_to_str(mbr[511], boot_buf);
+    s_printf(boot_buf);
     s_printf(" magic0=");
-    int_to_str(*(uint32_t*)mbr, buf);
-    s_printf(buf);
+    int_to_str(*(uint32_t*)mbr, boot_buf);
+    s_printf(boot_buf);
     s_printf("\n");
 
     disk_read_block(16384, mbr);
     s_printf("[DBG] LBA16384 magic=");
-    int_to_str(*(uint32_t*)mbr, buf);
-    s_printf(buf);
+    int_to_str(*(uint32_t*)mbr, boot_buf);
+    s_printf(boot_buf);
     s_printf("\n");
+
+    // Step 5: Filesystem
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] Filesystem...\n");
 
     pfs32_init_handles();
     s_printf("[KERNEL] File Handle System Initialized.\n");
+
+    // Step 6: Networking
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] Network stack...\n");
 
     socket_init_system(); // Initialize Sockets
     s_printf("[KERNEL] Socket System Initialized.\n");
@@ -357,6 +466,11 @@ void kernel_main(void* mboot_ptr) {
     extern void internal_cdl_init_system();
     internal_cdl_init_system();
     s_printf("[KERNEL] CDL System Initialized.\n");
+
+    // Step 7: Runtime frameworks
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] Runtime frameworks...\n");
     
     // Initialize Objective-C Runtime and Foundation framework for macOS app compat
     extern void objc_runtime_init(void);
@@ -392,6 +506,11 @@ void kernel_main(void* mboot_ptr) {
     framework_stubs_init();
     s_printf("[KERNEL] Framework Stubs Initialized.\n");
     
+    // Step 8: App management
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] App management...\n");
+
     // Initialize DMG mounter subsystem for macOS disk image support
     extern void dmg_init_system(void);
     dmg_init_system();
@@ -407,6 +526,11 @@ void kernel_main(void* mboot_ptr) {
     app_installer_init();
     s_printf("[KERNEL] App Installer Initialized.\n");
     
+    // Step 9: System services
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] System services...\n");
+
     // Initialize System Directory Structure (/usr, /etc, /var, /tmp, /dev, /proc, /Library, etc.)
     sys_dirs_init();
     s_printf("[KERNEL] System Directories Initialized.\n");
@@ -415,9 +539,21 @@ void kernel_main(void* mboot_ptr) {
     pkg_init();
     s_printf("[KERNEL] Package Manager Initialized.\n");
     
+    // Bootstrap built-in apps into the filesystem (.app bundles + system config files)
+    app_bootstrap_init();
+    s_printf("[KERNEL] App Bootstrap Complete.\n");
+    
     // Initialize App Registry (discovers and registers all installed and built-in apps)
     app_registry_init();
     s_printf("[KERNEL] App Registry Initialized.\n");
+    
+    // Initialize Theme subsystem (loads saved dark/light preference)
+    theme_init();
+    s_printf("[KERNEL] Theme System Initialized.\n");
+    
+    // Initialize Notification Center (macOS-style notification hub)
+    notif_init();
+    s_printf("[KERNEL] Notification Center Initialized.\n");
     
     // Initialize SHA-256 module (used for encrypted passwords)
     // No init needed - it's stateless
@@ -484,8 +620,8 @@ void kernel_main(void* mboot_ptr) {
                         extern void int_to_str(int, char*);
                         int_to_str(ptype, ptype_str);
                         s_printf("[KERNEL] Found FAT32 partition %d (type=0x%s) at LBA ", p);
-                        int_to_str(lba_start, buf);
-                        s_printf(buf);
+                        int_to_str(lba_start, boot_buf);
+                        s_printf(boot_buf);
                         s_printf("\n");
 
                         /* Initialize the FAT32 driver for this partition */
@@ -503,17 +639,17 @@ void kernel_main(void* mboot_ptr) {
                                 fat32_mount_count++;
                             } else {
                                 s_printf("[KERNEL] WARNING: FAT32 VFS mount failed for partition ");
-                                int_to_str(p, buf);
-                                s_printf(buf);
+                                int_to_str(p, boot_buf);
+                                s_printf(boot_buf);
                                 s_printf("\n");
                             }
                         } else {
                             s_printf("[KERNEL] WARNING: FAT32 init failed for partition ");
-                            int_to_str(p, buf);
-                            s_printf(buf);
+                            int_to_str(p, boot_buf);
+                            s_printf(boot_buf);
                             s_printf(" (err=");
-                            int_to_str(init_ok, buf);
-                            s_printf(buf);
+                            int_to_str(init_ok, boot_buf);
+                            s_printf(boot_buf);
                             s_printf(")\n");
                         }
                     }
@@ -531,8 +667,8 @@ void kernel_main(void* mboot_ptr) {
 
     int m = sys_fs_mount();
     s_printf("[DBG] sys_fs_mount returned ");
-    int_to_str(m, buf);
-    s_printf(buf);
+    int_to_str(m, boot_buf);
+    s_printf(boot_buf);
     s_printf("\n");
     if (m != 0) {
         s_printf("[KERNEL] FATAL: Filesystem mount failed. Halting.\n");
@@ -540,131 +676,78 @@ void kernel_main(void* mboot_ptr) {
     }
     sys_print("[OK] Filesystem Mounted.\n");
 
-    sys_print("Booting...\n");
-    sys_print("--- Hardware Enumeration (already done) ---\n");
-    sys_print("----------------------------\n");
+    // Step 10: Network initialization
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] Network init...\n");
 
-    // NETWORK INITIALIZATION WITH DEBUG (after PCI scan)
-    s_printf("[KERNEL] Initializing network...\n");
+    // === NETWORK INITIALIZATION (non-blocking) ===
+    // We initialize the NIC hardware here so it's ready to receive,
+    // but we defer DHCP configuration and DNS verification to the
+    // background event loop.  This means the GUI starts immediately
+    // without waiting for network timeouts.
+    s_printf("[KERNEL] Initializing network hardware...\n");
     net_init();
 
     // Initialize Intel e1000/e1000e Gigabit Ethernet (PCI-based probing)
     extern void e1000_init_all(void);
     e1000_init_all();
 
-    // FIX: Skip the RTL8139 loopback test at boot — it sends packets
-    // before the interface is configured, which can interfere with
-    // the DHCP sequence. The loopback test was mainly for debugging
-    // and is not needed for normal operation.
-    // rtl8139_test_loopback();
-
-    // === Try DHCP auto-configuration first ===
-    // If a DHCP server is available (e.g., QEMU's built-in DHCP), we get an IP automatically.
-    // Falls back to static QEMU configuration if DHCP times out.
-    extern int dhcp_auto_configure(void);
-    int dhcp_ok = dhcp_auto_configure();
-
-    if (dhcp_ok == 0) {
-        s_printf("[KERNEL] Network configured via DHCP\n");
-    } else {
-        s_printf("[KERNEL] DHCP failed, using static QEMU configuration\n");
-
-        // MANUAL GATEWAY SETUP FOR QEMU
-        // rtl8139_init() now handles the IP configuration
-
-        // === FIX 1: Correct IP Endianness for QEMU Gateway/DNS ===
-        // CRITICAL: IP addresses must be in HOST byte order (little-endian on x86)
-        // Use ip_parse() to ensure correct byte order conversion
+    // Apply static QEMU fallback configuration immediately so that
+    // the NIC is usable even before DHCP completes.  If DHCP succeeds
+    // later, it will override these settings.
+    {
         uint8_t qemu_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
-        
-        // Gateway: 10.0.2.2
         extern uint32_t ip_parse(const char* str);
         net_add_static_arp(ip_parse("10.0.2.2"), qemu_mac);
-        
-        // DNS: 10.0.2.3
         net_add_static_arp(ip_parse("10.0.2.3"), qemu_mac);
 
-        // === FIX: Actually configure the interface IP ===
-        // Use ip_parse() for correct byte order
         extern void rtl8139_configure_ip(uint32_t, uint32_t, uint32_t);
         rtl8139_configure_ip(ip_parse("10.0.2.15"), ip_parse("10.0.2.2"), ip_parse("255.255.255.0"));
 
-        // FIX: Explicitly set the DNS server for the static configuration.
-        // The DNS server was already changed to 10.0.2.3 as the default in dns.c,
-        // but we also set it here via the proper API to ensure the interface
-        // struct has the correct value (used by DHCP ACK parsing, etc.)
         extern void net_set_dns(uint32_t dns);
         net_set_dns(ip_parse("10.0.2.3"));
 
-        // Update legacy global variables
         extern void net_update_globals();
         net_update_globals();
 
-        // Mark as connected so the GUI Wi-Fi icon shows connected state
         extern int net_is_connected;
         net_is_connected = 1;
-
-        s_printf("[KERNEL] Network configured for QEMU\n");
-        s_printf("  IP:      10.0.2.15\n");
-        s_printf("  Gateway: 10.0.2.2\n");
-        s_printf("  DNS:     10.0.2.3\n");
     }
 
-    // === FIX 2: Ensure RTL8139 is Active (Fixing CMD: 0x13 Reset State) ===
-    // The previous log showed CMD=0x13 (RST bit set, RX/TX disabled).
-    // We force a re-enable here to ensure the card is out of reset.
-    extern rtl8139_dev_t rtl_dev; // From rtl8139 driver
+    // Ensure RTL8139 is active (clear reset state if needed)
+    extern rtl8139_dev_t rtl_dev;
     if (rtl_dev.io_base) {
-        // 1. Check if Reset (Bit 4) is still on
         uint8_t cmd = inb(rtl_dev.io_base + 0x37);
         if (cmd & 0x10) {
-            s_printf("[KERNEL] RTL8139 stuck in reset. Forcing clear...\n");
-            outb(rtl_dev.io_base + 0x37, 0x00); // Clear Reset
+            outb(rtl_dev.io_base + 0x37, 0x00);
         }
-        
-        // 2. Enable Transmit (Bit 2) and Receive (Bit 3) -> 0x0C
         outb(rtl_dev.io_base + 0x37, 0x0C);
-        
-        // 3. Verify
         cmd = inb(rtl_dev.io_base + 0x37);
         if ((cmd & 0x0C) == 0x0C) {
-            s_printf("[KERNEL] RTL8139 Active (CMD: 0x0C)\n");
-        } else {
-            s_printf("[KERNEL] WARNING: RTL8139 Init Failed (CMD: 0x");
-            char buf[16];
-            extern void int_to_str(int, char*);
-            int_to_str(cmd, buf);
-            s_printf(buf);
-            s_printf(")\n");
+            s_printf("[KERNEL] RTL8139 Active\n");
+            boot_print("  Network: RTL8139 (10.0.2.15)\n");
         }
     }
 
-    // === FIX: Quick network verification (non-blocking) ===
-    // Previously, the boot sequence did ARP resolve (2s), ICMP ping (4s),
-    // DNS resolve with 3 retries (15s), and TCP connect (100s) ALL before
-    // starting the GUI. This caused the system to appear frozen for 2+
-    // minutes if the network was slow or misconfigured.
-    //
-    // Now we do a single quick DNS check (5s timeout) and proceed to the
-    // GUI immediately. Network is verified lazily as apps use it.
-    s_printf("[KERNEL] Quick network check...\n");
-    {
-        char ip_str[16];
-        int dns_ok = dns_resolve("example.com", ip_str, sizeof(ip_str));
-        if(dns_ok == 0) {
-            s_printf("[KERNEL] Network OK: example.com -> ");
-            s_printf(ip_str);
-            s_printf("\n");
-        } else {
-            s_printf("[KERNEL] Network not yet reachable (will retry in background)\n");
-        }
-    }
+    // DHCP and DNS verification are deferred to the background.
+    // The static QEMU config above ensures the network works in emulators
+    // immediately; real hardware will be configured via DHCP in the
+    // main event loop.
+    static int net_bg_state = 0;  // 0=pending, 1=DHCP tried, 2=done
+    (void)net_bg_state;
+
+    // Step 11: USB & Input
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] USB & input...\n");
 
     // Initialize USB HID Boot Protocol driver for USB keyboards and mice
     // This enables operation on USB-only hardware (no PS/2 required)
     extern void usb_hid_init(void);
     usb_hid_init();
     s_printf("[KERNEL] USB HID Driver Initialized.\n");
+    boot_print("  USB: HID driver initialized\n");
 
     // Initialize Software Update system
     // Provides background update checking, download, and installation
@@ -672,11 +755,25 @@ void kernel_main(void* mboot_ptr) {
     software_update_init();
     s_printf("[KERNEL] Software Update System Initialized.\n");
 
+    // Step 12: Starting GUI
+    boot_step++;
+    boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
+    boot_print("%] Starting GUI...\n");
+
+    // Initialize Audio Mixer (system sounds, multi-channel mixing)
+    audio_mixer_init();
+    s_printf("[KERNEL] Audio Mixer Initialized.\n");
+
     play_startup_chime();
 
+    // Brief shell access window: 3 seconds (reduced from 100 units).
+    // The user can press Ctrl+Shift during this window to drop to shell.
+    // After this window, the GUI starts immediately regardless of
+    // network status — DHCP continues in the background.
     int boot_to_shell = 0;
-    for(int i=0; i<50; i++) { 
-        sys_delay(2); 
+    s_printf("[BOOT] Press Ctrl+Shift for Shell (3s)...\n");
+    for(int i=0; i<15; i++) { 
+        sys_delay(10); 
         if (kbd_ctrl_pressed && kbd_shift_pressed) { boot_to_shell = 1; break; }
     }
 
@@ -686,7 +783,7 @@ void kernel_main(void* mboot_ptr) {
         extern void shell_main();
         shell_main();
     } else {
-        sys_print("\nStarting Graphic Environment...\n");
+        boot_print("\n=== CamelOS Ready ===\n");
         
         // Disable log muting temporarily to catch startup crashes visually if possible
         // vga_mute_log(1); // COMMENTED OUT FOR DEBUGGING
@@ -715,6 +812,34 @@ void kernel_main(void* mboot_ptr) {
             tcp_process_listeners();
             tcp_retransmit_check();
             
+            // === Background Network Configuration ===
+            // DHCP auto-configure and DNS verification are done here
+            // so they don't block the GUI startup.
+            if (net_bg_state == 0) {
+                // Try DHCP (first time only)
+                extern int dhcp_auto_configure(void);
+                int dhcp_ok = dhcp_auto_configure();
+                if (dhcp_ok == 0) {
+                    s_printf("[KERNEL] Network configured via DHCP (background)\n");
+                    net_bg_state = 2;
+                } else {
+                    s_printf("[KERNEL] DHCP timed out, using static config\n");
+                    net_bg_state = 1;
+                }
+            } else if (net_bg_state == 1) {
+                // Retry DNS verification
+                char ip_str[16];
+                int dns_ok = dns_resolve("example.com", ip_str, sizeof(ip_str));
+                if (dns_ok == 0) {
+                    s_printf("[KERNEL] Network OK: example.com -> ");
+                    s_printf(ip_str);
+                    s_printf("\n");
+                    net_bg_state = 2;
+                }
+                // If DNS still fails, we'll retry next iteration
+                // but only a few times to avoid spamming
+            }
+            
             // Periodic launchd health check
             extern void launchd_check_health(void);
             launchd_check_health();
@@ -722,6 +847,10 @@ void kernel_main(void* mboot_ptr) {
             // Poll USB HID devices for input
             extern void usb_hid_poll(void);
             usb_hid_poll();
+            
+            // Poll PS/2 mouse as fallback for VirtualBox (where IRQ12 may be unreliable)
+            // This is a no-op when IRQ12 is delivering events normally
+            mouse_poll_fallback();
             
             // Background software update check
             extern void software_update_check_background(void);

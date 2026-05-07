@@ -48,4 +48,50 @@ void gfx_reset_clip(void);
 // Blur buffer access (for frosted glass effects)
 uint32_t* gfx_get_blur_buffer(void);
 
+// ============================================================================
+// Dirty-Region Tracking
+// ============================================================================
+// Simple bounding-box dirty region: tracks the area of the screen that
+// has changed since the last frame.  When a window moves, both the old
+// and new positions are marked dirty.  The compositor only redraws the
+// dirty region (restoring wallpaper from cache, then repainting windows
+// that intersect it) and swaps just that region to VRAM.
+
+typedef struct {
+    int x, y, w, h;
+    int valid;  // 0 = no dirty region, 1 = region is set
+} dirty_rect_t;
+
+// Mark a rectangular region as dirty (merges with existing dirty rect)
+void gfx_mark_dirty(int x, int y, int w, int h);
+
+// Mark the entire screen as dirty (forces full redraw)
+void gfx_mark_dirty_all(void);
+
+// Get the current dirty region (returns 0 if clean, 1 if dirty)
+int gfx_get_dirty_rect(int* x, int* y, int* w, int* h);
+
+// Clear the dirty region (call after swap)
+void gfx_clear_dirty(void);
+
+// Check if anything is dirty
+int gfx_is_dirty(void);
+
+// Check if dirty region covers the entire screen (full redraw needed)
+int gfx_dirty_is_full(void);
+
+// Swap only the dirty region from back buffer to VRAM (faster than full swap)
+void gfx_swap_buffers_region(int x, int y, int w, int h);
+
+// TrueType font integration (macOS-like smooth text)
+// Register a TTF font for the global gfx text renderer.  When set,
+// gfx_draw_string*() will use TrueType rendering with anti-aliased
+// alpha blending and a glyph cache for performance.  Falls back to
+// the built-in bitmap font when no TTF is registered or for chars
+// outside ASCII range.
+void gfx_set_tt_font(const uint8_t* ttf_data);
+
+// Pixel-precise anti-aliased pixel drawing
+void gfx_put_pixel_aa(int x, int y, uint32_t color, uint8_t alpha);
+
 #endif

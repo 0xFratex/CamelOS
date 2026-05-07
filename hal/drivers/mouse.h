@@ -11,5 +11,6 @@ extern int mouse_scroll_delta;   // Scroll wheel: positive = up, negative = down
 
 void init_mouse(void);
 void mouse_handler(void);
+void mouse_poll_fallback(void);  // Polling fallback for VirtualBox (called from main loop)
 
 #endif

@@ -6,6 +6,13 @@
 
 typedef unsigned int uint32_t;
 
+// --- Window style flags (mirrors window_server.h) ---
+#define FW_WIN_STYLE_STANDARD     0x00
+#define FW_WIN_STYLE_TOOL_WINDOW  0x01
+#define FW_WIN_STYLE_BORDERLESS   0x02
+#define FW_WIN_STYLE_MODAL        0x04
+#define FW_WIN_STYLE_FULLSCREEN   0x08
+
 // --- EXISTING INIT ---
 void cm_init(kernel_api_t* api);
 int cm_load_app_config(const char* app_bundle_path);
@@ -14,6 +21,16 @@ const char* cm_get_config(const char* key);
 void cm_draw_image_clipped(uint32_t* buffer, const char* name, int x, int y, int req_w, int req_h, int clip_x, int clip_y, int clip_w, int clip_h);
 void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int req_w, int req_h);
 void cm_apply_menus(void* win_handle);
+
+// --- Window Creation Helpers ---
+// Creates a standard window centered on screen
+void* fw_create_window_centered(const char* title, int w, int h,
+                                void* paint_cb, void* input_cb, void* mouse_cb);
+// Creates a modal dialog window (centered, popup layer, tool-window style)
+void* fw_create_dialog(const char* title, int w, int h,
+                       void* paint_cb, void* input_cb, void* mouse_cb);
+// Close a window with animation (calls ws_close internally)
+void fw_close_window(void* win);
 
 // --- NEW: FILE DIALOG FRAMEWORK ---
 

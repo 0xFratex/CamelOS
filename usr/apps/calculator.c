@@ -16,11 +16,11 @@
 #define CALC_WIN_W   300
 #define CALC_WIN_H   420
 
-#define DISPLAY_H    88
+#define DISPLAY_H    80
 #define MARGIN        8
 #define GAP           6
 #define BTN_W        66
-#define BTN_H        58
+#define BTN_H        50
 #define BTN_WIDE     138   // "0" button spans 2 cols: 66*2 + 6
 
 // ============================================================================
@@ -592,7 +592,7 @@ static void calculator_on_paint(window_t* win, int x, int y, int w, int h) {
 
     int text_pixel_w = display_len * 8 * scale;
     int text_x = x + w - MARGIN - text_pixel_w;
-    int text_y = y + DISPLAY_H - 12 - 16 * scale;
+    int text_y = y + DISPLAY_H - 10 - 16 * scale;
 
     // Ensure text doesn't overflow left
     if (text_x < x + 8) text_x = x + 8;

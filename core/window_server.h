@@ -143,6 +143,8 @@ void ws_set_max_size(window_t* win, int max_w, int max_h);
 void ws_set_opacity(window_t* win, float opacity);
 void ws_set_style(window_t* win, int style_flags);
 void ws_set_colors(window_t* win, uint32_t title_bar, uint32_t border, uint32_t bg);
+void ws_set_icon(window_t* win, const char* icon_name);
+void ws_center_window(window_t* win);
 
 // Window state
 void ws_minimize(window_t* win);

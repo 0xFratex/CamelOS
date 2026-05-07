@@ -5,6 +5,193 @@
 #include "../../hal/drivers/serial.h"
 #include "../../hal/cpu/paging.h"
 #include "../../common/font.h"
+#include "../../include/stb_truetype.h"
+
+// ============================================================================
+// TRUE TYPE FONT RENDERING WITH GLYPH CACHE (macOS-like smooth text)
+// ============================================================================
+
+// Global TrueType font: set once at boot when a .ttf is loaded.
+// When non-NULL, gfx_draw_string*() will use TrueType rendering with
+// anti-aliasing and subpixel hints, falling back to bitmap for speed.
+static const uint8_t* gfx_tt_font_data = NULL;
+static stbtt_fontinfo gfx_tt_font_info;
+static int gfx_tt_initialized = 0;
+
+// Register a TrueType font for the global gfx text renderer.
+// `data` must remain valid for the lifetime of the OS (typically
+// static or kmalloc'd font data that is never freed).
+void gfx_set_tt_font(const uint8_t* ttf_data) {
+    if (!ttf_data) return;
+    if (stbtt_InitFont(&gfx_tt_font_info, ttf_data, 0)) {
+        gfx_tt_font_data = ttf_data;
+        gfx_tt_initialized = 1;
+        s_printf("[GFX] TrueType font registered for smooth rendering.\n");
+    } else {
+        s_printf("[GFX] WARNING: Failed to parse TrueType font data.\n");
+    }
+}
+
+// --- GLYPH CACHE ---
+// Cache rendered TrueType glyphs at common pixel sizes.
+// Each entry stores a pre-rendered alpha bitmap for one ASCII character
+// at one size.  This avoids re-rasterizing on every frame.
+
+#define GLYPH_CACHE_SIZES  6
+static const int glyph_cache_sizes[GLYPH_CACHE_SIZES] = {8, 10, 12, 16, 24, 32};
+
+// Maximum glyph bitmap dimension (pixels).  Even at 32px, glyphs rarely
+// exceed 40x40.
+#define MAX_GLYPH_DIM  48
+#define MAX_GLYPH_PIX  (MAX_GLYPH_DIM * MAX_GLYPH_DIM)
+
+// Per-glyph cached bitmap
+typedef struct {
+    uint8_t  pixels[MAX_GLYPH_PIX];  // Alpha values (0-255)
+    int      width;
+    int      height;
+    int      xoff;     // X offset from pen position
+    int      yoff;     // Y offset from baseline
+    int      advance;  // Horizontal advance (pixels)
+    int      valid;    // 1 if this entry has been rendered
+} glyph_cache_entry_t;
+
+// 128 ASCII chars x 6 sizes = 768 entries.  ~2.4 MB total.
+static glyph_cache_entry_t glyph_cache[128][GLYPH_CACHE_SIZES];
+
+// Find the cache size index for a given pixel height.
+// Returns -1 if the size is not in our cached set.
+static int glyph_cache_find_size(int pixel_height) {
+    for (int i = 0; i < GLYPH_CACHE_SIZES; i++) {
+        if (glyph_cache_sizes[i] == pixel_height) return i;
+    }
+    return -1;
+}
+
+// Find the nearest cached size <= pixel_height.
+static int glyph_cache_nearest_size(int pixel_height) {
+    int best = 0;
+    for (int i = 1; i < GLYPH_CACHE_SIZES; i++) {
+        if (glyph_cache_sizes[i] <= pixel_height) best = i;
+    }
+    return best;
+}
+
+// Render and cache a single glyph.
+static glyph_cache_entry_t* glyph_cache_render(int codepoint, int size_idx) {
+    if (codepoint < 0 || codepoint >= 128) return NULL;
+    if (!gfx_tt_initialized) return NULL;
+
+    glyph_cache_entry_t* entry = &glyph_cache[codepoint][size_idx];
+    if (entry->valid) return entry;
+
+    int pixel_height = glyph_cache_sizes[size_idx];
+    int scale = stbtt_ScaleForPixelHeight(&gfx_tt_font_info, pixel_height);
+
+    // Get advance width
+    int advance_raw, lsb;
+    stbtt_GetCodepointHMetrics(&gfx_tt_font_info, codepoint, &advance_raw, &lsb);
+    entry->advance = (int)(((long long)advance_raw * scale) >> 16);
+
+    // Render the glyph
+    int bw, bh, bxoff, byoff;
+    unsigned char* bitmap = stbtt_GetCodepointBitmap(
+        &gfx_tt_font_info, scale, scale,
+        codepoint, &bw, &bh, &bxoff, &byoff);
+
+    if (!bitmap || bw <= 0 || bh <= 0 || bw > MAX_GLYPH_DIM || bh > MAX_GLYPH_DIM) {
+        // Empty glyph (e.g. space)
+        entry->width = 0;
+        entry->height = 0;
+        entry->xoff = 0;
+        entry->yoff = 0;
+        entry->valid = 1;
+        if (bitmap) kfree(bitmap);
+        return entry;
+    }
+
+    entry->width = bw;
+    entry->height = bh;
+    entry->xoff = bxoff + (int)(((long long)lsb * scale) >> 16);
+    entry->yoff = byoff;
+
+    // Copy bitmap into cache (stbtt result will be freed)
+    int total = bw * bh;
+    if (total > MAX_GLYPH_PIX) total = MAX_GLYPH_PIX;
+    for (int i = 0; i < total; i++) {
+        entry->pixels[i] = bitmap[i];
+    }
+
+    kfree(bitmap);
+    entry->valid = 1;
+    return entry;
+}
+
+// --- SMOOTH TEXT RENDERING ---
+// Draw a string using the TrueType glyph cache with alpha-blended
+// anti-aliasing for macOS-quality smooth text.
+
+static void gfx_draw_char_tt(int x, int y, int codepoint, uint32_t color, int pixel_height) {
+    if (codepoint < 32 || codepoint >= 127) return;
+
+    int size_idx = glyph_cache_find_size(pixel_height);
+    if (size_idx < 0) {
+        // Not a cached size – pick nearest and scale on-the-fly
+        size_idx = glyph_cache_nearest_size(pixel_height);
+    }
+
+    glyph_cache_entry_t* entry = glyph_cache_render(codepoint, size_idx);
+    if (!entry || entry->width <= 0) return;
+
+    // Get font baseline for proper Y positioning
+    int f_ascent, f_descent, f_linegap;
+    stbtt_GetFontVMetrics(&gfx_tt_font_info, &f_ascent, &f_descent, &f_linegap);
+    int scale = stbtt_ScaleForPixelHeight(&gfx_tt_font_info, glyph_cache_sizes[size_idx]);
+    int baseline = (int)(((long long)f_ascent * scale) >> 16);
+
+    int dest_x = x + entry->xoff;
+    int dest_y = y + baseline + entry->yoff;
+
+    // Scale factor if rendering at a different size than cached
+    int cached_size = glyph_cache_sizes[size_idx];
+    int needs_scale = (cached_size != pixel_height);
+    // For simplicity, if not exact size, just render at cached size
+    // (the visual difference is minimal for nearby sizes)
+
+    // Extract color components for alpha blending
+    uint8_t col_a = (color >> 24) & 0xFF;
+    uint8_t col_r = (color >> 16) & 0xFF;
+    uint8_t col_g = (color >> 8) & 0xFF;
+    uint8_t col_b = color & 0xFF;
+
+    // Composite the alpha bitmap onto the framebuffer
+    for (int py = 0; py < entry->height; py++) {
+        for (int px = 0; px < entry->width; px++) {
+            uint8_t alpha = entry->pixels[py * entry->width + px];
+            if (alpha > 0) {
+                if (alpha >= 250) {
+                    // Nearly opaque – fast path
+                    gfx_put_pixel(dest_x + px, dest_y + py, color);
+                } else {
+                    // Semi-transparent – alpha blend
+                    uint8_t blended_a = (col_a * alpha) >> 8;
+                    if (blended_a == 0) continue;
+                    uint32_t blended = (blended_a << 24) | (col_r << 16) | (col_g << 8) | col_b;
+                    gfx_put_pixel(dest_x + px, dest_y + py, blended);
+                }
+            }
+        }
+    }
+}
+
+// Get the advance width for a character at a given pixel height (TrueType)
+static int gfx_tt_char_advance(int codepoint, int pixel_height) {
+    if (!gfx_tt_initialized || codepoint < 32 || codepoint >= 127) return 8;
+    int scale = stbtt_ScaleForPixelHeight(&gfx_tt_font_info, pixel_height);
+    int advance_raw, lsb;
+    stbtt_GetCodepointHMetrics(&gfx_tt_font_info, codepoint, &advance_raw, &lsb);
+    return (int)(((long long)advance_raw * scale) >> 16);
+}
 
 gfx_context_t gfx_ctx;
 static int use_backbuffer = 0;
@@ -434,11 +621,68 @@ void gfx_draw_char_scaled(int x, int y, char c, uint32_t color, int scale) {
         }
     }
 }
-void gfx_draw_string_scaled(int x, int y, const char* str, uint32_t color, int scale) { 
-    while(*str) { gfx_draw_char_scaled(x, y, *str++, color, scale); x+=8*scale; } 
+
+// --- ENHANCED STRING RENDERING ---
+// When a TrueType font is registered, use it for smooth, anti-aliased text.
+// Otherwise fall back to the bitmap font (fast, always available).
+
+void gfx_draw_string_scaled(int x, int y, const char* str, uint32_t color, int scale) {
+    if (!str) return;
+
+    // If TrueType font is available, use smooth rendering
+    if (gfx_tt_initialized) {
+        // Map scale to pixel height: scale=1 → 12px, scale=2 → 20px, etc.
+        int pixel_height;
+        switch (scale) {
+            case 1:  pixel_height = 12; break;
+            case 2:  pixel_height = 20; break;
+            case 3:  pixel_height = 32; break;
+            default: pixel_height = 12 * scale; break;
+        }
+
+        // Get baseline for Y positioning
+        int f_ascent, f_descent, f_linegap;
+        stbtt_GetFontVMetrics(&gfx_tt_font_info, &f_ascent, &f_descent, &f_linegap);
+        int tt_scale = stbtt_ScaleForPixelHeight(&gfx_tt_font_info, pixel_height);
+        int baseline = (int)(((long long)f_ascent * tt_scale) >> 16);
+
+        int cursor_x = x;
+        int prev_char = 0;
+
+        while (*str) {
+            int codepoint = (unsigned char)*str;
+
+            // Only render ASCII (32-126) with TrueType; Latin-1 falls back
+            if (codepoint >= 32 && codepoint < 127) {
+                // Apply kerning
+                if (prev_char) {
+                    int kern = stbtt_GetCodepointKernAdvance(&gfx_tt_font_info, prev_char, codepoint);
+                    cursor_x += (int)(((long long)kern * tt_scale) >> 16);
+                }
+                prev_char = codepoint;
+
+                gfx_draw_char_tt(cursor_x, y, codepoint, color, pixel_height);
+                cursor_x += gfx_tt_char_advance(codepoint, pixel_height);
+            } else if (codepoint >= 160 && codepoint <= 255) {
+                // Latin-1: fall back to bitmap for now
+                gfx_draw_char_scaled(cursor_x, y + baseline - 12, *str, color, 1);
+                cursor_x += 8;
+                prev_char = 0;
+            } else {
+                cursor_x += 4; // Unknown char
+                prev_char = 0;
+            }
+            str++;
+        }
+        return;
+    }
+
+    // Fallback: bitmap font
+    while(*str) { gfx_draw_char_scaled(x, y, *str++, color, scale); x+=8*scale; }
 }
-void gfx_draw_string(int x, int y, const char* str, uint32_t color) { 
-    gfx_draw_string_scaled(x, y, str, color, 1); 
+
+void gfx_draw_string(int x, int y, const char* str, uint32_t color) {
+    gfx_draw_string_scaled(x, y, str, color, 1);
 }
 void gfx_draw_string_clipped(int x, int y, const char* str, uint32_t color, int max_width) {
     // Draw string but only render characters that fit within max_width pixels
@@ -640,6 +884,120 @@ void gfx_stroke_rounded_rect(int x, int y, int w, int h, uint32_t color, int r, 
     gfx_fill_rect(x, y + r, line_width, h - 2*r, color);
     // Right edge
     gfx_fill_rect(x + w - line_width, y + r, line_width, h - 2*r, color);
+}
+
+// ============================================================================
+// Dirty-Region Tracking
+// ============================================================================
+
+static dirty_rect_t g_dirty = {0, 0, 0, 0, 0};
+
+void gfx_mark_dirty(int x, int y, int w, int h) {
+    // Clamp to screen bounds
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > (int)gfx_ctx.width)  w = (int)gfx_ctx.width - x;
+    if (y + h > (int)gfx_ctx.height) h = (int)gfx_ctx.height - y;
+    if (w <= 0 || h <= 0) return;
+
+    if (!g_dirty.valid) {
+        g_dirty.x = x; g_dirty.y = y;
+        g_dirty.w = w; g_dirty.h = h;
+        g_dirty.valid = 1;
+    } else {
+        // Merge: compute bounding box of old + new
+        int x1 = g_dirty.x;
+        int y1 = g_dirty.y;
+        int x2 = g_dirty.x + g_dirty.w;
+        int y2 = g_dirty.y + g_dirty.h;
+        if (x < x1) x1 = x;
+        if (y < y1) y1 = y;
+        if (x + w > x2) x2 = x + w;
+        if (y + h > y2) y2 = y + h;
+        g_dirty.x = x1; g_dirty.y = y1;
+        g_dirty.w = x2 - x1; g_dirty.h = y2 - y1;
+    }
+}
+
+void gfx_mark_dirty_all(void) {
+    g_dirty.x = 0; g_dirty.y = 0;
+    g_dirty.w = gfx_ctx.width; g_dirty.h = gfx_ctx.height;
+    g_dirty.valid = 1;
+}
+
+int gfx_get_dirty_rect(int* x, int* y, int* w, int* h) {
+    if (!g_dirty.valid) return 0;
+    if (x) *x = g_dirty.x;
+    if (y) *y = g_dirty.y;
+    if (w) *w = g_dirty.w;
+    if (h) *h = g_dirty.h;
+    return 1;
+}
+
+void gfx_clear_dirty(void) {
+    g_dirty.valid = 0;
+}
+
+int gfx_is_dirty(void) {
+    return g_dirty.valid;
+}
+
+// Check if the dirty region covers the entire screen.
+// When true, a full redraw is needed (no point in partial updates).
+int gfx_dirty_is_full(void) {
+    if (!g_dirty.valid) return 0;
+    return (g_dirty.x == 0 && g_dirty.y == 0 &&
+            g_dirty.w >= (int)gfx_ctx.width &&
+            g_dirty.h >= (int)gfx_ctx.height);
+}
+
+// ============================================================================
+// Partial Buffer Swap — only copy the dirty region to VRAM.
+// Much faster than a full 3 MB memcpy when only a small area changed
+// (e.g. a window moved).  Falls back to gfx_swap_buffers() if the
+// dirty region covers most of the screen.
+// ============================================================================
+
+void gfx_swap_buffers_region(int rx, int ry, int rw, int rh) {
+    if (!use_backbuffer || !gfx_ctx.vram_ptr) return;
+
+    // If dirty region covers > 80% of screen, just do a full swap
+    // (the per-row overhead of region copying isn't worth it)
+    int screen_area = (int)gfx_ctx.width * (int)gfx_ctx.height;
+    int region_area = rw * rh;
+    if (region_area * 10 > screen_area * 8) {
+        gfx_swap_buffers();
+        return;
+    }
+
+    // Clamp region to screen
+    if (rx < 0) { rw += rx; rx = 0; }
+    if (ry < 0) { rh += ry; ry = 0; }
+    if (rx + rw > (int)gfx_ctx.width)  rw = (int)gfx_ctx.width - rx;
+    if (ry + rh > (int)gfx_ctx.height) rh = (int)gfx_ctx.height - ry;
+    if (rw <= 0 || rh <= 0) return;
+
+    // For 32bpp with matching pitch, use fast row-by-row copy
+    if (gfx_ctx.bpp == 32) {
+        int row_bytes = rw * 4;
+        for (int row = 0; row < rh; row++) {
+            uint8_t* dst = (uint8_t*)gfx_ctx.vram_ptr + (ry + row) * gfx_ctx.pitch + rx * 4;
+            uint8_t* src = (uint8_t*)gfx_ctx.back_ptr + (ry + row) * gfx_ctx.width * 4 + rx * 4;
+            memcpy(dst, src, row_bytes);
+        }
+    } else if (gfx_ctx.bpp == 24) {
+        // 24bpp: convert each pixel from XRGB to RGB
+        for (int row = 0; row < rh; row++) {
+            uint8_t* d = (uint8_t*)gfx_ctx.vram_ptr + (ry + row) * gfx_ctx.pitch + rx * 3;
+            uint32_t* s = &gfx_ctx.back_ptr[(ry + row) * gfx_ctx.width + rx];
+            for (int col = 0; col < rw; col++) {
+                uint32_t c = s[col];
+                d[col * 3]     = c & 0xFF;
+                d[col * 3 + 1] = (c >> 8) & 0xFF;
+                d[col * 3 + 2] = (c >> 16) & 0xFF;
+            }
+        }
+    }
 }
 
 // ============================================================================

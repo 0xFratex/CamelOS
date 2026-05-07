@@ -110,15 +110,19 @@ void pci_check_function(uint8_t bus, uint8_t device, uint8_t function) {
 
 void pci_init() {
     s_printf("\n[PCI] Scanning Bus...\n");
+    sys_print("PCI: Scanning...\n");
+    int device_count = 0;
     for(uint16_t bus = 0; bus < 256; bus++) {
         for(uint8_t slot = 0; slot < 32; slot++) {
             uint32_t vendor = pci_read_config_dword(bus, slot, 0, 0x00) & 0xFFFF;
             if(vendor != 0xFFFF) {
+                device_count++;
                 pci_check_function(bus, slot, 0);
                 uint32_t header = pci_read_config_dword(bus, slot, 0, 0x0C);
                 if((header >> 16) & 0x80) {
                     for(int f=1; f<8; f++) {
                         if((pci_read_config_dword(bus, slot, f, 0x00) & 0xFFFF) != 0xFFFF) {
+                            device_count++;
                             pci_check_function(bus, slot, f);
                         }
                     }
@@ -126,5 +130,14 @@ void pci_init() {
             }
         }
     }
-    s_printf("[PCI] Scan Complete.\n");
+    s_printf("[PCI] Scan Complete. %d devices found.\n", device_count);
+    // VGA-visible summary
+    {
+        extern void sys_print(const char* str);
+        extern void int_to_str(int, char*);
+        char num_buf[16];
+        sys_print("PCI: ");
+        int_to_str(device_count, num_buf); sys_print(num_buf);
+        sys_print(" devices found\n");
+    }
 }

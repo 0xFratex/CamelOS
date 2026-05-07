@@ -3,6 +3,7 @@
 #include "../../kernel/assets.h"
 #include "../../core/string.h"
 #include "../../hal/drivers/vga.h"
+#include "../../core/window_server.h"
 // REMOVED: #include <string.h>
 
 static kernel_api_t* sys = 0;
@@ -292,6 +293,36 @@ void cm_apply_menus(void* win_handle) {
     if (temp_menu_count > 0) {
         sys->set_window_menu(win_handle, temp_menus, temp_menu_count, internal_menu_callback);
     }
+}
+
+// --- Window Creation Helpers ---
+
+void* fw_create_window_centered(const char* title, int w, int h,
+                                void* paint_cb, void* input_cb, void* mouse_cb)
+{
+    window_t* win = ws_create_window(title, w, h, paint_cb, input_cb, mouse_cb);
+    if (win) {
+        ws_center_window(win);
+    }
+    return (void*)win;
+}
+
+void* fw_create_dialog(const char* title, int w, int h,
+                       void* paint_cb, void* input_cb, void* mouse_cb)
+{
+    // Create as a modal + tool window (no min/max buttons), centered
+    int style = WIN_STYLE_MODAL | WIN_STYLE_TOOL_WINDOW;
+    window_t* win = ws_create_window_ex(title, -1, -1, w, h, style,
+                                         paint_cb, input_cb, mouse_cb);
+    if (win) {
+        ws_center_window(win);
+    }
+    return (void*)win;
+}
+
+void fw_close_window(void* win) {
+    if (!win) return;
+    ws_close((window_t*)win);
 }
 
 #ifdef KERNEL_MODE
