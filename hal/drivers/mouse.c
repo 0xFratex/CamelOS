@@ -11,7 +11,7 @@ extern int screen_h;
 
 // Mouse state
 uint8_t mouse_cycle = 0;
-int8_t mouse_byte[4];      // 4 bytes for Intellimouse protocol
+uint8_t mouse_byte[4];     // 4 bytes for Intellimouse protocol (raw packet bytes)
 int mouse_x = 160;
 int mouse_y = 100;
 int mouse_btn_left = 0;
@@ -101,11 +101,13 @@ void mouse_handler() {
         // Byte 0 Check: Overflow bits (X=Bit6, Y=Bit7). If set, discard packet.
         if ((mouse_byte[0] & 0xC0) != 0) return;
 
-        // Byte 1: X Movement
-        int8_t rel_x = mouse_byte[1];
+        // Byte 1: X Movement (9-bit signed: sign bit is bit 4 of byte 0)
+        int rel_x = mouse_byte[1];
+        if (mouse_byte[0] & 0x10) rel_x -= 256;  // X sign bit set → extend to 9 bits
 
-        // Byte 2: Y Movement
-        int8_t rel_y = mouse_byte[2];
+        // Byte 2: Y Movement (9-bit signed: sign bit is bit 5 of byte 0)
+        int rel_y = mouse_byte[2];
+        if (mouse_byte[0] & 0x20) rel_y -= 256;  // Y sign bit set → extend to 9 bits
 
         mouse_x += rel_x;
         mouse_y -= rel_y; // PS/2 Y is positive upwards, screen is positive downwards
@@ -263,6 +265,14 @@ void mouse_poll_fallback(void) {
         // No IRQ for 500ms — fall through to polling mode
     }
 
+    // --- Disable interrupts while polling to prevent race condition ---
+    // mouse_handler() (IRQ12 context) shares mouse_byte[] and mouse_cycle
+    // with this polling code.  If an IRQ fires mid-packet, shared state gets
+    // corrupted, causing random/weird mouse movement.  CLI/STI prevents this.
+    // The polling loop only reads a few bytes from port 0x60 (microseconds),
+    // so interrupt latency impact is negligible.
+    asm volatile("cli");
+
     // Poll the PS/2 controller for available mouse data
     // Read all available bytes from the output buffer while Bit 0 (OBF) is set
     // and Bit 5 (AUX_OBF) indicates mouse data
@@ -290,9 +300,15 @@ void mouse_poll_fallback(void) {
             mouse_btn_right  = (mouse_byte[0] & 0x02) >> 1;
             mouse_btn_middle = (mouse_byte[0] & 0x04) >> 2;
 
-            // Parse movement
-            int8_t rel_x = mouse_byte[1];
-            int8_t rel_y = mouse_byte[2];
+            // Parse movement with 9-bit sign extension
+            // PS/2 X/Y deltas are 9-bit signed values; the sign bits live in
+            // byte 0 (bit 4 = X sign, bit 5 = Y sign).  Without this extension,
+            // fast movements (> 127 or < -128) produce wrong-direction jumps.
+            int rel_x = mouse_byte[1];
+            if (mouse_byte[0] & 0x10) rel_x -= 256;
+
+            int rel_y = mouse_byte[2];
+            if (mouse_byte[0] & 0x20) rel_y -= 256;
 
             mouse_x += rel_x;
             mouse_y -= rel_y;  // PS/2 Y is positive upwards
@@ -315,4 +331,7 @@ void mouse_poll_fallback(void) {
             mouse_poll_mode = 1;
         }
     }
+
+    // Re-enable interrupts now that polling is done
+    asm volatile("sti");
 }

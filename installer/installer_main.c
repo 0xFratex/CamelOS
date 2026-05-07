@@ -274,8 +274,16 @@ void poll_input(void) {
         if (cycle >= packet_len) {
             cycle = 0;
             if (packet[0] & 0xC0) continue;
-            mx += (int8_t)packet[1];
-            my -= (int8_t)packet[2];
+            // Parse X movement with 9-bit sign extension
+            // PS/2 X/Y deltas are 9-bit signed values; the sign bits live in
+            // byte 0 (bit 4 = X sign, bit 5 = Y sign).  Without this extension,
+            // fast movements (> 127 or < -128) produce wrong-direction jumps.
+            int rel_x = packet[1];
+            if (packet[0] & 0x10) rel_x -= 256;
+            int rel_y = packet[2];
+            if (packet[0] & 0x20) rel_y -= 256;
+            mx += rel_x;
+            my -= rel_y;
             int new_left = packet[0] & 1;
             // Detect rising edge: button just pressed this packet
             if (new_left && !mb_left) mb_clicked = 1;

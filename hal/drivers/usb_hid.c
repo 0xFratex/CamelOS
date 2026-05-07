@@ -648,7 +648,7 @@ static void hid_process_mouse_report(const hid_mouse_report_t* report) {
 
     // Apply movement deltas
     mouse_x += report->x_displacement;
-    mouse_y += report->y_displacement;
+    mouse_y -= report->y_displacement;  // Invert Y: USB HID positive = up, screen positive = down
 
     // Scroll wheel
     mouse_scroll_delta = report->wheel_displacement;
