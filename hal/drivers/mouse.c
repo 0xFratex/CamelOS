@@ -1,6 +1,18 @@
 // hal/drivers/mouse.c
 // PS/2 Mouse driver with Intellimouse scroll wheel support
-// Includes polling fallback for VirtualBox compatibility
+//
+// Architecture:
+//   - IRQ12 handler (mouse_handler) pushes raw bytes into a ring buffer.
+//     No packet assembly happens in ISR context — this eliminates all race
+//     conditions with the main-loop processing code.
+//   - mouse_process() (called from the main event loop) drains BOTH the
+//     IRQ ring buffer AND the PS/2 port directly (VirtualBox fallback),
+//     assembles complete packets, and updates mouse_x/y/buttons/scroll.
+//   - Because all packet assembly is single-threaded (main loop only),
+//     there are no shared mutable packet-assembly state variables and
+//     no need for CLI/STI around the polling code.
+//
+// Supports: QEMU, VirtualBox, Bochs, real hardware (PS/2 + USB HID)
 #include "../common/ports.h"
 #include "vga.h"
 #include "types.h"
@@ -9,9 +21,9 @@
 extern int screen_w;
 extern int screen_h;
 
-// Mouse state
-uint8_t mouse_cycle = 0;
-uint8_t mouse_byte[4];     // 4 bytes for Intellimouse protocol (raw packet bytes)
+// ============================================================================
+// Mouse state (updated only by mouse_process, read by the rest of the OS)
+// ============================================================================
 int mouse_x = 160;
 int mouse_y = 100;
 int mouse_btn_left = 0;
@@ -19,28 +31,26 @@ int mouse_btn_right = 0;
 int mouse_btn_middle = 0;
 int mouse_scroll_delta = 0;  // Scroll wheel: positive = up, negative = down
 
+// ============================================================================
+// IRQ ring buffer — mouse_handler() pushes bytes, mouse_process() drains them
+// ============================================================================
+#define MOUSE_RING_SIZE 64  // Must be power of 2; 64 bytes > 20 packets/sec * 4 bytes
+static volatile uint8_t mouse_ring[MOUSE_RING_SIZE];
+static volatile uint32_t mouse_ring_head = 0;  // Written by ISR (producer)
+static volatile uint32_t mouse_ring_tail = 0;  // Read by main loop (consumer)
+
 // Intellimouse support flag
 static uint8_t mouse_has_wheel = 0;
 
-// --- Polling fallback for VirtualBox ---
-// VirtualBox's emulated PS/2 mouse may not reliably generate IRQ12 interrupts.
-// We track the last time an IRQ-based mouse event was received; if none arrive
-// within MOUSE_IRQ_TIMEOUT_MS milliseconds, we switch to polling mode which
-// directly reads from the PS/2 data port (like the installer does).
-static uint32_t mouse_last_irq_tick = 0;   // Last timer tick when IRQ12 fired
-static int mouse_irq_active = 0;            // 1 = IRQ12 events have been seen
-static int mouse_poll_mode = 0;             // 1 = currently using polling fallback
+// ============================================================================
+// Packet assembly state (used ONLY by mouse_process in main-loop context)
+// ============================================================================
+static uint8_t pkt_byte[4];    // Current packet bytes
+static uint8_t pkt_cycle = 0;  // How many bytes of current packet received
 
-#define MOUSE_IRQ_TIMEOUT_MS  500           // Switch to poll after 500ms without IRQ
-
-// Called from mouse_handler() to record IRQ activity
-static void mouse_notify_irq(void) {
-    extern uint32_t timer_ticks;
-    mouse_last_irq_tick = timer_ticks;
-    mouse_irq_active = 1;
-    mouse_poll_mode = 0;  // IRQ is working, no need to poll
-}
-
+// ============================================================================
+// PS/2 helper functions (used during initialization only)
+// ============================================================================
 void mouse_wait(uint8_t type) {
     uint32_t timeout = 100000;
     if (type == 0) {
@@ -66,77 +76,144 @@ uint8_t mouse_read() {
     return inb(0x60);
 }
 
+// ============================================================================
+// mouse_handler() — Called from IRQ12 (ISR context)
+//
+// Minimal work: just push the raw byte into the ring buffer.
+// All packet parsing happens in mouse_process() on the main loop.
+// ============================================================================
 void mouse_handler() {
     uint8_t status = inb(0x64);
 
-    // Check if the buffer actually has mouse data (Bit 5 is set for Aux device)
+    // Only proceed if the output buffer has mouse data (AUX_OBF = bit 5)
     if (!(status & 0x20)) return;
-
-    // Record that we received an IRQ12 event (for polling fallback detection)
-    mouse_notify_irq();
 
     uint8_t data = inb(0x60);
 
-    // --- Packet Synchronization ---
-    // The first byte of a standard PS/2 mouse packet always has Bit 3 set (0x08).
-    // If we are at cycle 0 and this bit is missing, we are out of sync.
-    if (mouse_cycle == 0 && !(data & 0x08)) {
-        return; // Ignore byte, wait for start of next packet
+    // Push into ring buffer (lock-free single-producer/single-consumer)
+    uint32_t next_head = (mouse_ring_head + 1) & (MOUSE_RING_SIZE - 1);
+    if (next_head != mouse_ring_tail) {
+        mouse_ring[mouse_ring_head] = data;
+        mouse_ring_head = next_head;
+    }
+    // If ring is full, byte is dropped — extremely unlikely at 100 samples/sec
+}
+
+// ============================================================================
+// mouse_process_packet() — Parse a complete PS/2 mouse packet
+//
+// Called only from mouse_process() (main-loop context, single-threaded).
+// Applies 9-bit sign extension for X/Y deltas per the PS/2 protocol:
+//   Byte 0 bit 4 = X sign, bit 5 = Y sign
+// ============================================================================
+static void mouse_process_packet(void) {
+    // Overflow bits set? Discard packet (hardware overflow, data is unreliable)
+    if ((pkt_byte[0] & 0xC0) != 0) return;
+
+    // Byte 0: Button flags
+    mouse_btn_left   = (pkt_byte[0] & 0x01);
+    mouse_btn_right  = (pkt_byte[0] & 0x02) >> 1;
+    mouse_btn_middle = (pkt_byte[0] & 0x04) >> 2;
+
+    // Byte 1: X movement — 9-bit signed (sign bit is bit 4 of byte 0)
+    int rel_x = pkt_byte[1];
+    if (pkt_byte[0] & 0x10) rel_x -= 256;
+
+    // Byte 2: Y movement — 9-bit signed (sign bit is bit 5 of byte 0)
+    // PS/2 Y is positive upwards; screen Y is positive downwards → negate
+    int rel_y = pkt_byte[2];
+    if (pkt_byte[0] & 0x20) rel_y -= 256;
+
+    mouse_x += rel_x;
+    mouse_y -= rel_y;
+
+    // Byte 3: Scroll wheel (Intellimouse)
+    if (mouse_has_wheel) {
+        mouse_scroll_delta += (int8_t)pkt_byte[3];
     }
 
-    mouse_byte[mouse_cycle] = data;
-    mouse_cycle++;
+    // Clamp to screen bounds
+    int limit_w = (screen_w > 0) ? screen_w : 320;
+    int limit_h = (screen_h > 0) ? screen_h : 200;
 
-    // Determine packet length based on wheel support
+    if (mouse_x < 0) mouse_x = 0;
+    if (mouse_x >= limit_w) mouse_x = limit_w - 1;
+    if (mouse_y < 0) mouse_y = 0;
+    if (mouse_y >= limit_h) mouse_y = limit_h - 1;
+}
+
+// ============================================================================
+// mouse_process() — Main-loop mouse processing
+//
+// Call this once per main-loop iteration. It:
+//   1. Drains the IRQ ring buffer (bytes pushed by mouse_handler)
+//   2. Directly polls port 0x60/0x64 for any remaining mouse data
+//      (VirtualBox fallback — some emulators don't reliably deliver IRQ12)
+//   3. Assembles complete packets and updates mouse state
+//
+// All packet assembly happens here, never in ISR context, so there are
+// no race conditions on pkt_byte[] or pkt_cycle.
+// ============================================================================
+void mouse_process(void) {
     uint8_t packet_len = mouse_has_wheel ? 4 : 3;
 
-    if (mouse_cycle >= packet_len) {
-        mouse_cycle = 0;
+    // --- Phase 1: Drain the IRQ ring buffer ---
+    while (mouse_ring_tail != mouse_ring_head) {
+        uint8_t data = mouse_ring[mouse_ring_tail];
+        mouse_ring_tail = (mouse_ring_tail + 1) & (MOUSE_RING_SIZE - 1);
 
-        // Byte 0: Flags
-        mouse_btn_left = (mouse_byte[0] & 0x01);
-        mouse_btn_right = (mouse_byte[0] & 0x02) >> 1;
-        mouse_btn_middle = (mouse_byte[0] & 0x04) >> 2;
+        // Packet synchronization: byte 0 must have bit 3 set
+        if (pkt_cycle == 0 && !(data & 0x08)) continue;
 
-        // Byte 0 Check: Overflow bits (X=Bit6, Y=Bit7). If set, discard packet.
-        if ((mouse_byte[0] & 0xC0) != 0) return;
+        pkt_byte[pkt_cycle] = data;
+        pkt_cycle++;
 
-        // Byte 1: X Movement (9-bit signed: sign bit is bit 4 of byte 0)
-        int rel_x = mouse_byte[1];
-        if (mouse_byte[0] & 0x10) rel_x -= 256;  // X sign bit set → extend to 9 bits
-
-        // Byte 2: Y Movement (9-bit signed: sign bit is bit 5 of byte 0)
-        int rel_y = mouse_byte[2];
-        if (mouse_byte[0] & 0x20) rel_y -= 256;  // Y sign bit set → extend to 9 bits
-
-        mouse_x += rel_x;
-        mouse_y -= rel_y; // PS/2 Y is positive upwards, screen is positive downwards
-
-        // Byte 3: Scroll wheel (Intellimouse)
-        // Accumulate scroll events so rapid scrolling between frames is not lost.
-        // mouse_scroll_delta is consumed and cleared each frame by sys_mouse_scroll().
-        if (mouse_has_wheel) {
-            mouse_scroll_delta += (int8_t)mouse_byte[3];
+        if (pkt_cycle >= packet_len) {
+            pkt_cycle = 0;
+            mouse_process_packet();
         }
+    }
 
-        // === Use Dynamic Screen Size ===
-        int limit_w = (screen_w > 0) ? screen_w : 320;
-        int limit_h = (screen_h > 0) ? screen_h : 200;
+    // --- Phase 2: Direct PS/2 port polling (VirtualBox fallback) ---
+    // If the emulator didn't deliver IRQ12 for some bytes, they'll still
+    // be sitting in the PS/2 output buffer.  Read them directly.
+    // This is safe because all packet assembly state (pkt_byte, pkt_cycle)
+    // is local to this function's calling context (main loop only).
+    while ((inb(0x64) & 0x21) == 0x21) {  // OBF=1 and AUX_OBF=1
+        uint8_t data = inb(0x60);
 
-        if (mouse_x < 0) mouse_x = 0;
-        if (mouse_x >= limit_w) mouse_x = limit_w - 1;
-        if (mouse_y < 0) mouse_y = 0;
-        if (mouse_y >= limit_h) mouse_y = limit_h - 1;
+        // Packet synchronization
+        if (pkt_cycle == 0 && !(data & 0x08)) continue;
+
+        pkt_byte[pkt_cycle] = data;
+        pkt_cycle++;
+
+        if (pkt_cycle >= packet_len) {
+            pkt_cycle = 0;
+            mouse_process_packet();
+        }
     }
 }
 
+// ============================================================================
+// Legacy API compatibility — the main loop and some code reference these names
+// ============================================================================
+void mouse_poll_fallback(void) {
+    mouse_process();
+}
+
+// ============================================================================
+// init_mouse() — PS/2 mouse initialization
+// ============================================================================
 void init_mouse() {
     // Zero out state
     mouse_btn_left = 0;
     mouse_btn_right = 0;
     mouse_btn_middle = 0;
     mouse_scroll_delta = 0;
-    mouse_cycle = 0;
+    pkt_cycle = 0;
+    mouse_ring_head = 0;
+    mouse_ring_tail = 0;
     mouse_has_wheel = 1;  // Default to Intellimouse (4-byte) mode —
                           // all modern emulators (QEMU, VirtualBox, Bochs)
                           // support the scroll wheel protocol.  Prevents
@@ -227,111 +304,4 @@ void init_mouse() {
 
     mask = inb(0x21);
     outb(0x21, mask & ~(1 << 2));
-
-    // Initialize polling fallback state
-    mouse_irq_active = 0;
-    mouse_poll_mode = 0;
-    {
-        extern uint32_t timer_ticks;
-        mouse_last_irq_tick = timer_ticks;
-    }
-}
-
-// ============================================================================
-// mouse_poll_fallback() — Polling fallback for VirtualBox compatibility
-//
-// VirtualBox's PS/2 mouse emulation sometimes does not reliably deliver
-// IRQ12 interrupts. This function is called from the main event loop and
-// checks: if no IRQ12 mouse events have been received for a timeout period,
-// it directly polls the PS/2 data port (port 0x60/0x64) for mouse packets,
-// exactly like the installer's poll_input() does.
-//
-// This ensures the mouse works in VirtualBox even when IRQ12 is unreliable.
-// When IRQ12 events resume (e.g., on real hardware), polling is automatically
-// disabled to avoid duplicate processing.
-// ============================================================================
-void mouse_poll_fallback(void) {
-    extern uint32_t timer_ticks;
-    uint32_t now = timer_ticks;
-
-    // If we've seen IRQ12 events recently, no need to poll
-    if (mouse_irq_active) {
-        // timer_ticks increments at ~50 Hz (init_timer(50) in kernel.c)
-        // 50 ticks/sec → 500ms = 25 ticks
-        uint32_t elapsed = now - mouse_last_irq_tick;
-        if (elapsed < 25) {
-            return;  // IRQ is active and recent, skip polling
-        }
-        // No IRQ for 500ms — fall through to polling mode
-    }
-
-    // --- Disable interrupts while polling to prevent race condition ---
-    // mouse_handler() (IRQ12 context) shares mouse_byte[] and mouse_cycle
-    // with this polling code.  If an IRQ fires mid-packet, shared state gets
-    // corrupted, causing random/weird mouse movement.  CLI/STI prevents this.
-    // The polling loop only reads a few bytes from port 0x60 (microseconds),
-    // so interrupt latency impact is negligible.
-    asm volatile("cli");
-
-    // Poll the PS/2 controller for available mouse data
-    // Read all available bytes from the output buffer while Bit 0 (OBF) is set
-    // and Bit 5 (AUX_OBF) indicates mouse data
-    while ((inb(0x64) & 0x21) == 0x21) {  // OBF=1 and AUX_OBF=1
-        uint8_t data = inb(0x60);
-
-        // Packet synchronization: byte 0 must have bit 3 set
-        if (mouse_cycle == 0 && !(data & 0x08)) {
-            continue;  // Out of sync, discard
-        }
-
-        mouse_byte[mouse_cycle] = data;
-        mouse_cycle++;
-
-        uint8_t packet_len = mouse_has_wheel ? 4 : 3;
-
-        if (mouse_cycle >= packet_len) {
-            mouse_cycle = 0;
-
-            // Overflow bits set? Discard packet
-            if ((mouse_byte[0] & 0xC0) != 0) continue;
-
-            // Parse buttons
-            mouse_btn_left   = (mouse_byte[0] & 0x01);
-            mouse_btn_right  = (mouse_byte[0] & 0x02) >> 1;
-            mouse_btn_middle = (mouse_byte[0] & 0x04) >> 2;
-
-            // Parse movement with 9-bit sign extension
-            // PS/2 X/Y deltas are 9-bit signed values; the sign bits live in
-            // byte 0 (bit 4 = X sign, bit 5 = Y sign).  Without this extension,
-            // fast movements (> 127 or < -128) produce wrong-direction jumps.
-            int rel_x = mouse_byte[1];
-            if (mouse_byte[0] & 0x10) rel_x -= 256;
-
-            int rel_y = mouse_byte[2];
-            if (mouse_byte[0] & 0x20) rel_y -= 256;
-
-            mouse_x += rel_x;
-            mouse_y -= rel_y;  // PS/2 Y is positive upwards
-
-            // Scroll wheel
-            if (mouse_has_wheel) {
-                mouse_scroll_delta += (int8_t)mouse_byte[3];
-            }
-
-            // Clamp to screen bounds
-            int limit_w = (screen_w > 0) ? screen_w : 320;
-            int limit_h = (screen_h > 0) ? screen_h : 200;
-
-            if (mouse_x < 0) mouse_x = 0;
-            if (mouse_x >= limit_w) mouse_x = limit_w - 1;
-            if (mouse_y < 0) mouse_y = 0;
-            if (mouse_y >= limit_h) mouse_y = limit_h - 1;
-
-            // Mark that we're in polling mode (no IRQ)
-            mouse_poll_mode = 1;
-        }
-    }
-
-    // Re-enable interrupts now that polling is done
-    asm volatile("sti");
 }

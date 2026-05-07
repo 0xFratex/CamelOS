@@ -7,10 +7,10 @@ extern int mouse_btn_left;
 extern int mouse_btn_right;
 extern int mouse_btn_middle;
 extern int mouse_scroll_delta;   // Scroll wheel: positive = up, negative = down
-// Note: mouse_has_wheel is static in mouse.c, not exported
 
 void init_mouse(void);
-void mouse_handler(void);
-void mouse_poll_fallback(void);  // Polling fallback for VirtualBox (called from main loop)
+void mouse_handler(void);         // IRQ12 handler — pushes bytes into ring buffer
+void mouse_process(void);         // Main-loop processing — assembles packets, updates state
+void mouse_poll_fallback(void);   // Legacy alias for mouse_process() (called from main loop)
 
 #endif

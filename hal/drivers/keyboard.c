@@ -687,6 +687,18 @@ int sys_get_key() {
 }
 
 void keyboard_callback() {
+    // Check if the output buffer actually contains keyboard data.
+    // The PS/2 controller shares a single output buffer (port 0x60) between
+    // keyboard and mouse.  Bit 5 (AUX_OBF) of the status register indicates
+    // the data is from the mouse.  If set, this IRQ was spurious or the
+    // keyboard IRQ fired while mouse data was pending — skip reading to avoid
+    // stealing mouse bytes, which would desynchronize the mouse packet stream.
+    uint8_t status = inb(0x64);
+    if (status & 0x20) {
+        // Data is mouse data, not keyboard — don't consume it
+        return;
+    }
+
     uint8_t scancode = inb(0x60);
 
     // Handle Extended Prefix (E0)
