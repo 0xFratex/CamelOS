@@ -3,6 +3,9 @@
 #include "../core/memory.h"
 #include "../core/http.h"
 #include "../core/dns.h"
+#include "../core/package_manager.h"
+#include "../core/app_registry.h"
+#include "../core/sys_dirs.h"
 #include <string.h>
 
 // CDL loader declaration
@@ -536,7 +539,33 @@ void shell_main() {
             sys_clear();
         }
         else if (strcmp(cmd, "help") == 0) {
-            sys_print("cmds: ls, cd, cat, gui, reboot, ./<file>, run <app>, loadtest, ping, curl, open\n");
+            sys_print("CamelOS Shell Commands:\n");
+            sys_print("  ls [dir]          - List directory contents\n");
+            sys_print("  cd <path>         - Change directory\n");
+            sys_print("  cat <file>        - Display file contents\n");
+            sys_print("  mkdir <dir>       - Create directory\n");
+            sys_print("  rm <path>         - Delete file or directory\n");
+            sys_print("  cp <src> <dst>    - Copy file\n");
+            sys_print("  mv <old> <new>    - Move/rename file\n");
+            sys_print("  pwd               - Print working directory\n");
+            sys_print("  echo <text>       - Print text\n");
+            sys_print("  gui               - Start graphical environment\n");
+            sys_print("  clear             - Clear screen\n");
+            sys_print("  reboot            - Reboot system\n");
+            sys_print("  ./<file>          - Execute program\n");
+            sys_print("  run <app>         - Run an application\n");
+            sys_print("  open <url|app>    - Open URL or app\n");
+            sys_print("  ping <host>       - Ping a host\n");
+            sys_print("  curl <url>        - Download from URL\n");
+            sys_print("  caml <cmd> [args] - Package manager\n");
+            sys_print("    caml install <pkg>  - Install a .cpkg package\n");
+            sys_print("    caml remove <name>  - Remove installed app\n");
+            sys_print("    caml list           - List installed packages\n");
+            sys_print("    caml search <query> - Search for packages\n");
+            sys_print("    caml info <name>    - Show package info\n");
+            sys_print("    caml verify <pkg>   - Verify package file\n");
+            sys_print("    caml rebuild        - Rebuild package database\n");
+            sys_print("  hexdump <file>    - Hex dump a file\n");
         }
         else if (strcmp(cmd, "./") == 0 || strcmp(cmd, "run") == 0) {
             // Execute program/bundle
@@ -643,8 +672,359 @@ void shell_main() {
                 cmd_open("");
             }
         }
+        // ====================================================================
+        // Package Manager: caml install/remove/list/search/info/verify/rebuild
+        // ====================================================================
+        else if (strcmp(cmd, "caml") == 0) {
+            // Parse subcommand and its argument
+            char subcmd[32] = {0};
+            char subarg[128] = {0};
+            int si = 0, sj = 0;
+            // Skip to after "caml "
+            char* caml_rest = strstr(cmd_buffer, "caml ");
+            if (caml_rest) {
+                caml_rest += 5; // skip "caml "
+                // Parse subcommand
+                while(caml_rest[si] && caml_rest[si] != ' ' && sj < 31) subcmd[sj++] = caml_rest[si++];
+                if(caml_rest[si] == ' ') si++;
+                // Parse sub-argument (rest of line)
+                sj = 0;
+                while(caml_rest[si] && sj < 127) subarg[sj++] = caml_rest[si++];
+            }
+
+            if (strcmp(subcmd, "install") == 0) {
+                if (strlen(subarg) == 0) {
+                    sys_print("Usage: caml install <package.cpkg|package.dmg>\n");
+                } else {
+                    // Resolve path
+                    char pkg_path[256];
+                    if (subarg[0] != '/') {
+                        strcpy(pkg_path, current_path);
+                        int plen = strlen(pkg_path);
+                        if (plen > 1 && pkg_path[plen-1] != '/') strcat(pkg_path, "/");
+                        strcat(pkg_path, subarg);
+                    } else {
+                        strcpy(pkg_path, subarg);
+                    }
+
+                    int result;
+                    int plen2 = strlen(pkg_path);
+                    if (plen2 > 4 && strcmp(pkg_path + plen2 - 4, ".dmg") == 0) {
+                        sys_print("Installing from DMG: ");
+                        sys_print(pkg_path);
+                        sys_print("\n");
+                        result = pkg_install_dmg(pkg_path);
+                    } else {
+                        sys_print("Installing package: ");
+                        sys_print(pkg_path);
+                        sys_print("\n");
+                        result = pkg_install(pkg_path);
+                    }
+
+                    if (result == 0) {
+                        sys_print("Installation successful.\n");
+                    } else {
+                        sys_print("Installation failed: ");
+                        sys_print(pkg_get_error());
+                        sys_print("\n");
+                    }
+                }
+            }
+            else if (strcmp(subcmd, "remove") == 0) {
+                if (strlen(subarg) == 0) {
+                    sys_print("Usage: caml remove <app-name>\n");
+                } else {
+                    sys_print("Removing: ");
+                    sys_print(subarg);
+                    sys_print("\n");
+                    int result = pkg_remove(subarg);
+                    if (result == 0) {
+                        sys_print("Package removed successfully.\n");
+                    } else {
+                        sys_print("Removal failed: ");
+                        sys_print(pkg_get_error());
+                        sys_print("\n");
+                    }
+                }
+            }
+            else if (strcmp(subcmd, "list") == 0) {
+                AppBundleInfo apps[64];
+                int count = pkg_list_installed(apps, 64);
+                if (count <= 0) {
+                    sys_print("No packages installed.\n");
+                } else {
+                    char count_str[8];
+                    int_to_str(count, count_str);
+                    sys_print("Installed packages (");
+                    sys_print(count_str);
+                    sys_print("):\n");
+                    for (int i = 0; i < count; i++) {
+                        sys_print("  ");
+                        sys_print(apps[i].name);
+                        if (apps[i].version[0]) {
+                            sys_print(" ");
+                            sys_print(apps[i].version);
+                        }
+                        if (apps[i].type[0]) {
+                            sys_print(" [");
+                            sys_print(apps[i].type);
+                            sys_print("]");
+                        }
+                        sys_print("\n");
+                    }
+                }
+            }
+            else if (strcmp(subcmd, "search") == 0) {
+                if (strlen(subarg) == 0) {
+                    sys_print("Usage: caml search <query>\n");
+                } else {
+                    char results[2048];
+                    int count = pkg_search(subarg, results, sizeof(results));
+                    if (count <= 0) {
+                        sys_print("No packages found matching '");
+                        sys_print(subarg);
+                        sys_print("'\n");
+                    } else {
+                        char cstr[8];
+                        int_to_str(count, cstr);
+                        sys_print("Found ");
+                        sys_print(cstr);
+                        sys_print(" package(s):\n");
+                        sys_print(results);
+                    }
+                }
+            }
+            else if (strcmp(subcmd, "info") == 0) {
+                if (strlen(subarg) == 0) {
+                    sys_print("Usage: caml info <app-name>\n");
+                } else {
+                    AppBundleInfo info;
+                    int result = pkg_get_info(subarg, &info);
+                    if (result == 0) {
+                        sys_print("Name:       "); sys_print(info.name); sys_print("\n");
+                        sys_print("Identifier: "); sys_print(info.identifier); sys_print("\n");
+                        sys_print("Version:    "); sys_print(info.version); sys_print("\n");
+                        sys_print("Type:       "); sys_print(info.type); sys_print("\n");
+                        sys_print("Executable: "); sys_print(info.executable); sys_print("\n");
+                        if (info.icon_file[0]) {
+                            sys_print("Icon:       "); sys_print(info.icon_file); sys_print("\n");
+                        }
+                        if (info.min_os_version[0]) {
+                            sys_print("Min OS:     "); sys_print(info.min_os_version); sys_print("\n");
+                        }
+                    } else {
+                        sys_print("Package not found: ");
+                        sys_print(subarg);
+                        sys_print("\n");
+                    }
+                }
+            }
+            else if (strcmp(subcmd, "verify") == 0) {
+                if (strlen(subarg) == 0) {
+                    sys_print("Usage: caml verify <package.cpkg>\n");
+                } else {
+                    char vpath[256];
+                    if (subarg[0] != '/') {
+                        strcpy(vpath, current_path);
+                        int plen = strlen(vpath);
+                        if (plen > 1 && vpath[plen-1] != '/') strcat(vpath, "/");
+                        strcat(vpath, subarg);
+                    } else {
+                        strcpy(vpath, subarg);
+                    }
+                    int result = pkg_verify(vpath);
+                    if (result == 0) {
+                        sys_print("Package is valid.\n");
+                    } else {
+                        sys_print("Package verification failed: ");
+                        sys_print(pkg_get_error());
+                        sys_print("\n");
+                    }
+                }
+            }
+            else if (strcmp(subcmd, "rebuild") == 0) {
+                sys_print("Rebuilding package database...\n");
+                int result = pkg_rebuild_database();
+                if (result == 0) {
+                    sys_print("Package database rebuilt.\n");
+                } else {
+                    sys_print("Database rebuild failed.\n");
+                }
+            }
+            else if (strcmp(subcmd, "apps") == 0) {
+                // List all apps in the registry
+                int count = app_registry_get_count();
+                char cstr[8];
+                int_to_str(count, cstr);
+                sys_print("Registered apps (");
+                sys_print(cstr);
+                sys_print("):\n");
+                for (int i = 0; i < count; i++) {
+                    const app_registry_entry_t* entry = app_registry_get(i);
+                    if (entry) {
+                        sys_print("  ");
+                        sys_print(entry->bundle_info.name);
+                        if (entry->is_builtin) sys_print(" [builtin]");
+                        else sys_print(" [installed]");
+                        sys_print("\n");
+                    }
+                }
+            }
+            else {
+                sys_print("CamelOS Package Manager (caml)\n");
+                sys_print("Usage: caml <command> [args]\n");
+                sys_print("Commands:\n");
+                sys_print("  install <pkg>   - Install a package\n");
+                sys_print("  remove <name>   - Remove an installed app\n");
+                sys_print("  list            - List installed packages\n");
+                sys_print("  search <query>  - Search for packages\n");
+                sys_print("  info <name>     - Show package info\n");
+                sys_print("  verify <pkg>    - Verify a package file\n");
+                sys_print("  rebuild         - Rebuild package database\n");
+                sys_print("  apps            - List all registered apps\n");
+            }
+        }
+        // ====================================================================
+        // Additional file commands: mkdir, rm, cp, mv, pwd, echo, hexdump
+        // ====================================================================
+        else if (strcmp(cmd, "mkdir") == 0) {
+            if (strlen(arg1) == 0) {
+                sys_print("Usage: mkdir <directory>\n");
+            } else {
+                char mpath[256];
+                if (arg1[0] != '/') {
+                    strcpy(mpath, current_path);
+                    int plen = strlen(mpath);
+                    if (plen > 1 && mpath[plen-1] != '/') strcat(mpath, "/");
+                    strcat(mpath, arg1);
+                } else {
+                    strcpy(mpath, arg1);
+                }
+                if (sys_fs_create(mpath, 1) == 0) {
+                    sys_print("Created directory: ");
+                    sys_print(mpath);
+                    sys_print("\n");
+                } else {
+                    sys_print("Failed to create directory.\n");
+                }
+            }
+        }
+        else if (strcmp(cmd, "rm") == 0) {
+            if (strlen(arg1) == 0) {
+                sys_print("Usage: rm <file|directory>\n");
+            } else {
+                char rpath[256];
+                if (arg1[0] != '/') {
+                    strcpy(rpath, current_path);
+                    int plen = strlen(rpath);
+                    if (plen > 1 && rpath[plen-1] != '/') strcat(rpath, "/");
+                    strcat(rpath, arg1);
+                } else {
+                    strcpy(rpath, arg1);
+                }
+                if (sys_fs_is_dir(rpath)) {
+                    sys_fs_delete_recursive(rpath);
+                    sys_print("Removed: ");
+                    sys_print(rpath);
+                    sys_print("\n");
+                } else {
+                    sys_fs_delete(rpath);
+                    sys_print("Deleted: ");
+                    sys_print(rpath);
+                    sys_print("\n");
+                }
+            }
+        }
+        else if (strcmp(cmd, "cp") == 0) {
+            // Parse second argument
+            char arg2[64] = {0};
+            int ci = 0, cj = 0;
+            // Skip cmd and arg1
+            char* cp_rest = cmd_buffer;
+            while(cp_rest[ci] && cp_rest[ci] != ' ') ci++; // skip cp
+            if(cp_rest[ci] == ' ') ci++; // skip space
+            while(cp_rest[ci] && cp_rest[ci] != ' ') ci++; // skip arg1
+            if(cp_rest[ci] == ' ') ci++; // skip space
+            while(cp_rest[ci] && cp_rest[ci] != ' ' && cj < 63) arg2[cj++] = cp_rest[ci++];
+
+            if (strlen(arg1) == 0 || strlen(arg2) == 0) {
+                sys_print("Usage: cp <source> <destination>\n");
+            } else {
+                sys_fs_copy(arg1, arg2);
+                sys_print("Copied.\n");
+            }
+        }
+        else if (strcmp(cmd, "mv") == 0) {
+            // Parse second argument
+            char m_arg2[64] = {0};
+            int mi = 0, mj = 0;
+            char* mv_rest = cmd_buffer;
+            while(mv_rest[mi] && mv_rest[mi] != ' ') mi++;
+            if(mv_rest[mi] == ' ') mi++;
+            while(mv_rest[mi] && mv_rest[mi] != ' ') mi++;
+            if(mv_rest[mi] == ' ') mi++;
+            while(mv_rest[mi] && mv_rest[mi] != ' ' && mj < 63) m_arg2[mj++] = mv_rest[mi++];
+
+            if (strlen(arg1) == 0 || strlen(m_arg2) == 0) {
+                sys_print("Usage: mv <old> <new>\n");
+            } else {
+                sys_fs_rename(arg1, m_arg2);
+                sys_print("Moved.\n");
+            }
+        }
+        else if (strcmp(cmd, "pwd") == 0) {
+            sys_print(current_path);
+            sys_print("\n");
+        }
+        else if (strcmp(cmd, "echo") == 0) {
+            char* echo_text = strstr(cmd_buffer, "echo ");
+            if (echo_text) {
+                echo_text += 5;
+                sys_print(echo_text);
+            }
+            sys_print("\n");
+        }
+        else if (strcmp(cmd, "hexdump") == 0) {
+            if (strlen(arg1) == 0) {
+                sys_print("Usage: hexdump <file>\n");
+            } else {
+                char* hbuf = (char*)kmalloc(4096);
+                if (hbuf) {
+                    memset(hbuf, 0, 4096);
+                    int hlen = sys_fs_read(arg1, hbuf, 4095);
+                    if (hlen > 0) {
+                        for (int off = 0; off < hlen; off += 16) {
+                            // Offset
+                            char line[80];
+                            int pos2 = 0;
+                            pos2 += sprintf(line + pos2, "%04x: ", off);
+                            // Hex bytes
+                            for (int b = 0; b < 16 && off + b < hlen; b++) {
+                                pos2 += sprintf(line + pos2, "%02x ", (unsigned char)hbuf[off + b]);
+                            }
+                            // Pad
+                            for (int b = hlen - off < 16 ? hlen - off : 0; b < 16; b++) {
+                                pos2 += sprintf(line + pos2, "   ");
+                            }
+                            // ASCII
+                            pos2 += sprintf(line + pos2, " ");
+                            for (int b = 0; b < 16 && off + b < hlen; b++) {
+                                unsigned char c = hbuf[off + b];
+                                line[pos2++] = (c >= 0x20 && c < 0x7F) ? c : '.';
+                            }
+                            line[pos2] = 0;
+                            sys_print(line);
+                            sys_print("\n");
+                        }
+                    } else {
+                        sys_print("File not found or empty.\n");
+                    }
+                    kfree(hbuf);
+                }
+            }
+        }
         else if(strlen(cmd) > 0) {
-            sys_print("Unknown command.\n");
+            sys_print("Unknown command. Type 'help' for available commands.\n");
         }
 
         // 2. Heap cleanup after command finishes.

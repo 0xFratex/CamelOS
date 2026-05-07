@@ -32,6 +32,9 @@
 #include "../core/process.h"
 #include "../core/crash.h"
 #include "../core/launchd.h"
+#include "../core/sys_dirs.h"
+#include "../core/package_manager.h"
+#include "../core/app_registry.h"
 
 extern int kbd_ctrl_pressed;
 extern int kbd_shift_pressed;
@@ -403,6 +406,18 @@ void kernel_main(void* mboot_ptr) {
     extern void app_installer_init(void);
     app_installer_init();
     s_printf("[KERNEL] App Installer Initialized.\n");
+    
+    // Initialize System Directory Structure (/usr, /etc, /var, /tmp, /dev, /proc, /Library, etc.)
+    sys_dirs_init();
+    s_printf("[KERNEL] System Directories Initialized.\n");
+    
+    // Initialize Package Manager (caml - install/remove/list packages)
+    pkg_init();
+    s_printf("[KERNEL] Package Manager Initialized.\n");
+    
+    // Initialize App Registry (discovers and registers all installed and built-in apps)
+    app_registry_init();
+    s_printf("[KERNEL] App Registry Initialized.\n");
     
     // Initialize SHA-256 module (used for encrypted passwords)
     // No init needed - it's stateless

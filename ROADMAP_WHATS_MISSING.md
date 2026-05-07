@@ -44,6 +44,13 @@ Recent improvements have added:
 
 **Remaining gaps** are primarily: extended partition/GPT support, VirtIO drivers, audio server, and several macOS-faithful features.
 
+**May 2026 session 3 updates** (this session):
+- **Package Manager** — Full `caml` package manager with install/remove/list/search/info/verify/rebuild commands. Supports `.cpkg` package format (text-based with hex-encoded binaries), `.dmg` installation via existing DMG mounter, package database persistence at `/Library/PackageManager/packages.db`.
+- **System Directory Structure** — Boot-time creation of 26 FHS-like directories: `/Applications`, `/System/Applications`, `/System/Library/Frameworks`, `/Library/PackageManager`, `/Library/Preferences`, `/Library/Logs`, `/usr/bin`, `/usr/lib`, `/usr/local/bin`, `/usr/local/lib`, `/etc`, `/var/log`, `/var/tmp`, `/var/db`, `/tmp`, `/dev`, `/proc`, `/Users/Shared`, `/Users/root`, etc.
+- **App Registry** — System-wide database of all installed and built-in applications. Boot-time discovery by scanning `/Applications` and `/System/Applications` for `.app` bundles. 12 built-in apps registered with categories (Productivity, Utilities, Internet, Media, Developer, System). Launch tracking, category filtering, case-insensitive search, DB persistence.
+- **Shell Package Commands** — `caml install/remove/list/search/info/verify/rebuild/apps` subcommands. Additional file commands: `mkdir`, `rm`, `cp`, `mv`, `pwd`, `echo`, `hexdump`. Comprehensive `help` command.
+- **Apps now truly installable** — Previously all apps were compiled into the kernel. The package manager + app registry + system dirs combination now allows apps to be installed at runtime from `.cpkg` or `.dmg` files, discovered on boot, and tracked in a database. This is a fundamental shift from "all apps are kernel functions" to a real OS installation model.
+
 ---
 
 ## 1. Previously Dead Code — Now ACTIVE ✅
