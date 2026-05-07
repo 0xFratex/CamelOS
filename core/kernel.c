@@ -39,6 +39,7 @@
 #include "../core/theme.h"
 #include "../core/notification_center.h"
 #include "../core/audio_mixer.h"
+#include "../hal/cpu/cpu_info.h"
 
 extern int kbd_ctrl_pressed;
 extern int kbd_shift_pressed;
@@ -174,27 +175,27 @@ void rtl8139_test_loopback() {
 
     s_printf("[TEST] CMD: 0x");
     int_to_str(cmd, buf);
-    s_printf(buf);
+    s_printf("%s", buf);
     s_printf(" (should be 0x0C for RX+TX enabled)\n");
 
     s_printf("[TEST] RCR: 0x");
     int_to_str(rcr, buf);
-    s_printf(buf);
+    s_printf("%s", buf);
     s_printf("\n");
 
     s_printf("[TEST] TCR: 0x");
     int_to_str(tcr, buf);
-    s_printf(buf);
+    s_printf("%s", buf);
     s_printf("\n");
 
     s_printf("[TEST] IMR: 0x");
     int_to_str(imr, buf);
-    s_printf(buf);
+    s_printf("%s", buf);
     s_printf("\n");
 
     s_printf("[TEST] ISR: 0x");
     int_to_str(isr, buf);
-    s_printf(buf);
+    s_printf("%s", buf);
     s_printf("\n");
 
     // Try to send a simple ARP request
@@ -287,7 +288,7 @@ int kernel_launch_builtin_app(const char* name) {
         if (strcmp(name, builtin_apps[i].name) == 0) {
             if (builtin_apps[i].init) {
                 s_printf("[KERNEL] Launching built-in app: ");
-                s_printf(name);
+                s_printf("%s", name);
                 s_printf("\n");
                 builtin_apps[i].init();
                 return 0;  // Success
@@ -357,10 +358,6 @@ void kernel_main(void* mboot_ptr) {
     // Step 2: CPU detection
     boot_step++;
     {
-        extern void cpu_info_detect(void);
-        extern const char* cpu_info_vendor_name(void);
-        extern const char* cpu_info_arch_name(void);
-        extern cpu_info_t* cpu_info_get(void);
         cpu_info_detect();
         const char* vendor = cpu_info_vendor_name();
         const char* arch = cpu_info_arch_name();
@@ -406,38 +403,38 @@ void kernel_main(void* mboot_ptr) {
     }
     s_printf("[DISK] total_blocks=");
     int_to_str(disk_total_blocks, boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf(" present=");
     int_to_str(ide_devices[0].present, boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf("\n");
 
     // DEBUG MOUNT
     uint8_t mbr[512];
     s_printf("[DBG] disk_total_blocks=");
     int_to_str(disk_total_blocks, boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf(" free_mem=");
     int_to_str(k_get_free_mem(), boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf("\n");
 
     disk_read_block(0, mbr);
     s_printf("[DBG] LBA0 sig=");
     int_to_str(mbr[510], boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf(" ");
     int_to_str(mbr[511], boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf(" magic0=");
     int_to_str(*(uint32_t*)mbr, boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf("\n");
 
     disk_read_block(16384, mbr);
     s_printf("[DBG] LBA16384 magic=");
     int_to_str(*(uint32_t*)mbr, boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf("\n");
 
     // Step 5: Filesystem
@@ -619,9 +616,11 @@ void kernel_main(void* mboot_ptr) {
                         char ptype_str[8];
                         extern void int_to_str(int, char*);
                         int_to_str(ptype, ptype_str);
-                        s_printf("[KERNEL] Found FAT32 partition %d (type=0x%s) at LBA ", p);
+                        s_printf("[KERNEL] Found FAT32 partition %d (type=0x", p);
+                        s_printf("%s", ptype_str);
+                        s_printf(") at LBA ");
                         int_to_str(lba_start, boot_buf);
-                        s_printf(boot_buf);
+                        s_printf("%s", boot_buf);
                         s_printf("\n");
 
                         /* Initialize the FAT32 driver for this partition */
@@ -633,23 +632,21 @@ void kernel_main(void* mboot_ptr) {
                             mount_path[9] = '1' + fat32_mount_count;  /* /mnt/disk1, /mnt/disk2, etc. */
                             int mount_ok = vfs_mount(mount_path, VFS_FS_FAT32, NULL);
                             if (mount_ok == 0) {
-                                s_printf("[KERNEL] Mounted FAT32 at ");
-                                s_printf(mount_path);
-                                s_printf("\n");
+                                s_printf("[KERNEL] Mounted FAT32 at %s\n", mount_path);
                                 fat32_mount_count++;
                             } else {
                                 s_printf("[KERNEL] WARNING: FAT32 VFS mount failed for partition ");
                                 int_to_str(p, boot_buf);
-                                s_printf(boot_buf);
+                                s_printf("%s", boot_buf);
                                 s_printf("\n");
                             }
                         } else {
                             s_printf("[KERNEL] WARNING: FAT32 init failed for partition ");
                             int_to_str(p, boot_buf);
-                            s_printf(boot_buf);
+                            s_printf("%s", boot_buf);
                             s_printf(" (err=");
                             int_to_str(init_ok, boot_buf);
-                            s_printf(boot_buf);
+                            s_printf("%s", boot_buf);
                             s_printf(")\n");
                         }
                     }
@@ -668,7 +665,7 @@ void kernel_main(void* mboot_ptr) {
     int m = sys_fs_mount();
     s_printf("[DBG] sys_fs_mount returned ");
     int_to_str(m, boot_buf);
-    s_printf(boot_buf);
+    s_printf("%s", boot_buf);
     s_printf("\n");
     if (m != 0) {
         s_printf("[KERNEL] FATAL: Filesystem mount failed. Halting.\n");
@@ -831,9 +828,7 @@ void kernel_main(void* mboot_ptr) {
                 char ip_str[16];
                 int dns_ok = dns_resolve("example.com", ip_str, sizeof(ip_str));
                 if (dns_ok == 0) {
-                    s_printf("[KERNEL] Network OK: example.com -> ");
-                    s_printf(ip_str);
-                    s_printf("\n");
+                    s_printf("[KERNEL] Network OK: example.com -> %s\n", ip_str);
                     net_bg_state = 2;
                 }
                 // If DNS still fails, we'll retry next iteration
