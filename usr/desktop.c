@@ -56,11 +56,107 @@ static selection_box_t g_desk_selbox;
 static int g_desk_selbox_inited = 0;
 
 // --- Wallpaper Cache ---
-// Pre-computed gradient eliminates per-pixel arithmetic every frame.
+// Pre-computed gradient or loaded BMP image eliminates per-pixel arithmetic every frame.
 // This is the #1 fix for window flickering on move.
 static uint32_t* wallpaper_cache = 0;
 int wallpaper_cache_w = 0;
 static int wallpaper_cache_h = 0;
+
+// --- BMP Wallpaper Loader ---
+// Loads a 24-bit or 32-bit BMP file from the filesystem into the wallpaper cache.
+// BMP format: 14-byte file header + 40-byte info header + pixel data (bottom-up).
+// Returns 1 on success, 0 on failure.
+static int wallpaper_load_bmp(const char* path, int screen_w, int screen_h) {
+    // Read the BMP file header (54 bytes minimum)
+    uint8_t hdr[54];
+    extern int sys_fs_read(const char*, char*, int);
+    int hdr_len = sys_fs_read(path, (char*)hdr, 54);
+    if (hdr_len < 54) return 0;
+
+    // Verify BMP signature
+    if (hdr[0] != 'B' || hdr[1] != 'M') return 0;
+
+    // Parse BMP info header
+    uint32_t data_offset = *(uint32_t*)(hdr + 10);
+    int32_t  bmp_w       = *(int32_t*)(hdr + 18);
+    int32_t  bmp_h       = *(int32_t*)(hdr + 22);
+    uint16_t bpp         = *(uint16_t*)(hdr + 28);
+    uint32_t compression = *(uint32_t*)(hdr + 30);
+
+    // Only support uncompressed 24-bit or 32-bit BMPs
+    if (compression != 0) return 0;
+    if (bpp != 24 && bpp != 32) return 0;
+    if (bmp_w <= 0 || bmp_h <= 0) return 0;
+
+    // BMP height can be negative (top-down storage)
+    int top_down = 0;
+    if (bmp_h < 0) { bmp_h = -bmp_h; top_down = 1; }
+
+    // Allocate wallpaper cache if needed
+    if (!wallpaper_cache) {
+        wallpaper_cache = (uint32_t*)kmalloc(screen_w * screen_h * 4);
+        if (!wallpaper_cache) return 0;
+        wallpaper_cache_w = screen_w;
+        wallpaper_cache_h = screen_h;
+    }
+
+    // Read the entire pixel data section
+    int row_bytes = ((bmp_w * bpp + 31) / 32) * 4;  // BMP rows are padded to 4 bytes
+    int pixel_data_size = row_bytes * bmp_h;
+
+    // Read in chunks (sys_fs_read may have a size limit)
+    uint8_t* pixel_buf = (uint8_t*)kmalloc(pixel_data_size);
+    if (!pixel_buf) return 0;
+
+    // We need to seek to data_offset — read from the start and skip
+    // Since sys_fs_read always starts at offset 0, read the whole file
+    // and copy the pixel portion
+    int total_to_read = data_offset + pixel_data_size;
+    uint8_t* file_buf = (uint8_t*)kmalloc(total_to_read);
+    if (!file_buf) { kfree(pixel_buf); return 0; }
+
+    int bytes_read = sys_fs_read(path, (char*)file_buf, total_to_read);
+    if (bytes_read < (int)(data_offset + pixel_data_size)) {
+        // Might not have read everything — try with what we have
+        if (bytes_read <= (int)data_offset) {
+            kfree(pixel_buf); kfree(file_buf); return 0;
+        }
+        // Partial read — copy what we can
+        int available = bytes_read - data_offset;
+        if (available > 0) memcpy(pixel_buf, file_buf + data_offset, available);
+    } else {
+        memcpy(pixel_buf, file_buf + data_offset, pixel_data_size);
+    }
+    kfree(file_buf);
+
+    // Copy BMP pixel data into wallpaper_cache, scaling to screen size
+    // using simple nearest-neighbor sampling
+    for (int sy = 0; sy < screen_h; sy++) {
+        for (int sx = 0; sx < screen_w; sx++) {
+            // Map screen pixel to BMP pixel
+            int bx = (sx * bmp_w) / screen_w;
+            int by = (sy * bmp_h) / screen_h;
+
+            // Clamp to valid range
+            if (bx >= bmp_w) bx = bmp_w - 1;
+            if (by >= bmp_h) by = bmp_h - 1;
+
+            // Get the BMP row (bottom-up unless top_down)
+            int bmp_row = top_down ? by : (bmp_h - 1 - by);
+            uint8_t* pixel = &pixel_buf[bmp_row * row_bytes + bx * (bpp / 8)];
+
+            uint8_t b_val = pixel[0];
+            uint8_t g_val = pixel[1];
+            uint8_t r_val = pixel[2];
+            uint32_t col = 0xFF000000 | ((uint32_t)r_val << 16) | ((uint32_t)g_val << 8) | b_val;
+
+            wallpaper_cache[sy * screen_w + sx] = col;
+        }
+    }
+
+    kfree(pixel_buf);
+    return 1;
+}
 
 int desktop_is_ctx_open() {
     return g_ctx_menu.active;
@@ -234,11 +330,60 @@ static void wallpaper_cache_ensure(int w, int h) {
         wallpaper_cache_w = w;
         wallpaper_cache_h = h;
     }
-    // Fill cached gradient using theme desktop_bg color
+
+    // Try loading embedded wallpaper image first (compiled into the kernel)
+    // The image is stored at a reduced resolution and scaled up at runtime.
+    {
+        extern const int wallpaper_img_w;
+        extern const int wallpaper_img_h;
+        extern const uint32_t wallpaper_img_data[];
+        int img_w = wallpaper_img_w;
+        int img_h = wallpaper_img_h;
+
+        if (img_w > 0 && img_h > 0 && wallpaper_img_data[0] != 0) {
+            // Scale the embedded image to screen resolution using
+            // nearest-neighbor sampling (fast, no floating-point needed)
+            for (int sy = 0; sy < h; sy++) {
+                int iy = (sy * img_h) / h;
+                if (iy >= img_h) iy = img_h - 1;
+                for (int sx = 0; sx < w; sx++) {
+                    int ix = (sx * img_w) / w;
+                    if (ix >= img_w) ix = img_w - 1;
+                    wallpaper_cache[sy * w + sx] = wallpaper_img_data[iy * img_w + ix];
+                }
+            }
+            return;  // Wallpaper image loaded successfully
+        }
+    }
+
+    // Fallback: Try loading a BMP wallpaper from the filesystem
+    // Check /System/Wallpaper.bmp, then /Library/Wallpaper.bmp
+    int bmp_loaded = 0;
+    extern int sys_fs_exists(const char*);
+    if (sys_fs_exists("/System/Wallpaper.bmp")) {
+        bmp_loaded = wallpaper_load_bmp("/System/Wallpaper.bmp", w, h);
+    }
+    if (!bmp_loaded && sys_fs_exists("/Library/Wallpaper.bmp")) {
+        bmp_loaded = wallpaper_load_bmp("/Library/Wallpaper.bmp", w, h);
+    }
+
+    if (bmp_loaded) return;  // BMP loaded successfully — skip gradient
+
+    // Final fallback: Fill cached gradient using theme desktop_bg color
+    // Per-channel gradient with proper clamping to prevent underflow.
+    // The old formula (col = base - y/4) caused channel bleeding in dark
+    // mode: e.g. 0xFF1C1C1E - 31 = 0xFF1C1BFD (blue wraps, borrows from green).
     const theme_t* theme = theme_get_current();
     uint32_t base = theme->desktop_bg;
+    uint8_t base_r = (base >> 16) & 0xFF;
+    uint8_t base_g = (base >> 8) & 0xFF;
+    uint8_t base_b = base & 0xFF;
     for(int y=0; y<h; y++) {
-        uint32_t col = base - (y/4); // Gradient from base color
+        int shift = y / 4;
+        uint8_t nr = (base_r > shift) ? (base_r - shift) : 0;
+        uint8_t ng = (base_g > shift) ? (base_g - shift) : 0;
+        uint8_t nb = (base_b > shift) ? (base_b - shift) : 0;
+        uint32_t col = 0xFF000000 | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
         for(int x=0; x<w; x++) wallpaper_cache[y*w+x] = col;
     }
 }
@@ -251,10 +396,18 @@ void desktop_fill_wallpaper_region(uint32_t* buffer, int rx, int ry, int rw, int
     wallpaper_cache_ensure(w, h);
     if (!wallpaper_cache) {
         // Fallback: compute per-pixel for just the region using theme color
+        // Per-channel gradient with proper clamping (same as wallpaper_cache_ensure)
         const theme_t* theme_fb = theme_get_current();
         uint32_t base_fb = theme_fb->desktop_bg;
+        uint8_t fb_r = (base_fb >> 16) & 0xFF;
+        uint8_t fb_g = (base_fb >> 8) & 0xFF;
+        uint8_t fb_b = base_fb & 0xFF;
         for(int y=ry; y<ry+rh && y<h; y++) {
-            uint32_t col = base_fb - (y/4);
+            int shift = y / 4;
+            uint8_t nr = (fb_r > shift) ? (fb_r - shift) : 0;
+            uint8_t ng = (fb_g > shift) ? (fb_g - shift) : 0;
+            uint8_t nb = (fb_b > shift) ? (fb_b - shift) : 0;
+            uint32_t col = 0xFF000000 | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
             for(int x=rx; x<rx+rw && x<w; x++) buffer[y*w+x] = col;
         }
         return;
@@ -350,10 +503,18 @@ void desktop_draw(uint32_t* buffer) {
         memcpy(buffer, wallpaper_cache, w * h * 4);
     } else {
         // Fallback if kmalloc failed — use theme color
+        // Per-channel gradient with proper clamping (same as wallpaper_cache_ensure)
         const theme_t* theme_dd = theme_get_current();
         uint32_t base_dd = theme_dd->desktop_bg;
+        uint8_t dd_r = (base_dd >> 16) & 0xFF;
+        uint8_t dd_g = (base_dd >> 8) & 0xFF;
+        uint8_t dd_b = base_dd & 0xFF;
         for(int y=0; y<h; y++) {
-            uint32_t col = base_dd - (y/4);
+            int shift = y / 4;
+            uint8_t nr = (dd_r > shift) ? (dd_r - shift) : 0;
+            uint8_t ng = (dd_g > shift) ? (dd_g - shift) : 0;
+            uint8_t nb = (dd_b > shift) ? (dd_b - shift) : 0;
+            uint32_t col = 0xFF000000 | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
             for(int x=0; x<w; x++) buffer[y*w+x] = col;
         }
     }

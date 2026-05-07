@@ -244,17 +244,9 @@ static const uint8_t cursor_bmp[] = {
 // =============================================================================
 
 void add_log(const char* msg) {
-    if (log_line_count >= 32) {
-        char* new_start = strchr(install_log, '\n');
-        if (new_start) {
-            new_start++;
-            memmove(install_log, new_start, strlen(new_start) + 1);
-            log_line_count--;
-        }
-    }
-    strcat(install_log, msg);
-    strcat(install_log, "\n");
-    log_line_count++;
+    // VGA logs removed — no on-screen log text during installation.
+    // Debug output should go to serial port only.
+    (void)msg;  // Suppress unused parameter warning
 }
 
 // =============================================================================
@@ -267,7 +259,8 @@ void add_log(const char* msg) {
 void poll_input(void) {
     static uint8_t packet[4];  // 4 bytes for Intellimouse scroll wheel
     static int cycle = 0;
-    static uint8_t mouse_id = 0;  // 0x03 = Intellimouse (has scroll wheel)
+    static uint8_t mouse_id = 0x03;  // Always use Intellimouse (4-byte) mode
+                                      // to prevent scroll-to-click bug
 
     mb_prev = mb_left;
     mb_clicked = 0;  // Reset click flag each poll

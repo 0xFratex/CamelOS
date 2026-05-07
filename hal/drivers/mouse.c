@@ -135,7 +135,14 @@ void init_mouse() {
     mouse_btn_middle = 0;
     mouse_scroll_delta = 0;
     mouse_cycle = 0;
-    mouse_has_wheel = 0;
+    mouse_has_wheel = 1;  // Default to Intellimouse (4-byte) mode —
+                          // all modern emulators (QEMU, VirtualBox, Bochs)
+                          // support the scroll wheel protocol.  Prevents
+                          // the "scroll sends a click" bug that occurs when
+                          // the mouse sends 4-byte packets but the driver
+                          // only reads 3 (the extra scroll byte is consumed
+                          // as byte 0 of the next packet and can have bit 0
+                          // set, causing phantom left-clicks).
 
     uint8_t _status;
     uint8_t ack __attribute__((unused));
@@ -160,6 +167,9 @@ void init_mouse() {
     mouse_write(0xFF);
     ack = mouse_read(); // Ack (0xFA)
 
+    // Small delay after reset to let the mouse controller settle
+    for (volatile int d = 0; d < 10000; d++) {}
+
     // --- Enable Intellimouse (scroll wheel) protocol ---
     // Step 1: Set sample rate 200
     mouse_write(0xF3); // Set Sample Rate command
@@ -182,16 +192,28 @@ void init_mouse() {
     // Step 4: Read device ID — if 0x03, Intellimouse is supported
     mouse_write(0xF2); // Get Device ID
     ack = mouse_read();
+
+    // Small delay before reading device ID to avoid consuming
+    // stale bytes from the buffer
+    for (volatile int d = 0; d < 5000; d++) {}
+
     uint8_t device_id = mouse_read();
 
     if (device_id == 0x03) {
+        // Confirmed Intellimouse — wheel already enabled above
         mouse_has_wheel = 1;
-        // Re-set sample rate to reasonable value
-        mouse_write(0xF3);
-        ack = mouse_read();
-        mouse_write(100);  // 100 samples/sec
-        ack = mouse_read();
     }
+    // Even if device_id != 0x03, keep mouse_has_wheel = 1.
+    // QEMU/VirtualBox sometimes fail the detection sequence but
+    // still send 4-byte packets.  Reading 3 bytes when 4 are
+    // sent causes the scroll byte to be misinterpreted as a
+    // button click (the "scroll sends click" bug).
+
+    // Set a reasonable sample rate
+    mouse_write(0xF3);
+    ack = mouse_read();
+    mouse_write(100);  // 100 samples/sec
+    ack = mouse_read();
 
     // Enable Streaming
     mouse_write(0xF4);

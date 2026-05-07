@@ -1,5 +1,6 @@
 #include "../common/ports.h"
 #include "ata.h"
+#include "../include/string.h"
 
 #define ATA_DATA 0x1F0
 #define ATA_ERROR 0x1F1

@@ -519,10 +519,17 @@ void draw_window_animated(window_t* w, int mx, int my) {
             w->anim_t = 1.0f;
             // Finish state transitions
             if (w->anim_state == 2) { 
-                // Close animation finished — use ws_close() which properly
-                // invokes the close_callback (to free app instance data)
-                // before destroying the window.
-                ws_close(w); 
+                // Close animation finished — call close_callback to free
+                // app instance data, then destroy the window immediately.
+                // We do NOT call ws_close() here because ws_close() starts
+                // a NEW close animation (WIN_ANIM_CLOSING == 2), which would
+                // cause an infinite animation loop.
+                if (w->close_callback) {
+                    typedef void (*close_cb)(window_t*);
+                    ((close_cb)w->close_callback)(w);
+                }
+                ws_destroy_window(w);
+                if (active_win == w) active_win = 0;
                 return; 
             }
             if (w->anim_state == 3) { w->state = WIN_STATE_MINIMIZED; } // Minimize

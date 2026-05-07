@@ -110,7 +110,10 @@ void pci_check_function(uint8_t bus, uint8_t device, uint8_t function) {
 
 void pci_init() {
     s_printf("\n[PCI] Scanning Bus...\n");
-    sys_print("PCI: Scanning...\n");
+    {
+        extern void sys_print(const char* str);
+        sys_print("PCI: Scanning...\n");
+    }
     int device_count = 0;
     for(uint16_t bus = 0; bus < 256; bus++) {
         for(uint8_t slot = 0; slot < 32; slot++) {
