@@ -403,10 +403,99 @@ static void tab_close(int idx) {
 }
 
 // ============================================================
-// SECTION 5: HTTP Fetch with HTTPS support
+// SECTION 5: JavaScript Browser API Callbacks (mujs C functions)
 // ============================================================
 
-#define BROWSER_RESPONSE_SIZE 262144  // 256KB — modern pages are 100KB+; 32KB was too small
+// console.log() implementation
+static void js_browser_console_log(js_State* J) {
+    const char* msg = js_tostring(J, 1);
+    s_printf("[JS] %s\n", msg ? msg : "undefined");
+    js_pushundefined(J);
+}
+
+// document.getElementById(id) implementation
+static void js_browser_doc_getElementById(js_State* J) {
+    const char* id = js_tostring(J, 1);
+    if (!id || !dom_doc) { js_pushnull(J); return; }
+    char selector[128];
+    selector[0] = '#';
+    int i = 0;
+    while (id[i] && i < 126) { selector[i+1] = id[i]; i++; }
+    selector[i+1] = 0;
+    dom_node_t* node = dom_query_selector(dom_doc, selector);
+    if (!node) { js_pushnull(J); return; }
+    js_newobject(J);
+    if (node->tag[0]) { js_pushstring(J, node->tag); js_setproperty(J, -2, "tagName"); }
+    js_pushstring(J, id); js_setproperty(J, -2, "id");
+}
+
+// document.querySelector(selector) implementation
+static void js_browser_doc_querySelector(js_State* J) {
+    const char* sel = js_tostring(J, 1);
+    if (!sel || !dom_doc) { js_pushnull(J); return; }
+    dom_node_t* node = dom_query_selector(dom_doc, sel);
+    if (!node) { js_pushnull(J); return; }
+    js_newobject(J);
+    if (node->tag[0]) { js_pushstring(J, node->tag); js_setproperty(J, -2, "tagName"); }
+}
+
+// document.createElement(tag) implementation
+static void js_browser_doc_createElement(js_State* J) {
+    const char* tag = js_tostring(J, 1);
+    if (!tag) { js_pushnull(J); return; }
+    dom_node_t* node = dom_create_element(tag);
+    js_newobject(J);
+    js_pushstring(J, tag); js_setproperty(J, -2, "tagName");
+    js_pushstring(J, ""); js_setproperty(J, -2, "innerHTML");
+    js_pushstring(J, ""); js_setproperty(J, -2, "id");
+    // Store native ptr for later DOM manipulation
+    if (node) {
+        js_pushnumber(J, (double)(uintptr_t)node);
+        js_setproperty(J, -2, "__native_ptr");
+    }
+}
+
+// document.write(html) implementation
+static void js_browser_doc_write(js_State* J) {
+    const char* html = js_tostring(J, 1);
+    if (html) s_printf("[JS] document.write: %s\n", html);
+    js_pushundefined(J);
+}
+
+// window.setTimeout(fn, ms) stub
+static void js_browser_window_setTimeout(js_State* J) {
+    int ms = js_tointeger(J, 2);
+    (void)ms;
+    js_pushnumber(J, 0);
+}
+
+// window.setInterval(fn, ms) stub
+static void js_browser_window_setInterval(js_State* J) {
+    int ms = js_tointeger(J, 2);
+    (void)ms;
+    js_pushnumber(J, 0);
+}
+
+// alert(msg) implementation
+static void js_browser_alert(js_State* J) {
+    const char* msg = js_tostring(J, 1);
+    s_printf("[JS] alert: %s\n", msg ? msg : "");
+    js_pushundefined(J);
+}
+
+// parseInt(str) implementation
+static void js_browser_parseInt(js_State* J) {
+    const char* s = js_tostring(J, 1);
+    int val = 0;
+    if (s) { while (*s >= '0' && *s <= '9') { val = val * 10 + (*s - '0'); s++; } }
+    js_pushnumber(J, (double)val);
+}
+
+// ============================================================
+// SECTION 6: HTTP Fetch with HTTPS support
+// ============================================================
+
+#define BROWSER_RESPONSE_SIZE 131072  // 128KB — modern pages are 100KB+; 32KB was too small; 256KB causes fragmentation
 
 static void browser_load_page(const char* url) {
     // Empty URL = new tab page
@@ -940,6 +1029,52 @@ static void browser_load_page(const char* url) {
             if (scripts && scripts[0]) {
                 js_state = js_newstate(NULL, NULL, JS_STRICT);
                 if (js_state) {
+                    // Register browser APIs with mujs so scripts can use document, window, console
+                    // -- console.log --
+                    js_newobject(js_state);
+                    js_newcfunction(js_state, js_browser_console_log, "log", 0);
+                    js_setproperty(js_state, -2, "log");
+                    js_setglobal(js_state, "console");
+                    // -- document object --
+                    js_newobject(js_state);
+                    js_newcfunction(js_state, js_browser_doc_getElementById, "getElementById", 1);
+                    js_setproperty(js_state, -2, "getElementById");
+                    js_newcfunction(js_state, js_browser_doc_querySelector, "querySelector", 1);
+                    js_setproperty(js_state, -2, "querySelector");
+                    js_newcfunction(js_state, js_browser_doc_createElement, "createElement", 1);
+                    js_setproperty(js_state, -2, "createElement");
+                    js_newcfunction(js_state, js_browser_doc_write, "write", 1);
+                    js_setproperty(js_state, -2, "write");
+                    // document.body
+                    js_newobject(js_state);
+                    js_pushstring(js_state, "BODY");
+                    js_setproperty(js_state, -2, "tagName");
+                    js_setproperty(js_state, -2, "body");
+                    // document.location
+                    js_newobject(js_state);
+                    js_pushstring(js_state, url_buf);
+                    js_setproperty(js_state, -2, "href");
+                    js_setproperty(js_state, -2, "location");
+                    js_setglobal(js_state, "document");
+                    // -- window object --
+                    js_newobject(js_state);
+                    js_getglobal(js_state, "document");
+                    js_setproperty(js_state, -2, "document");
+                    js_newobject(js_state);
+                    js_pushstring(js_state, url_buf);
+                    js_setproperty(js_state, -2, "href");
+                    js_setproperty(js_state, -2, "location");
+                    js_newcfunction(js_state, js_browser_window_setTimeout, "setTimeout", 2);
+                    js_setproperty(js_state, -2, "setTimeout");
+                    js_newcfunction(js_state, js_browser_window_setInterval, "setInterval", 2);
+                    js_setproperty(js_state, -2, "setInterval");
+                    js_setglobal(js_state, "window");
+                    // -- other globals --
+                    js_newcfunction(js_state, js_browser_alert, "alert", 1);
+                    js_setglobal(js_state, "alert");
+                    js_newcfunction(js_state, js_browser_parseInt, "parseInt", 1);
+                    js_setglobal(js_state, "parseInt");
+
                     if (js_dostring(js_state, scripts)) s_printf("[Browser] JS execution error\n");
                     js_freestate(js_state); js_state = 0;
                 }

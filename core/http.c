@@ -13,11 +13,11 @@
 #include "../hal/cpu/timer.h"
 #include "../usr/framework.h"
 
-#define HTTP_BUFFER_SIZE (32768 + 16)
+#define HTTP_BUFFER_SIZE (8192 + 16)
 #define HTTP_MAX_REDIRECTS 5
 #define HTTP_TIMEOUT 15000 // 15 seconds - increased to get full page content
 #define HTTP_MAX_URL_LEN 1024
-#define HTTP_MAX_HEADERS_SIZE (32768 + 16)
+#define HTTP_MAX_HEADERS_SIZE (8192 + 16)
 
 // ============================================================================
 // DEBUG CONFIGURATION - Set to 0 for production

@@ -106,30 +106,45 @@ void* kmalloc(size_t size) {
     // Align size to 16 bytes
     if (size % 16 != 0) size += 16 - (size % 16);
 
-    mem_block_t* curr = heap_head;
-    mem_block_t* best_fit = 0;
-    size_t best_size_diff = 0xFFFFFFFF;
+    mem_block_t* curr;
+    mem_block_t* best_fit;
+    size_t best_size_diff;
 
-    // Pass 1: Find Best Fit
-    while (curr) {
-        if (curr->free && curr->actual_size >= (size + sizeof(mem_guard_t))) {
-            size_t diff = curr->actual_size - (size + sizeof(mem_guard_t));
+    // Try up to 2 passes: first normal search, then after coalescing
+    for (int pass = 0; pass < 2; pass++) {
+        curr = heap_head;
+        best_fit = 0;
+        best_size_diff = 0xFFFFFFFF;
 
-            // Exact match optimization
-            if (diff == 0) {
-                best_fit = curr;
-                break;
+        // Find Best Fit
+        while (curr) {
+            if (curr->free && curr->actual_size >= (size + sizeof(mem_guard_t))) {
+                size_t diff = curr->actual_size - (size + sizeof(mem_guard_t));
+
+                // Exact match optimization
+                if (diff == 0) {
+                    best_fit = curr;
+                    break;
+                }
+
+                if (diff < best_size_diff) {
+                    best_fit = curr;
+                    best_size_diff = diff;
+                }
             }
-
-            if (diff < best_size_diff) {
-                best_fit = curr;
-                best_size_diff = diff;
-            }
+            curr = curr->next;
         }
-        curr = curr->next;
+
+        // Found a block — proceed
+        if (best_fit) break;
+
+        // No block found — coalesce and retry once
+        if (pass == 0) {
+            coalesce_heap();
+        }
     }
 
-    // No suitable block found
+    // No suitable block found even after coalescing
     if (!best_fit) {
         spinlock_irqsave_release(&g_heap_lock, flags);
         return 0;

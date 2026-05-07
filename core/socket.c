@@ -78,11 +78,11 @@ static socket_t* socket_alloc() {
             sockets[i].timeout = SOCKET_TIMEOUT;
             sockets[i].listener_id = -1;
 
-            // Allocate default buffers
-            sockets[i].recv_buffer_size = 32768 + 16;
-            sockets[i].recv_buffer = (uint8_t*)kmalloc(32768 + 16);
-            sockets[i].send_buffer_size = 32768 + 16;
-            sockets[i].send_buffer = (uint8_t*)kmalloc(32768 + 16);
+            // Allocate default buffers (8KB — reduces fragmentation vs old 32KB)
+            sockets[i].recv_buffer_size = 8192 + 16;
+            sockets[i].recv_buffer = (uint8_t*)kmalloc(8192 + 16);
+            sockets[i].send_buffer_size = 8192 + 16;
+            sockets[i].send_buffer = (uint8_t*)kmalloc(8192 + 16);
 
             // Check for allocation failure
             if (!sockets[i].recv_buffer || !sockets[i].send_buffer) {
