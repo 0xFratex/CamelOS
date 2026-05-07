@@ -229,6 +229,12 @@ void init_mouse() {
     mouse_wait(1);
     outb(0x64, 0xA8); // Enable Aux
 
+    // Drain any stale data from the PS/2 buffer before we start
+    for (volatile int d = 0; d < 1000; d++) {}
+    while (inb(0x64) & 0x01) {
+        inb(0x60);  // Discard
+    }
+
     mouse_wait(1);
     outb(0x64, 0x20); // Get Compaq Status Byte
     mouse_wait(0);
@@ -243,40 +249,53 @@ void init_mouse() {
     outb(0x60, _status);
 
     // Reset Mouse
+    // The PS/2 mouse responds to 0xFF with THREE bytes:
+    //   0xFA = ACK
+    //   0xAA = BAT (Basic Assurance Test) completion
+    //   0x00 = Default Device ID
+    // We MUST read all three.  Leaving stale bytes in the buffer
+    // shifts all subsequent command/response reads, causing the
+    // Intellimouse detection to fail and producing phantom clicks
+    // and cursor teleportation.
     mouse_write(0xFF);
-    ack = mouse_read(); // Ack (0xFA)
+    ack = mouse_read();   // 0xFA — ACK
+    ack = mouse_read();   // 0xAA — BAT complete
+    ack = mouse_read();   // 0x00 — Default Device ID
 
-    // Small delay after reset to let the mouse controller settle
-    for (volatile int d = 0; d < 10000; d++) {}
+    // Drain any extra leftover bytes (some controllers send additional data)
+    for (volatile int d = 0; d < 5000; d++) {}
+    while ((inb(0x64) & 0x21) == 0x21) {
+        inb(0x60);  // Discard
+    }
 
     // --- Enable Intellimouse (scroll wheel) protocol ---
+    // The magic sequence: Set Sample Rate 200, then 100, then 80.
+    // After this, a Get Device ID command returns 0x03 if the mouse
+    // supports the scroll wheel protocol (4-byte packets).
+
     // Step 1: Set sample rate 200
     mouse_write(0xF3); // Set Sample Rate command
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
     mouse_write(200);  // Sample rate = 200
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
 
     // Step 2: Set sample rate 100
     mouse_write(0xF3);
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
     mouse_write(100);
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
 
     // Step 3: Set sample rate 80
     mouse_write(0xF3);
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
     mouse_write(80);
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
 
     // Step 4: Read device ID — if 0x03, Intellimouse is supported
-    mouse_write(0xF2); // Get Device ID
-    ack = mouse_read();
-
-    // Small delay before reading device ID to avoid consuming
-    // stale bytes from the buffer
-    for (volatile int d = 0; d < 5000; d++) {}
-
-    uint8_t device_id = mouse_read();
+    // The mouse responds to 0xF2 with: ACK (0xFA) + Device ID byte
+    mouse_write(0xF2);       // Get Device ID
+    ack = mouse_read();      // 0xFA — ACK
+    uint8_t device_id = mouse_read();  // Device ID (0x00=standard, 0x03=Intellimouse)
 
     if (device_id == 0x03) {
         // Confirmed Intellimouse — wheel enabled, 4-byte packets
@@ -289,13 +308,28 @@ void init_mouse() {
 
     // Set a reasonable sample rate
     mouse_write(0xF3);
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
     mouse_write(100);  // 100 samples/sec
-    ack = mouse_read();
+    ack = mouse_read(); // ACK
 
     // Enable Streaming
     mouse_write(0xF4);
-    ack = mouse_read(); // Ack
+    ack = mouse_read(); // ACK
+
+    // Final drain: discard any stale bytes left in the buffer.
+    // Without this, leftover ACK/ID bytes from the init sequence
+    // are misinterpreted as mouse packets, causing teleportation
+    // and phantom clicks on the very first mouse_process() calls.
+    for (volatile int d = 0; d < 10000; d++) {}
+    while ((inb(0x64) & 0x21) == 0x21) {
+        inb(0x60);  // Discard
+    }
+
+    // Clear ring buffer and packet assembly state one more time
+    // in case IRQ12 fired during init and pushed stale data
+    mouse_ring_head = 0;
+    mouse_ring_tail = 0;
+    pkt_cycle = 0;
 
     // Unmask IRQ 12 on PIC (Slave)
     uint8_t mask = inb(0xA1);
