@@ -26,6 +26,9 @@ extern int desktop_is_ctx_open();
 // (used by bubbleview.c to keep dispatching mouse events during the drag)
 extern int desktop_selbox_active();
 
+// Cancel the desktop selbox (e.g., when a double-click opens an item)
+extern void desktop_cancel_selbox();
+
 // Context menu functions (defined in bubbleview.c)
 extern void ctx_menu_show(int x, int y, int type, void* target);
 extern void desktop_refresh();

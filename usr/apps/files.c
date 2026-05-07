@@ -86,10 +86,21 @@ typedef struct {
     // Selection Box (rubber-band multi-select)
     selection_box_t selbox;
     int selbox_inited;
+
+    // Double-click tracking (for open-on-double-click behavior)
+    int last_click_idx;     // Index of last clicked entry (-1 = none)
+    int last_click_frame;   // Frame counter when last click happened
 } FMInstance;
 
 static FMInstance fm_instances[MAX_FM_INSTANCES];
 static FMInstance* fm_cur = 0;
+
+// Global frame counter for double-click timing
+static int fm_frame_counter = 0;
+
+// Double-click threshold: if two clicks on the same item happen within
+// this many frames, it's a double-click (open). At ~60fps, 30 = 0.5s.
+#define FM_DBLCLICK_FRAMES 30
 
 // Static temp buffer for files_refresh (avoids 8KB stack allocation)
 static pfs32_direntry_t fm_temp_entries[FM_MAX_ENTRIES];
@@ -121,6 +132,8 @@ static FMInstance* fm_alloc_instance(int window_id) {
             // Initialize rubber-band selection box for this instance
             selbox_init(&fm_instances[i].selbox);
             fm_instances[i].selbox_inited = 1;
+            fm_instances[i].last_click_idx = -1;
+            fm_instances[i].last_click_frame = 0;
             return &fm_instances[i];
         }
     }
@@ -894,6 +907,8 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
         return; // During drag, don't process icon clicks
     }
 
+    fm_frame_counter++; // Tick the double-click timer every call
+
     for(int i = 0; i < fm_cur->entry_count; i++) {
         int col = i % cols;
         int row = i / cols;
@@ -903,6 +918,7 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
         
         if (x >= ix && x < ix + CELL_W && y >= iy && y < iy + CELL_H) {
             if (btn == 2) {
+                // Right-click on icon: select it and show context menu
                 memset(fm_cur->is_selected, 0, sizeof(fm_cur->is_selected));
                 fm_cur->is_selected[i] = 1;
                 fm_cur->ctx_active = 1;
@@ -912,19 +928,26 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
                 return;
             }
             
-            if (fm_cur->is_selected[i]) {
+            // Left-click on icon: single click = select, double click = open
+            // Check if this is a double-click (same item clicked within threshold)
+            int is_dblclick = 0;
+            if (fm_cur->last_click_idx == i &&
+                (fm_frame_counter - fm_cur->last_click_frame) < FM_DBLCLICK_FRAMES) {
+                is_dblclick = 1;
+            }
+            
+            // Record this click for future double-click detection
+            fm_cur->last_click_idx = i;
+            fm_cur->last_click_frame = fm_frame_counter;
+            
+            if (is_dblclick && fm_cur->is_selected[i]) {
+                // Double-click: open the item
                 int elen = strlen(fm_cur->entries[i].filename);
                 int is_app_dir = (fm_cur->entries[i].attributes & 0x10) &&
                     (elen > 4 && strcmp(fm_cur->entries[i].filename + elen - 4, ".app") == 0);
                 
                 if ((fm_cur->entries[i].attributes & 0x10) && !is_app_dir) {
                     fm_navigate_into(fm_cur->entries[i].filename);
-                } else if (is_app_dir) {
-                    char full_path[256];
-                    if (fm_build_path(full_path, sizeof(full_path), fm_cur->path, fm_cur->entries[i].filename)) {
-                        extern void desktop_execute_item(const char*, int);
-                        desktop_execute_item(full_path, 0);
-                    }
                 } else {
                     char full_path[256];
                     if (fm_build_path(full_path, sizeof(full_path), fm_cur->path, fm_cur->entries[i].filename)) {
@@ -932,9 +955,12 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
                         desktop_execute_item(full_path, 0);
                     }
                 }
+                // Reset double-click state after opening
+                fm_cur->last_click_idx = -1;
                 return;
             }
             
+            // Single click: select this item only, deselect others
             memset(fm_cur->is_selected, 0, sizeof(fm_cur->is_selected));
             fm_cur->is_selected[i] = 1;
             // Cancel any active rubber-band selection since we clicked an icon

@@ -1183,6 +1183,13 @@ void handle_input(int mx, int my, int lb, int rb) {
                     }
                     desktop_execute_item(path, is_dir);
                     last_select_idx = -1; // Reset
+                    // Cancel any desktop selbox that might have started from
+                    // the first click of this double-click sequence
+                    extern int desktop_selbox_active();
+                    if (desktop_selbox_active()) {
+                        extern void desktop_cancel_selbox();
+                        desktop_cancel_selbox();
+                    }
                     return;
                 }
                 last_select_idx = hit_idx;

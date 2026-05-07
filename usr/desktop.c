@@ -71,6 +71,14 @@ int desktop_selbox_active() {
     return g_desk_selbox_inited && g_desk_selbox.state == SELBOX_DRAGGING;
 }
 
+// Cancel the desktop selbox (e.g., when a double-click opens an item
+// and the selbox from the first click needs to be dismissed).
+void desktop_cancel_selbox() {
+    if (g_desk_selbox_inited) {
+        selbox_cancel(&g_desk_selbox);
+    }
+}
+
 pfs32_direntry_t desk_entries[32];
 int desk_count = 0;
 int desk_selected[32];
@@ -398,41 +406,57 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
             return;
         }
 
-        int x = GRID_START_X;
-        int y = GRID_START_Y;
-        int hit = 0;
-        for(int i=0; i<desk_count; i++) {
-            if (mx >= x && mx <= x+48 && my >= y && my <= y+60) {
-                memset(desk_selected, 0, sizeof(desk_selected));
-                desk_selected[i] = 1;
-                hit = 1;
-                // Clicked on an icon — cancel any active selection box
-                selbox_cancel(&g_desk_selbox);
-                break;
-            }
-            y += ICON_SPACING_Y;
-            if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
-        }
-        if(!hit) {
-            // Clicked on empty desktop space — start rubber-band selection
-            // First check if we're already dragging a selection
-            if (g_desk_selbox.state == SELBOX_DRAGGING) {
-                // Update the selection and select icons inside it
-                selbox_update(&g_desk_selbox, mx, my);
-                desktop_apply_selection(&g_desk_selbox);
-            } else {
-                // Start a new selection drag
-                memset(desk_selected, 0, sizeof(desk_selected));
-                selbox_start(&g_desk_selbox, mx, my);
-            }
-        }
-    } else {
-        // Mouse button not pressed — finish any active selection drag.
-        // selbox_end() sets state to INACTIVE so the rubber-band visual
-        // disappears.  Selected items remain highlighted via desk_selected[]
-        // which is independent of the selbox state.
+        // If the selbox is already being dragged, just update it.
+        // This handles the continuous drag dispatch from bubbleview.c
+        // where desktop_on_mouse is called every frame while lb is held.
         if (g_desk_selbox.state == SELBOX_DRAGGING) {
+            selbox_update(&g_desk_selbox, mx, my);
+            desktop_apply_selection(&g_desk_selbox);
+            return;
+        }
+
+        // Start a new selbox drag from this point.  We always start the
+        // selbox — even if the click is on an icon — so the user can
+        // drag-select starting near icons.  The selbox_start coordinates
+        // are recorded; on release, if the user didn't drag far enough
+        // for the selbox to be visible (min_drag threshold), we treat it
+        // as a simple click and handle icon selection instead.
+        selbox_start(&g_desk_selbox, mx, my);
+    } else {
+        // Mouse button released — finish any active selection drag.
+        if (g_desk_selbox.state == SELBOX_DRAGGING) {
+            // Check if this was a real drag or just a click (no movement)
+            int rx, ry, rw, rh;
+            int was_drag = 0;
+            if (selbox_get_rect(&g_desk_selbox, &rx, &ry, &rw, &rh)) {
+                if (rw >= g_desk_selbox.min_drag || rh >= g_desk_selbox.min_drag) {
+                    was_drag = 1;
+                }
+            }
+
             selbox_end(&g_desk_selbox);
+
+            if (!was_drag) {
+                // User clicked without dragging — treat as a simple click.
+                // Check if an icon was hit and select it.
+                int x = GRID_START_X;
+                int y = GRID_START_Y;
+                for(int i=0; i<desk_count; i++) {
+                    if (mx >= x && mx <= x+48 && my >= y && my <= y+60) {
+                        memset(desk_selected, 0, sizeof(desk_selected));
+                        desk_selected[i] = 1;
+                        return;
+                    }
+                    y += ICON_SPACING_Y;
+                    if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
+                }
+                // Clicked on empty space without dragging — deselect all
+                memset(desk_selected, 0, sizeof(desk_selected));
+            }
+            // If it was a drag, the selection was already applied by
+            // desktop_apply_selection() during the drag. Items stay
+            // highlighted via desk_selected[] which is independent
+            // of the selbox state.
         }
     }
 }
