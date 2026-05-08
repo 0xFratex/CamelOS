@@ -98,6 +98,14 @@ void ioapic_set_gsi_redirect(uint8_t gsi, uint8_t vector, uint8_t cpu_apic_id, i
     s_printf(" -> Vector "); int_to_str(vector, buf); s_printf(buf); s_printf("\n");
 }
 
+// Mask a specific GSI in the IO-APIC (set bit 16 = masked)
+void ioapic_mask_gsi(uint8_t gsi) {
+    uint32_t low_index = IOREDTBL + (gsi * 2);
+    uint32_t low = ioapic_read(low_index);
+    low |= (1 << 16);  // Set mask bit
+    ioapic_write(low_index, low);
+}
+
 // Track whether APIC has been initialized (guard for EOI)
 static int apic_initialized = 0;
 

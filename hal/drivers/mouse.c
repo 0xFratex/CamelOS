@@ -81,19 +81,17 @@ uint8_t mouse_read() {
 // ============================================================================
 // mouse_handler() — Called from IRQ12 (ISR context) as a safety net
 //
-// IRQ12 is masked in the PIC (see init_mouse), so this should never fire
-// on QEMU or VirtualBox.  On real hardware with IO-APIC routing GSI 12,
-// it might still fire — in that case, just read and discard the byte to
-// prevent an IRQ storm.  The real data will be picked up by the polling
-// path in mouse_process().
+// This should NEVER fire after init_mouse() masks IRQ12 in both the PIC
+// and the IO-APIC.  If it does fire (e.g. on hardware where the IO-APIC
+// mask is ignored), we must NOT consume the byte from port 0x60 — leave
+// it for the polling path in mouse_process().  Just send EOI and return.
+// If we read the byte here, the polling path would never see it.
 // ============================================================================
 void mouse_handler() {
-    // Read status to check if there's really mouse data
-    uint8_t status = inb(0x64);
-    if (status & 0x21) {
-        // Output buffer full with mouse data — read and discard it
-        inb(0x60);
-    }
+    // Do NOT read port 0x60 here — that would consume the byte and
+    // prevent mouse_process() from seeing it.  Just return and let
+    // the polling path handle the data.
+    // The ISR stub in isr.c will send APIC EOI after we return.
 }
 
 // ============================================================================
@@ -289,16 +287,24 @@ void init_mouse() {
     pkt_cycle = 0;
 
     // ================================================================
-    // MASK IRQ12 in the PIC — we use pure polling, not interrupts.
-    // IRQ12 is on the slave PIC (port 0xA1), bit 4.
-    // This prevents the IRQ12 handler from firing and racing with
-    // the polling path in mouse_process().
+    // MASK IRQ12 — we use pure polling, not interrupts.
+    // Must mask in BOTH the legacy PIC and the IO-APIC, because:
+    //   - The PIC slave (port 0xA1 bit 4) handles legacy IRQ12
+    //   - The IO-APIC routes GSI 12 → Vector 44 independently
+    // If only the PIC is masked, the IO-APIC still delivers IRQ12,
+    // and the ISR mouse_handler() would consume mouse bytes before
+    // the polling path in mouse_process() can read them.
     // ================================================================
     uint8_t slave_mask = inb(0xA1);
-    slave_mask |= 0x10;    // Set bit 4 to mask IRQ12
+    slave_mask |= 0x10;    // Set bit 4 to mask IRQ12 in PIC
     outb(0xA1, slave_mask);
 
-    // Re-enable interrupts — but IRQ12 won't fire because it's masked.
+    // Mask GSI 12 in the IO-APIC (set bit 16 = masked)
+    extern void ioapic_mask_gsi(uint8_t gsi);
+    ioapic_mask_gsi(12);
+
+    // Re-enable interrupts — IRQ12 won't fire because it's masked
+    // in both the PIC and IO-APIC.
     // All other interrupts (timer, keyboard, network) work normally.
     asm volatile("sti");
 }

@@ -1473,6 +1473,34 @@ int welcome_setup_handle_key(int key) {
         return 0;
     }
     
+    // Welcome screen: Enter/Space advances to keyboard selection
+    if (g_setup.state == SETUP_STATE_WELCOME) {
+        if (key == 0x0D || key == 0x0A || key == ' ') {  // Enter or Space
+            g_setup.state = SETUP_STATE_KEYBOARD;
+            g_setup.current_step = 1;
+            g_setup.input_buffer[0] = 0;
+            g_setup.input_cursor = 0;
+            g_setup.input_active = 1;
+            return 1;
+        }
+        return 0;
+    }
+    
+    // Theme screen: Enter/Space finishes setup (same as "Get Started" button)
+    if (g_setup.state == SETUP_STATE_THEME) {
+        if (key == 0x0D || key == 0x0A || key == ' ') {  // Enter or Space
+            g_setup.config.theme = g_setup.selected_theme_idx;
+            int save_ok = welcome_setup_finish();
+            if (save_ok == 0) {
+                g_setup.state = SETUP_STATE_COMPLETE;
+            } else {
+                s_printf("[SETUP] Save failed - staying on theme page for retry.\n");
+            }
+            return 1;
+        }
+        return 0;
+    }
+    
     // Keyboard layout list navigation with arrow keys
     if (g_setup.state == SETUP_STATE_KEYBOARD) {
         if (key == 128 + 2) { // KEY_UP
