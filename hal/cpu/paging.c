@@ -54,6 +54,7 @@ void switch_page_directory(page_directory_t* dir) {
 page_table_t* clone_table(page_table_t* src, uint32_t* physAddr) {
     // Allocate a new page table, which is 4KB aligned
     page_table_t* table = (page_table_t*)kmalloc_ap(sizeof(page_table_t), physAddr);
+    if (!table) return 0;
     memset(table, 0, sizeof(page_table_t));
 
     // Copy entries
@@ -72,6 +73,10 @@ void init_paging() {
 
     // Allocate a page directory (aligned 4K)
     kernel_directory = (page_directory_t*)kmalloc_a(sizeof(page_directory_t));
+    if (!kernel_directory) {
+        s_printf("[PAGING] FATAL: failed to allocate kernel page directory!\n");
+        return;
+    }
     memset(kernel_directory, 0, sizeof(page_directory_t));
 
     // We need the physical address of tablesPhysical to load into CR3
@@ -90,8 +95,13 @@ void init_paging() {
 
         if (!kernel_directory->tables[table_idx]) {
             uint32_t t_phys;
-            kernel_directory->tables[table_idx] = (page_table_t*)kmalloc_ap(sizeof(page_table_t), &t_phys);
-            memset(kernel_directory->tables[table_idx], 0, sizeof(page_table_t));
+            page_table_t* new_table = (page_table_t*)kmalloc_ap(sizeof(page_table_t), &t_phys);
+            if (!new_table) {
+                s_printf("[PAGING] FATAL: kmalloc_ap failed for identity map table %d\n", table_idx);
+                return;
+            }
+            memset(new_table, 0, sizeof(page_table_t));
+            kernel_directory->tables[table_idx] = new_table;
             kernel_directory->tablesPhysical[table_idx] = t_phys | 0x7;
         }
 
@@ -146,7 +156,11 @@ void paging_set_user_page(uint32_t virtual_addr, int user_accessible) {
     );
 }
 
-// 1. Add this function to map specific regions (like Video RAM)
+// Map a region of physical memory into the virtual address space.
+// Maps into kernel_directory and syncs to current_directory if different.
+// CRITICAL: This function must add NULL checks for kmalloc_ap failures
+// to prevent writing through NULL pointers (which would cause immediate
+// page faults at address 0 instead of deferred ones at the target address).
 void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, uint32_t flags) {
     if (!kernel_directory) return;
 
@@ -166,8 +180,14 @@ void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, ui
         // If table doesn't exist in kernel_directory, create it
         if (!kernel_directory->tables[table_idx]) {
             uint32_t t_phys;
-            kernel_directory->tables[table_idx] = (page_table_t*)kmalloc_ap(sizeof(page_table_t), &t_phys);
-            memset(kernel_directory->tables[table_idx], 0, sizeof(page_table_t));
+            page_table_t* new_table = (page_table_t*)kmalloc_ap(sizeof(page_table_t), &t_phys);
+            if (!new_table) {
+                s_printf("[PAGING] FATAL: kmalloc_ap failed for page table idx %d (virt 0x%x)\n",
+                         table_idx, curr_virt);
+                return;  // Abort mapping — caller must handle the failure
+            }
+            memset(new_table, 0, sizeof(page_table_t));
+            kernel_directory->tables[table_idx] = new_table;
             kernel_directory->tablesPhysical[table_idx] = t_phys | 0x7; // Present, RW, User
         }
 
@@ -192,11 +212,5 @@ void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, ui
     } 
     
     // Reload CR3 to flush TLB.
-    // NOTE: We switch to kernel_directory here.  If a user process was
-    // running, the scheduler will restore its page directory on the next
-    // context switch.  For high-kernel mappings (VRAM, APIC, etc.) this
-    // is safe because vmm_create_address_space() shares those page table
-    // pointers from kernel_directory, so user processes always see the
-    // same kernel MMIO mappings.
     switch_page_directory(kernel_directory);
 }
