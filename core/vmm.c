@@ -484,11 +484,27 @@ address_space_t* vmm_create_address_space(void)
      * These map the identity-mapped 0-128MB kernel region.
      * Both the virtual pointers and the physical+flags entries are shared. */
     for (uint32_t i = 0; i < USER_DIR_INDEX; i++) {
-        dir->tables[i]         = kernel_directory->tables[i];
-        dir->tablesPhysical[i] = kernel_directory->tablesPhysical[i];
+        if (kernel_directory->tables[i]) {
+            dir->tables[i]         = kernel_directory->tables[i];
+            dir->tablesPhysical[i] = kernel_directory->tablesPhysical[i];
+        }
     }
 
-    /* Entries USER_DIR_INDEX..1023 are left zeroed (user space, not yet mapped). */
+    /* Share high kernel MMIO tables (entries 512-1023).
+     * These contain VRAM (0xFD000000), APIC (0xFEE00000), IOAPIC (0xFEC00000),
+     * AHCI, e1000, and other device MMIO mappings.  They must be accessible
+     * even when a user process's page directory is loaded in CR3, because
+     * kernel code runs in interrupt context with the user CR3 still active.
+     * All entries are supervisor-only (no User bit), so sharing is safe. */
+    for (uint32_t i = KERNEL_HIGH_DIR_INDEX; i < TABLES_PER_DIR; i++) {
+        if (kernel_directory->tables[i]) {
+            dir->tables[i]         = kernel_directory->tables[i];
+            dir->tablesPhysical[i] = kernel_directory->tablesPhysical[i];
+        }
+    }
+
+    /* Entries USER_DIR_INDEX..KERNEL_HIGH_DIR_INDEX-1 (32-511) are left zeroed
+     * (user space, not yet mapped). */
 
     space->page_dir   = dir;
     space->vma_list   = 0;
@@ -561,10 +577,11 @@ void vmm_destroy_address_space(address_space_t* space)
         }
 
         /* Free user-space page tables that we allocated.
-         * Kernel page tables (indices 0..31) are shared, not freed.
+         * Kernel page tables (indices 0..31) and high kernel MMIO tables
+         * (indices 512..1023) are shared, not freed.
          * We free a page table only if all its entries are clear. */
         if (dir) {
-            for (uint32_t ti = USER_DIR_INDEX; ti < TABLES_PER_DIR; ti++) {
+            for (uint32_t ti = USER_DIR_INDEX; ti < KERNEL_HIGH_DIR_INDEX; ti++) {
                 page_table_t* pt = dir->tables[ti];
                 if (!pt) continue;
 
@@ -585,9 +602,12 @@ void vmm_destroy_address_space(address_space_t* space)
         vma = next;
     }
 
-    /* 2. Free remaining user-space page tables */
+    /* 2. Free remaining user-space page tables.
+     * Only free tables in the user range (32..511).
+     * High kernel MMIO tables (512..1023) are shared with kernel_directory
+     * and must NOT be freed. */
     if (space->page_dir) {
-        for (uint32_t ti = USER_DIR_INDEX; ti < TABLES_PER_DIR; ti++) {
+        for (uint32_t ti = USER_DIR_INDEX; ti < KERNEL_HIGH_DIR_INDEX; ti++) {
             page_table_t* pt = space->page_dir->tables[ti];
             if (pt) {
                 space->page_dir->tables[ti] = 0;
@@ -627,6 +647,11 @@ address_space_t* vmm_fork_address_space(address_space_t* parent)
      * allocated independently when either process touches them).
      */
     for (uint32_t ti = USER_DIR_INDEX; ti < TABLES_PER_DIR; ti++) {
+        /* Skip high kernel MMIO tables (512+) — they're shared via
+         * vmm_create_address_space(), not COW'd.  Processing them
+         * would allocate new tables and overwrite the shared pointers. */
+        if (ti >= KERNEL_HIGH_DIR_INDEX) continue;
+
         if (!pdir->tables[ti]) continue;
 
         /* Ensure the child has a page table for this index.
@@ -1000,7 +1025,7 @@ uint32_t vmm_get_physical(address_space_t* space, uint32_t virt)
 
 int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
 {
-    int present = !(error_code & 0x1);  /* Bit 0: 0 = page not present */
+    int present = error_code & 0x1;     /* Bit 0: 1 = page was present */
     int write   = (error_code & 0x2);   /* Bit 1: 1 = write access     */
     int user    = (error_code & 0x4);   /* Bit 2: 1 = user mode        */
 

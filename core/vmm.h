@@ -58,6 +58,12 @@
 /* First page directory entry index for user space */
 #define USER_DIR_INDEX      (KERNEL_SPACE_END / 0x400000)  /* = 32 */
 
+/* First page directory entry index for high kernel MMIO space.
+ * Entries 512-1023 cover addresses 0x80000000-0xFFFFFFFF, which is where
+ * device MMIO (VRAM at 0xFD000000, APIC at 0xFEE00000, etc.) is mapped.
+ * These tables are shared across all address spaces. */
+#define KERNEL_HIGH_DIR_INDEX  512
+
 /* ========================================================================
  * Virtual Memory Region Types
  * ======================================================================== */

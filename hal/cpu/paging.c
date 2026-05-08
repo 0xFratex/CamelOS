@@ -19,7 +19,7 @@ void page_fault_handler(registers_t regs) {
     uint32_t faulting_address;
     asm volatile("mov %%cr2, %0" : "=r" (faulting_address));
 
-    int present   = !(regs.err_code & 0x1);
+    int present   = regs.err_code & 0x1;
     int rw        = regs.err_code & 0x2;
     int us        = regs.err_code & 0x4;
     int reserved  = regs.err_code & 0x8;
