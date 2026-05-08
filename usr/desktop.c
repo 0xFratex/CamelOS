@@ -62,6 +62,12 @@ static uint32_t* wallpaper_cache = 0;
 int wallpaper_cache_w = 0;
 static int wallpaper_cache_h = 0;
 
+// Static fallback for wallpaper cache when kmalloc fails (heap too fragmented
+// for a 3MB+ contiguous allocation).  Supports up to 1024x768@32bpp.
+#define STATIC_WALLPAPER_SIZE (1024 * 768 * 4)
+static uint32_t static_wallpaper[STATIC_WALLPAPER_SIZE / 4] __attribute__((aligned(4096)));
+static int using_static_wallpaper = 0;
+
 // --- BMP Wallpaper Loader ---
 // Loads a 24-bit or 32-bit BMP file from the filesystem into the wallpaper cache.
 // BMP format: 14-byte file header + 40-byte info header + pixel data (bottom-up).
@@ -324,11 +330,33 @@ void desktop_init() {
 // Called lazily on first desktop_draw or desktop_fill_wallpaper_region.
 static void wallpaper_cache_ensure(int w, int h) {
     if (wallpaper_cache && wallpaper_cache_w == w && wallpaper_cache_h == h) return;
-    if (!wallpaper_cache) {
-        wallpaper_cache = (uint32_t*)kmalloc(w * h * 4);
-        if (!wallpaper_cache) return;  // fallback to per-pixel
+
+    uint32_t needed = w * h * 4;
+
+    // Free old heap-allocated cache if dimensions changed (but not static buffer)
+    if (wallpaper_cache && !using_static_wallpaper) {
+        kfree(wallpaper_cache);
+        wallpaper_cache = 0;
+    }
+
+    // Try heap allocation first
+    wallpaper_cache = (uint32_t*)kmalloc(needed);
+    if (wallpaper_cache) {
+        using_static_wallpaper = 0;
         wallpaper_cache_w = w;
         wallpaper_cache_h = h;
+    } else if (needed <= STATIC_WALLPAPER_SIZE) {
+        // Heap failed but static buffer is large enough
+        wallpaper_cache = static_wallpaper;
+        using_static_wallpaper = 1;
+        wallpaper_cache_w = w;
+        wallpaper_cache_h = h;
+    } else {
+        // Neither works — fallback to per-pixel rendering in desktop_draw
+        wallpaper_cache = 0;
+        wallpaper_cache_w = 0;
+        wallpaper_cache_h = 0;
+        return;
     }
 
     // Try loading embedded wallpaper image first (compiled into the kernel)
