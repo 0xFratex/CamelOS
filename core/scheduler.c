@@ -431,10 +431,26 @@ uint32_t scheduler_schedule(registers_t* regs) {
     
     stats.context_switches++;
     
-    /* Switch address space if the new task has a different one */
-    if (next->address_space && next->address_space != old->address_space) {
+    /* Switch address space if needed.
+     *
+     * If the next task has an address space, switch to it.
+     * If the next task has NO address space (kernel/idle tasks), we must
+     * switch back to kernel_directory so that kernel code can access
+     * VRAM, APIC MMIO, and other kernel-only mappings.  Without this,
+     * the scheduler leaves CR3 pointing at the previous user process's
+     * page directory, causing page faults when kernel code writes to
+     * high kernel addresses like VRAM at 0xFD000000.
+     */
+    if (next->address_space) {
+        if (next->address_space != old->address_space) {
+            extern void vmm_switch_address_space(void*);
+            vmm_switch_address_space(next->address_space);
+        }
+    } else if (old->address_space) {
+        /* Switching from a user task back to the kernel — restore
+         * kernel_directory so kernel code can access all mappings. */
         extern void vmm_switch_address_space(void*);
-        vmm_switch_address_space(next->address_space);
+        vmm_switch_address_space(NULL);
     }
     
     /* Update TSS kernel stack pointer for Ring 3 transitions */

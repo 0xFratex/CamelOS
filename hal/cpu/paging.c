@@ -191,6 +191,12 @@ void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, ui
         }
     } 
     
-    // Reload CR3 to flush TLB
+    // Reload CR3 to flush TLB.
+    // NOTE: We switch to kernel_directory here.  If a user process was
+    // running, the scheduler will restore its page directory on the next
+    // context switch.  For high-kernel mappings (VRAM, APIC, etc.) this
+    // is safe because vmm_create_address_space() shares those page table
+    // pointers from kernel_directory, so user processes always see the
+    // same kernel MMIO mappings.
     switch_page_directory(kernel_directory);
 }

@@ -1080,93 +1080,82 @@ int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
         /* --- Kernel MMIO fault sync ---
          * Addresses >= 0x80000000 are in the high kernel MMIO range
          * (VRAM at 0xFD000000, APIC at 0xFEE00000, etc.).  These are
-         * mapped into kernel_directory by paging_map_region() during boot,
-         * but the current page directory might not have these entries if:
-         *   1. The process was created before the MMIO was mapped
-         *   2. A new device was mapped after the process was forked
-         *   3. The current directory is kernel_directory itself but a
-         *      new page table was just allocated and CR3 hasn't been
-         *      reloaded yet (TLB staleness)
+         * mapped into kernel_directory by paging_map_region() during boot.
          *
-         * We handle this by syncing the missing page table entries (or
-         * the entire page table pointer) from kernel_directory.  If
-         * kernel_directory doesn't have it either, we map the page
-         * directly as identity-mapped MMIO (phys == virt for MMIO). */
+         * If the current page directory is missing a page table for this
+         * region, share it from kernel_directory.  If the page table
+         * exists but a specific PTE is missing, copy that PTE.
+         *
+         * This handles the case where the scheduler switches to a user
+         * process whose page directory was created before a device was
+         * mapped, or where a kernel interrupt handler runs with a user
+         * CR3 still loaded. */
         if (fault_addr >= (KERNEL_HIGH_DIR_INDEX << 22)) {
             uint32_t table_idx = fault_addr >> 22;
             uint32_t page_idx  = (fault_addr >> 12) & 0x3FF;
 
+            /* If the current directory is kernel_directory itself,
+             * the mapping should already be present — this is a
+             * genuine fault.  (We still check in case the PTE was
+             * somehow cleared.) */
+            if (dir == kernel_directory) {
+                /* kernel_directory should always have its own mappings.
+                 * If it doesn't, something is very wrong. */
+                if (kernel_directory->tables[table_idx]) {
+                    uint32_t kpte = kernel_directory->tables[table_idx]->entries[page_idx];
+                    if (kpte & VMM_FLAG_PRESENT) {
+                        /* The mapping exists but the TLB is stale.
+                         * Just flush and retry. */
+                        asm volatile("invlpg (%0)" :: "r"(page_floor(fault_addr)) : "memory");
+                        return 0;
+                    }
+                }
+                /* Genuine kernel fault — no mapping exists */
+                VMM_ERR("Kernel fault at 0x%x — no mapping in kernel_directory\n",
+                        fault_addr);
+                return -1;
+            }
+
+            /* Current directory is NOT kernel_directory — likely a user
+             * process's page directory with stale high-kernel PDEs.
+             * Sync the missing entry from kernel_directory. */
             if (kernel_directory && kernel_directory->tables[table_idx]) {
-                /* The kernel has a page table for this region.
-                 * Sync it to the current page directory. */
+                /* Share the entire page table pointer if missing */
                 if (!dir->tables[table_idx]) {
-                    /* The current directory is missing the entire page table.
-                     * Share the kernel's page table pointer. */
                     dir->tables[table_idx]         = kernel_directory->tables[table_idx];
                     dir->tablesPhysical[table_idx] = kernel_directory->tablesPhysical[table_idx];
-                    /* Reload CR3 to flush TLB */
+                    VMM_LOG("MMIO sync: shared PDE[%d] from kernel for fault at 0x%x\n",
+                            table_idx, fault_addr);
+                    /* Reload CR3 to make the new PDE visible */
                     switch_page_directory(dir);
                     return 0;  /* Handled — retry the faulting instruction */
                 }
 
-                /* The page table exists but this specific entry is missing.
-                 * Copy the PTE from the kernel directory. */
+                /* Page table exists — check if it's shared with kernel.
+                 * If shared, the PTEs are already correct (same table).
+                 * If NOT shared (e.g., user process allocated memory in
+                 * this 4MB region), copy the specific PTE from kernel. */
+                if (dir->tables[table_idx] == kernel_directory->tables[table_idx]) {
+                    /* Shared table — PTEs should be identical.
+                     * TLB might be stale, flush and retry. */
+                    asm volatile("invlpg (%0)" :: "r"(page_floor(fault_addr)) : "memory");
+                    return 0;
+                }
+
+                /* Non-shared table — copy the PTE from kernel_directory */
                 uint32_t kpte = kernel_directory->tables[table_idx]->entries[page_idx];
                 if (kpte & VMM_FLAG_PRESENT) {
                     dir->tables[table_idx]->entries[page_idx] = kpte;
-                    /* Flush TLB for this page */
                     asm volatile("invlpg (%0)" :: "r"(page_floor(fault_addr)) : "memory");
-                    return 0;  /* Handled */
+                    return 0;
                 }
             }
 
-            /* Last resort: kernel_directory doesn't have this mapping.
-             * Map the page directly as identity-mapped MMIO.
-             * For high addresses (>= 0x80000000), physical == virtual
-             * in the identity-mapped scheme used by paging_map_region().
-             * This handles cases where paging_map_region() wasn't called
-             * yet, or the mapping was lost. */
-            {
-                /* Ensure the page table exists in the current directory */
-                if (!dir->tables[table_idx]) {
-                    /* Try to share from kernel_directory first */
-                    if (kernel_directory && kernel_directory->tables[table_idx]) {
-                        dir->tables[table_idx]         = kernel_directory->tables[table_idx];
-                        dir->tablesPhysical[table_idx] = kernel_directory->tablesPhysical[table_idx];
-                    } else {
-                        /* Allocate a new page table */
-                        uint32_t pt_phys;
-                        dir->tables[table_idx] = (page_table_t*)kmalloc_ap(sizeof(page_table_t), &pt_phys);
-                        if (!dir->tables[table_idx]) {
-                            VMM_ERR("MMIO: failed to allocate page table for idx %d\n", table_idx);
-                            return -1;
-                        }
-                        memset(dir->tables[table_idx], 0, sizeof(page_table_t));
-                        dir->tablesPhysical[table_idx] = pt_phys | 0x03; /* Present | RW */
-                        /* Also add to kernel_directory if missing */
-                        if (kernel_directory && !kernel_directory->tables[table_idx]) {
-                            kernel_directory->tables[table_idx]         = dir->tables[table_idx];
-                            kernel_directory->tablesPhysical[table_idx] = dir->tablesPhysical[table_idx];
-                        }
-                    }
-                }
-
-                /* Map the page as identity-mapped MMIO (phys == virt) */
-                uint32_t page_addr = page_floor(fault_addr);
-                dir->tables[table_idx]->entries[page_idx] = page_addr | 0x03; /* Present | RW */
-
-                /* Flush TLB */
-                asm volatile("invlpg (%0)" :: "r"(page_addr) : "memory");
-
-                /* Also set in kernel_directory if it has a table for this index
-                 * and the table is NOT the shared one */
-                if (kernel_directory && kernel_directory->tables[table_idx] &&
-                    kernel_directory->tables[table_idx] != dir->tables[table_idx]) {
-                    kernel_directory->tables[table_idx]->entries[page_idx] = page_addr | 0x03;
-                }
-
-                return 0;  /* Handled — identity-mapped MMIO */
-            }
+            /* kernel_directory doesn't have this mapping either.
+             * This is a genuine fault — no MMIO device is mapped here. */
+            VMM_ERR("Kernel MMIO fault at 0x%x — no mapping in kernel_directory\n",
+                    fault_addr);
+            return -1;
         }
 
         if (fault_addr >= KERNEL_SPACE_END) {
