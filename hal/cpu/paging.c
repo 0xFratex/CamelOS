@@ -163,7 +163,7 @@ void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, ui
         uint32_t table_idx = curr_virt / 0x400000;
         uint32_t page_idx = (curr_virt / 0x1000) % 1024;
 
-        // If table doesn't exist, create it
+        // If table doesn't exist in kernel_directory, create it
         if (!kernel_directory->tables[table_idx]) {
             uint32_t t_phys;
             kernel_directory->tables[table_idx] = (page_table_t*)kmalloc_ap(sizeof(page_table_t), &t_phys);
@@ -173,6 +173,22 @@ void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, ui
 
         // Map the page: virtual address -> physical address with flags
         kernel_directory->tables[table_idx]->entries[page_idx] = curr_phys | flags;
+
+        // Also apply to current_directory if it's different from kernel_directory.
+        // This ensures new mappings are immediately visible in the active
+        // address space, even if a user process's page directory is loaded.
+        if (current_directory && current_directory != kernel_directory) {
+            // Share the page table pointer from kernel_directory
+            if (!current_directory->tables[table_idx]) {
+                current_directory->tables[table_idx]         = kernel_directory->tables[table_idx];
+                current_directory->tablesPhysical[table_idx] = kernel_directory->tablesPhysical[table_idx];
+            }
+            // Copy the PTE (if the tables are shared, this is a no-op;
+            // if the current dir has its own table, we need to set the entry)
+            if (current_directory->tables[table_idx] != kernel_directory->tables[table_idx]) {
+                current_directory->tables[table_idx]->entries[page_idx] = curr_phys | flags;
+            }
+        }
     } 
     
     // Reload CR3 to flush TLB
