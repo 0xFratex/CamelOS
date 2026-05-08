@@ -47,8 +47,8 @@
 #define WIN_STYLE_MODAL        0x04  // Modal dialog
 #define WIN_STYLE_FULLSCREEN   0x08  // Fullscreen
 
-// Title bar height
-#define TITLE_BAR_HEIGHT 28
+// Title bar height — must match HEADER_HEIGHT in bubbleview.c
+#define TITLE_BAR_HEIGHT 38
 
 // Resize border width
 #define RESIZE_BORDER_WIDTH 6

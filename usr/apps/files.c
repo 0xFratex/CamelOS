@@ -907,7 +907,14 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
         return; // During drag, don't process icon clicks
     }
 
-    fm_frame_counter++; // Tick the double-click timer every call
+    // Only tick the double-click timer on actual left-click events (btn==1),
+    // NOT during continuous drag dispatch (which also sends btn==1 every frame).
+    // We detect a real click vs drag by checking if no selbox drag was started.
+    // The counter is used for double-click timing, so it must only advance
+    // once per user click, not once per frame during a hold.
+    if (btn == 1 && !(fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING)) {
+        fm_frame_counter++;
+    }
 
     for(int i = 0; i < fm_cur->entry_count; i++) {
         int col = i % cols;
@@ -1140,7 +1147,18 @@ void init_files_app() {
     
     strcpy(w->menus[2].name, "View");
     strcpy(w->menus[2].items[0].label, "Refresh");
-    w->menus[2].item_count = 1;
+    // Multi-level submenu: View -> Sort By -> [Name, Size, Date]
+    w->menus[2].items[1].is_separator = 1;  // Separator after Refresh
+    strcpy(w->menus[2].items[2].label, "Sort By");
+    w->menus[2].items[2].has_submenu = 1;
+    strcpy(w->menus[2].items[2].submenu_labels[0], "Name");
+    w->menus[2].items[2].submenu_action_ids[0] = 0;
+    strcpy(w->menus[2].items[2].submenu_labels[1], "Size");
+    w->menus[2].items[2].submenu_action_ids[1] = 1;
+    strcpy(w->menus[2].items[2].submenu_labels[2], "Date");
+    w->menus[2].items[2].submenu_action_ids[2] = 2;
+    w->menus[2].items[2].submenu_count = 3;
+    w->menus[2].item_count = 3;
     
     dock_register("Finder", 2, w);
 }

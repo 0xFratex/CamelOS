@@ -550,7 +550,15 @@ void desktop_draw(uint32_t* buffer) {
     // 2. Draw Icons
     desktop_draw_icons(buffer);
 
-    // 3. Draw Selection Box (rubber-band) if active
+    // 3. Selection box is drawn AFTER windows in bubbleview.c render loop
+    //    so it appears on top of the wallpaper and any overlapping windows.
+}
+
+// Draw the desktop selection box on top of everything.
+// Called from the bubbleview.c render loop AFTER windows are drawn,
+// so the rubber-band selection appears above the wallpaper and any
+// overlapping windows (fixes "selection box hidden behind windows" bug).
+void desktop_draw_selbox() {
     if (g_desk_selbox_inited) {
         selbox_draw(&g_desk_selbox);
     }

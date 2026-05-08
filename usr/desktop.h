@@ -29,6 +29,9 @@ extern int desktop_selbox_active();
 // Cancel the desktop selbox (e.g., when a double-click opens an item)
 extern void desktop_cancel_selbox();
 
+// Draw the desktop selection box on top of everything (called after windows in render loop)
+extern void desktop_draw_selbox();
+
 // Context menu functions (defined in bubbleview.c)
 extern void ctx_menu_show(int x, int y, int type, void* target);
 extern void desktop_refresh();

@@ -30,6 +30,8 @@ static char cfg_computer[64] = "CamelOS";
 static char cfg_theme[32] = "Aqua";
 static char cfg_timezone[32] = "UTC";
 static int cfg_theme_idx = 0;  // Theme index for persistence
+static int cfg_natural_scroll = 1;  // 1 = natural (macOS default), 0 = traditional
+static int cfg_scroll_inited = 0;  // Whether scroll config was loaded from file
 
 // Swatch hit-test region (computed during paint, used by mouse handler)
 static int swatch_y_start = 0;
@@ -45,6 +47,9 @@ static char save_feedback_text[32] = "";
 
 // Theme toggle region
 static int theme_toggle_x = 0, theme_toggle_y = 0, theme_toggle_w = 0, theme_toggle_h = 0;
+
+// Scroll direction toggle region
+static int scroll_toggle_x = 0, scroll_toggle_y = 0, scroll_toggle_w = 0, scroll_toggle_h = 0;
 
 // System info
 static char sys_mem_str[32] = "";
@@ -84,7 +89,13 @@ static void settings_load_config() {
                 int idx = line[6] - '0';
                 const char* names[] = {"Aqua", "Graphite", "Sunset", "Ocean", "Forest"};
                 if (idx >= 0 && idx < 5) strcpy(cfg_theme, names[idx]);
+            } else if (strncmp(line, "natural_scroll=", 15) == 0) {
+                cfg_natural_scroll = (line[15] == '1');
+                cfg_scroll_inited = 1;
             }
+            // SECURITY: Skip password_hash lines — never parse or expose
+            // the hash in user-facing code. The hash is only read by
+            // screenlock.c for authentication.
             line = next;
         }
     }
@@ -283,14 +294,13 @@ static void draw_user_tab(int x, int y, int w, int h) {
     cy += 25;
     
     gfx_draw_string(x + 30, cy, "Password:", 0xFF888888);
-    gfx_draw_string(x + 170, cy, "(encrypted SHA-256)", 0xFF333333);
+    gfx_draw_string(x + 170, cy, "(protected)", 0xFF34C759);  // Don't reveal any hash info
     cy += 40;
     
     gfx_draw_rect(x + 20, cy, w - 40, 1, 0xFFE0E0E0);
     cy += 15;
-    gfx_draw_string(x + 30, cy, "Configuration Path:", 0xFF888888);
-    cy += 20;
-    gfx_draw_string(x + 40, cy, "/Library/Preferences/system.conf", 0xFF007AFF);
+    gfx_draw_string(x + 30, cy, "Security:", 0xFF888888);
+    gfx_draw_string(x + 170, cy, "SHA-256 encrypted", 0xFF34C759);
 }
 
 static void draw_display_tab(int x, int y, int w, int h) {
@@ -384,6 +394,47 @@ static void draw_display_tab(int x, int y, int w, int h) {
     gfx_draw_string(x + 20, cy, "Color Depth:", 0xFF888888);
     gfx_draw_string(x + 200, cy, "32-bit (ARGB)", 0xFF333333);
     cy += 40;
+
+    // Scroll Direction Toggle
+    gfx_draw_rect(x + 20, cy, w - 40, 1, 0xFFE0E0E0);
+    cy += 15;
+    gfx_draw_string(x + 20, cy, "Scrolling", theme->accent_color);
+    cy += 28;
+    
+    // Natural scrolling toggle
+    {
+        int toggle_x = x + 20;
+        int toggle_y = cy;
+        int toggle_w = 260;
+        int toggle_h = 36;
+        
+        // Toggle background
+        gfx_fill_rounded_rect(toggle_x, toggle_y, toggle_w, toggle_h,
+                              cfg_natural_scroll ? 0xFF48484A : 0xFFE5E5EA, toggle_h / 2);
+        
+        // Toggle knob
+        int knob_w = 120;
+        int knob_x = cfg_natural_scroll ? toggle_x + toggle_w - knob_w - 4 : toggle_x + 4;
+        gfx_fill_rounded_rect(knob_x, toggle_y + 3, knob_w, toggle_h - 6,
+                              0xFFFFFFFF, (toggle_h - 6) / 2);
+        
+        // Labels
+        gfx_draw_string(toggle_x + 12, toggle_y + 10, "Traditional",
+                       cfg_natural_scroll ? 0xFF888888 : theme->accent_color);
+        gfx_draw_string(toggle_x + toggle_w - 86, toggle_y + 10, "Natural",
+                       cfg_natural_scroll ? theme->accent_color : 0xFF888888);
+        
+        // Store toggle region for mouse handler
+        scroll_toggle_x = toggle_x;
+        scroll_toggle_y = toggle_y;
+        scroll_toggle_w = toggle_w;
+        scroll_toggle_h = toggle_h;
+    }
+    cy += 50;
+    
+    gfx_draw_string(x + 20, cy, "Natural: content moves with your fingers", 0xFF888888);
+    gfx_draw_string(x + 20, cy + 18, "Traditional: scroll bar moves with your fingers", 0xFF888888);
+    cy += 50;
 
     // Save button
     save_btn_x = x + w - 130;
@@ -622,6 +673,7 @@ static void settings_save_config(void) {
     pos += sprintf(buf + pos, "auto_lock=1\n");
     pos += sprintf(buf + pos, "lock_timeout=10\n");
     pos += sprintf(buf + pos, "kbd_layout=0\n");
+    pos += sprintf(buf + pos, "natural_scroll=%d\n", cfg_natural_scroll);
     pos += sprintf(buf + pos, "configured=1\n");
 
     // Write to the primary path
@@ -685,6 +737,15 @@ static void settings_on_mouse(window_t* win, int x, int y, int btn) {
         // Post a notification about the theme change
         const char* mode = theme_get_id() == THEME_DARK ? "Dark" : "Light";
         notif_post("Settings", "Appearance Changed", mode, NOTIF_TYPE_INFO);
+    }
+
+    // Scroll direction toggle click on Display tab
+    if (current_tab == TAB_DISPLAY &&
+        x >= scroll_toggle_x && x <= scroll_toggle_x + scroll_toggle_w &&
+        y >= scroll_toggle_y && y <= scroll_toggle_y + scroll_toggle_h) {
+        cfg_natural_scroll = !cfg_natural_scroll;
+        notif_post("Settings", "Scroll Direction", 
+                   cfg_natural_scroll ? "Natural Scrolling" : "Traditional Scrolling", NOTIF_TYPE_INFO);
     }
 
     // Save button click on Display tab

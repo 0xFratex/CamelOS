@@ -106,7 +106,7 @@ extern kernel_api_t g_kernel_api;
 extern pfs32_direntry_t desk_entries[32];
 extern int desk_count;
 
-#define HEADER_HEIGHT 28
+#define HEADER_HEIGHT 38
 #define RESIZE_MARGIN 16
 #define SNAP_MARGIN 20 // Distance to edge to trigger snap
 #define SNAP_PREVIEW_COLOR 0x18007AFF // Very subtle blue tint (less opaque to avoid "blue background" bleeding through window AA corners)
@@ -397,7 +397,7 @@ void win_maximize(window_t* w) {
         w->x = 0;
         w->y = HEADER_HEIGHT;
         w->width = 1024;
-        w->height = 768 - HEADER_HEIGHT - 70; // Leave room for dock
+        w->height = 768 - HEADER_HEIGHT - 80; // Leave room for dock (80px)
         w->state = WIN_STATE_MAXIMIZED;
     }
 }
@@ -569,8 +569,8 @@ void draw_window_animated(window_t* w, int mx, int my) {
         if (w->anim_t > 0.8f && w->anim_state != 2) {
             if(w->paint_callback) {
                 typedef void (*pcb)(window_t*,int,int,int,int);
-                gfx_set_clip(curr.x, curr.y + 30, curr.w, curr.h - 30);
-                ((pcb)w->paint_callback)(w, curr.x, curr.y + 30, curr.w, curr.h - 30);
+                gfx_set_clip(curr.x, curr.y + HEADER_HEIGHT, curr.w, curr.h - HEADER_HEIGHT);
+                ((pcb)w->paint_callback)(w, curr.x, curr.y + HEADER_HEIGHT, curr.w, curr.h - HEADER_HEIGHT);
                 gfx_reset_clip();
             }
         }
@@ -580,12 +580,21 @@ void draw_window_animated(window_t* w, int mx, int my) {
         // Call paint callback for content
         if(w->paint_callback) {
             typedef void (*pcb)(window_t*,int,int,int,int);
-            gfx_set_clip(w->x, w->y + 30, w->width, w->height - 30);
-            ((pcb)w->paint_callback)(w, w->x, w->y + 30, w->width, w->height - 30);
+            gfx_set_clip(w->x, w->y + HEADER_HEIGHT, w->width, w->height - HEADER_HEIGHT);
+            ((pcb)w->paint_callback)(w, w->x, w->y + HEADER_HEIGHT, w->width, w->height - HEADER_HEIGHT);
             gfx_reset_clip();
         }
     }
 }
+
+// Static state for the currently-open menubar submenu
+static int menubar_submenu_active = 0;   // 1 = submenu is showing
+static int menubar_submenu_parent = -1;  // Index of the parent item in the dropdown
+static int menubar_submenu_x = 0;        // Screen X of the submenu
+static int menubar_submenu_y = 0;        // Screen Y of the submenu
+static int menubar_submenu_w = 160;      // Width of submenu
+static int menubar_submenu_h = 0;        // Height of submenu
+static int menubar_submenu_hover = -1;   // Hovered submenu item index
 
 void draw_dropdown(int x, int y, char** items, int count, int is_app_menu, window_t* app_win) {
     int w = 160; 
@@ -601,20 +610,89 @@ void draw_dropdown(int x, int y, char** items, int count, int is_app_menu, windo
 
     int mx, my, lb; sys_mouse_read(&mx, &my, &lb);
 
+    menubar_submenu_active = 0; // Reset each frame
+
     for(int i=0; i<count; i++) {
         int iy = y + 3 + (i * 20);
-        char* label = (is_app_menu && app_win) ? app_win->menus[open_menu_id].items[i].label : items[i];
         
-        if(strcmp(label, "-") == 0) {
-            sys_gfx_rect(x+5, iy+10, w-10, 1, 0xFFCCCCCC);
-            continue;
-        }
-
-        if (mx >= x && mx < x+w && my >= iy && my < iy+20) {
-            sys_gfx_rect(x, iy, w, 20, 0xFF3D89D6);
-            sys_gfx_string(x + 15, iy + 6, label, 0xFFFFFFFF);
+        if (is_app_menu && app_win) {
+            MenuItem* mi = &app_win->menus[open_menu_id].items[i];
+            
+            if (mi->is_separator) {
+                sys_gfx_rect(x+5, iy+10, w-10, 1, 0xFFCCCCCC);
+                continue;
+            }
+            
+            int is_hovered = (mx >= x && mx < x+w && my >= iy && my < iy+20);
+            
+            if (is_hovered) {
+                sys_gfx_rect(x, iy, w, 20, 0xFF3D89D6);
+                sys_gfx_string(x + 15, iy + 6, mi->label, 0xFFFFFFFF);
+                
+                // If this item has a submenu, show it
+                if (mi->has_submenu && mi->submenu_count > 0) {
+                    menubar_submenu_active = 1;
+                    menubar_submenu_parent = i;
+                    menubar_submenu_x = x + w;
+                    menubar_submenu_y = iy;
+                    menubar_submenu_h = mi->submenu_count * 20 + 6;
+                    menubar_submenu_hover = -1;
+                    
+                    // Draw submenu
+                    int sx = menubar_submenu_x;
+                    int sy = menubar_submenu_y;
+                    int sw = menubar_submenu_w;
+                    int sh = menubar_submenu_h;
+                    
+                    // Clamp to screen
+                    if (sx + sw > 1024) sx = x - sw;
+                    if (sy + sh > 768) sy = 768 - sh;
+                    
+                    // Shadow
+                    sys_gfx_rect(sx+4, sy+4, sw, sh, 0x40000000);
+                    // Background
+                    sys_gfx_rect(sx, sy, sw, sh, 0xF2F2F2F2);
+                    sys_gfx_rect(sx, sy, sw, 1, 0xFF888888);
+                    sys_gfx_rect(sx, sy+sh-1, sw, 1, 0xFF888888);
+                    sys_gfx_rect(sx, sy, 1, sh, 0xFF888888);
+                    sys_gfx_rect(sx+sw-1, sy, 1, sh, 0xFF888888);
+                    
+                    for (int j = 0; j < mi->submenu_count; j++) {
+                        int siy = sy + 3 + (j * 20);
+                        int sub_hovered = (mx >= sx && mx < sx+sw && my >= siy && my < siy+20);
+                        if (sub_hovered) menubar_submenu_hover = j;
+                        
+                        if (sub_hovered) {
+                            sys_gfx_rect(sx, siy, sw, 20, 0xFF3D89D6);
+                            sys_gfx_string(sx + 15, siy + 6, mi->submenu_labels[j], 0xFFFFFFFF);
+                        } else {
+                            sys_gfx_string(sx + 15, siy + 6, mi->submenu_labels[j], 0xFF000000);
+                        }
+                    }
+                    
+                    // Draw arrow indicator on parent item
+                    sys_gfx_string(x + w - 15, iy + 6, ">", 0xFFFFFFFF);
+                }
+            } else {
+                sys_gfx_string(x + 15, iy + 6, mi->label, 0xFF000000);
+                // Draw arrow for submenu items even when not hovered
+                if (mi->has_submenu && mi->submenu_count > 0) {
+                    sys_gfx_string(x + w - 15, iy + 6, ">", 0xFF000000);
+                }
+            }
         } else {
-            sys_gfx_string(x + 15, iy + 6, label, 0xFF000000);
+            char* label = items[i];
+            if(strcmp(label, "-") == 0) {
+                sys_gfx_rect(x+5, iy+10, w-10, 1, 0xFFCCCCCC);
+                continue;
+            }
+
+            if (mx >= x && mx < x+w && my >= iy && my < iy+20) {
+                sys_gfx_rect(x, iy, w, 20, 0xFF3D89D6);
+                sys_gfx_string(x + 15, iy + 6, label, 0xFFFFFFFF);
+            } else {
+                sys_gfx_string(x + 15, iy + 6, label, 0xFF000000);
+            }
         }
     }
 }
@@ -686,6 +764,8 @@ int process_global_bar(int mx, int my, int click) {
 
     if (mx >= cur_x && mx < cur_x + w && my < HEADER_HEIGHT) {
         if(click) target_menu = -1;
+        // Hover-to-switch for Apple menu too
+        else if (open_menu_id != -2 && open_menu_id != -1) target_menu = -1;
     }
 
     if (open_menu_id == -1 && !suppress_dropdowns) {
@@ -711,6 +791,10 @@ int process_global_bar(int mx, int my, int click) {
         
         if (mx >= cur_x && mx < cur_x + w && my < HEADER_HEIGHT) {
             if (click) target_menu = i;
+            // Hover-to-switch: if a menu is already open and the mouse
+            // hovers over a different menu title, switch to it immediately.
+            // This is standard macOS/Windows menu bar behavior.
+            else if (open_menu_id != -2 && open_menu_id != i) target_menu = i;
         }
 
         if (open_menu_id == i && !suppress_dropdowns) {
@@ -724,9 +808,15 @@ int process_global_bar(int mx, int my, int click) {
         cur_x += w;
     }
 
-    if (click && target_menu != -3) {
-        if (open_menu_id == target_menu) open_menu_id = -2;
-        else open_menu_id = target_menu;
+    if (target_menu != -3) {
+        if (click) {
+            // Click toggles: click same menu = close, click different = switch
+            if (open_menu_id == target_menu) open_menu_id = -2;
+            else open_menu_id = target_menu;
+        } else {
+            // Hover-to-switch: just switch, don't close
+            open_menu_id = target_menu;
+        }
         return 1;
     }
 
@@ -738,6 +828,33 @@ int process_global_bar(int mx, int my, int click) {
 
 void handle_dropdown_click(int mx, int my) {
     if (open_menu_id == -2) return;
+    
+    // Check if click is in a submenu first
+    if (menubar_submenu_active && menubar_submenu_hover >= 0) {
+        int sx = menubar_submenu_x;
+        int sy = menubar_submenu_y;
+        int sw = menubar_submenu_w;
+        int sh = menubar_submenu_h;
+        // Clamp same as draw_dropdown
+        if (active_win && sx + sw > 1024) sx = active_win->x - sw;
+        if (sy + sh > 768) sy = 768 - sh;
+        
+        if (mx >= sx && mx <= sx + sw && my >= sy && my <= sy + sh) {
+            int sub_idx = (my - sy - 3) / 20;
+            if (sub_idx >= 0 && active_win && active_win->on_menu_action && 
+                menubar_submenu_parent >= 0 && menubar_submenu_parent < active_win->menus[open_menu_id].item_count) {
+                MenuItem* mi = &active_win->menus[open_menu_id].items[menubar_submenu_parent];
+                if (sub_idx < mi->submenu_count) {
+                    // Invoke menu action with submenu action ID
+                    typedef void (*mcb)(int,int,int);
+                    ((mcb)active_win->on_menu_action)(open_menu_id, menubar_submenu_parent, sub_idx);
+                }
+            }
+            open_menu_id = -2;
+            return;
+        }
+    }
+    
     int rel_y = my - menu_rect_y - 3;
     if (rel_y < 0) return;
     int idx = rel_y / 20;
@@ -1056,10 +1173,16 @@ void handle_input(int mx, int my, int lb, int rb) {
         if (mx >= menu_rect_x && mx <= menu_rect_x + menu_rect_w &&
             my >= menu_rect_y && my <= menu_rect_y + menu_rect_h) {
             handle_dropdown_click(mx, my);
+        } else if (my < HEADER_HEIGHT) {
+            // Clicked on the menu bar while a dropdown is open —
+            // let process_global_bar handle it (switch to a different menu
+            // or close the current one) instead of swallowing the click.
+            // Fall through to section 3 below.
         } else if (my > HEADER_HEIGHT) {
             open_menu_id = -2; 
         }
-        return;
+        if (my >= HEADER_HEIGHT) return;
+        // If click was in the header bar, fall through to section 3
     }
 
     // 3. Header Bar
@@ -1118,7 +1241,7 @@ void handle_input(int mx, int my, int lb, int rb) {
                 int ly = my - w->y;
 
                 // Title Bar (Drag)
-                if (ly < 28 && click) {
+                if (ly < HEADER_HEIGHT && click) {
                     // Traffic Lights Logic (Circular areas)
                     // Red: Center ~16,14. R=6 -> 10..22
                     if (lx >= 10 && lx <= 22) { w->anim_state = 2; return; }
@@ -1163,7 +1286,7 @@ void handle_input(int mx, int my, int lb, int rb) {
                 // Content Click
                 if (w->mouse_callback) {
                     typedef void (*mcb)(window_t*,int,int,int);
-                    ((mcb)w->mouse_callback)(w, lx, ly - 30, btn);
+                    ((mcb)w->mouse_callback)(w, lx, ly - HEADER_HEIGHT, btn);
                     // Start tracking content drag so we can keep dispatching
                     // mouse events while the button is held (for rubber-band
                     // selection, drag-select, etc.)
@@ -1237,7 +1360,7 @@ void handle_input(int mx, int my, int lb, int rb) {
             // Button still held — dispatch drag update
             if (content_drag_win->mouse_callback) {
                 int lx = mx - content_drag_win->x;
-                int ly = my - content_drag_win->y - 30;
+                int ly = my - content_drag_win->y - HEADER_HEIGHT;
                 typedef void (*mcb)(window_t*,int,int,int);
                 ((mcb)content_drag_win->mouse_callback)(content_drag_win, lx, ly, 1);
             }
@@ -1245,7 +1368,7 @@ void handle_input(int mx, int my, int lb, int rb) {
             // Button released — dispatch release event (btn=0)
             if (content_drag_win->mouse_callback) {
                 int lx = mx - content_drag_win->x;
-                int ly = my - content_drag_win->y - 30;
+                int ly = my - content_drag_win->y - HEADER_HEIGHT;
                 typedef void (*mcb)(window_t*,int,int,int);
                 ((mcb)content_drag_win->mouse_callback)(content_drag_win, lx, ly, 0);
             }
@@ -1460,6 +1583,27 @@ void start_bubble_view() {
         {
             int scroll_delta = sys_mouse_scroll();
             if (scroll_delta != 0) {
+                // Apply scroll direction: natural scroll (default) uses the raw delta;
+                // traditional scroll negates it. Read from config file.
+                {
+                    static int scroll_dir_loaded = 0;
+                    static int scroll_natural = 1;  // Default: natural (macOS)
+                    if (!scroll_dir_loaded) {
+                        char sbuf[512];
+                        int slen = sys_fs_read("/Library/Preferences/system.conf", sbuf, sizeof(sbuf)-1);
+                        if (slen <= 0) slen = sys_fs_read("/etc/system.conf", sbuf, sizeof(sbuf)-1);
+                        if (slen > 0) {
+                            sbuf[slen] = 0;
+                            char* nl = strstr(sbuf, "natural_scroll=");
+                            if (nl) {
+                                scroll_natural = (nl[15] == '1');
+                            }
+                        }
+                        scroll_dir_loaded = 1;
+                    }
+                    if (!scroll_natural) scroll_delta = -scroll_delta;
+                }
+                
                 // Check if Shift is held for horizontal scrolling
                 int kbd_ctrl = 0, kbd_shift = 0, kbd_alt = 0;
                 sys_kbd_state(&kbd_ctrl, &kbd_shift, &kbd_alt);
@@ -1715,6 +1859,9 @@ void start_bubble_view() {
                 }
             }
         }
+
+        // Draw desktop selection box AFTER windows so it appears on top
+        desktop_draw_selbox();
 
         drag_was_active = (drag_win != 0) ? 1 : 0;
         drag_just_released = 0;

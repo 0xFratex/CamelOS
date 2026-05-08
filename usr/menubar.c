@@ -122,10 +122,10 @@ void menubar_reset(void) {
 // Menu Management
 // ============================================================================
 
-Menu* menubar_add_menu(const char* title) {
+MenubarMenu* menubar_add_menu(const char* title) {
     if (g_menu_bar.menu_count >= 8) return NULL;
     
-    Menu* menu = &g_menu_bar.menus[g_menu_bar.menu_count++];
+    MenubarMenu* menu = &g_menu_bar.menus[g_menu_bar.menu_count++];
     strncpy(menu->title, title, 31);
     menu->title[31] = 0;
     menu->item_count = 0;
@@ -135,10 +135,10 @@ Menu* menubar_add_menu(const char* title) {
     return menu;
 }
 
-void menubar_add_menu_item(Menu* menu, const char* label, const char* shortcut, void (*callback)(void)) {
+void menubar_add_menu_item(MenubarMenu* menu, const char* label, const char* shortcut, void (*callback)(void)) {
     if (!menu || menu->item_count >= 16) return;
     
-    MenuItem* item = &menu->items[menu->item_count++];
+    MenubarMenuItem* item = &menu->items[menu->item_count++];
     strncpy(item->label, label, 47);
     item->label[47] = 0;
     if (shortcut) {
@@ -147,17 +147,17 @@ void menubar_add_menu_item(Menu* menu, const char* label, const char* shortcut, 
     } else {
         item->shortcut[0] = 0;
     }
-    item->type = MENU_ITEM_NORMAL;
+    item->type = MENUBAR_ITEM_NORMAL;
     item->enabled = 1;
     item->callback = callback;
     item->submenu = NULL;
 }
 
-void menubar_add_separator(Menu* menu) {
+void menubar_add_separator(MenubarMenu* menu) {
     if (!menu || menu->item_count >= 16) return;
     
-    MenuItem* item = &menu->items[menu->item_count++];
-    item->type = MENU_ITEM_SEPARATOR;
+    MenubarMenuItem* item = &menu->items[menu->item_count++];
+    item->type = MENUBAR_ITEM_SEPARATOR;
     item->label[0] = 0;
 }
 
@@ -317,7 +317,7 @@ void menubar_draw(void) {
     
     // Draw menus
     for (int i = 0; i < g_menu_bar.menu_count; i++) {
-        Menu* menu = &g_menu_bar.menus[i];
+        MenubarMenu* menu = &g_menu_bar.menus[i];
         int w = strlen(menu->title) * 8 + 16;
         
         // Highlight if open or hover
@@ -391,7 +391,7 @@ void menubar_draw(void) {
     }
 }
 
-void menubar_draw_menu(Menu* menu, int x, int y) {
+void menubar_draw_menu(MenubarMenu* menu, int x, int y) {
     if (!menu || menu->item_count == 0) return;
     
     const theme_t* theme = theme_get_current();
@@ -408,9 +408,9 @@ void menubar_draw_menu(Menu* menu, int x, int y) {
     // Items
     int iy = y + 4;
     for (int i = 0; i < menu->item_count; i++) {
-        MenuItem* item = &menu->items[i];
+        MenubarMenuItem* item = &menu->items[i];
         
-        if (item->type == MENU_ITEM_SEPARATOR) {
+        if (item->type == MENUBAR_ITEM_SEPARATOR) {
             sys->draw_rect(x + 12, iy + 11, w - 24, 1, theme->separator);
         } else {
             // Highlight

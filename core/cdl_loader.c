@@ -257,12 +257,16 @@ static int resolve_and_load(const char* path) {
     return internal_load_library(actual_path);
 }
 
+static int g_launch_args_consumed = 1;  // 1 = args have been consumed, safe to clear on next wrap_exec
+
 int wrap_exec(const char* path) {
-    // Clear stale launch args so that launching an app via wrap_exec()
-    // (e.g., from the dock) doesn't inherit args from a previous
-    // wrap_exec_with_args() call (which would cause the Files app to
-    // navigate to a stale folder path instead of "/")
-    sys_set_launch_args(NULL);
+    // If the previous launch args have been consumed (or were never set),
+    // clear them so that launching an app via wrap_exec() (e.g., from the dock)
+    // doesn't inherit stale args from a previous wrap_exec_with_args() call.
+    if (g_launch_args_consumed) {
+        sys_set_launch_args(NULL);
+    }
+    g_launch_args_consumed = 0;  // Mark as "pending consumption" for the new app
     return resolve_and_load(path);
 }
 extern void int_to_str(int, char*);
@@ -275,7 +279,10 @@ int wrap_fs_list(const char* p, void* b, int c) { return sys_fs_list_dir(p, b, c
 static char g_launch_args[256] = {0};
 void sys_set_launch_args(const char* args) { if(args) strncpy(g_launch_args, args, 255); else g_launch_args[0]=0; }
 int wrap_exec_with_args(const char* p, const char* a) { sys_set_launch_args(a); return wrap_exec(p); }
-void wrap_get_args(char* b, int m) { if(b) strncpy(b, g_launch_args, m); }
+void wrap_get_args(char* b, int m) { 
+    if(b) strncpy(b, g_launch_args, m); 
+    g_launch_args_consumed = 1;  // Mark args as consumed so next wrap_exec clears them
+}
 void* wrap_create_win(const char* t, int w, int h, paint_cb_t p, input_cb_t i, mouse_cb_t m) { return ws_create_window(t, w, h, (void*)p, (void*)i, (void*)m); }
 void wrap_draw_text_clip(int x, int y, const char* s, int c, int m) { sys_gfx_string(x, y, s, c); }
 void wrap_draw_img(int x, int y, const char* n) {

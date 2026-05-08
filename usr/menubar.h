@@ -21,34 +21,34 @@ typedef unsigned char uint8_t;
 #define TRAY_SPACING        8
 #define TRAY_RIGHT_MARGIN   12
 
-// Menu item types
+// Menu item types (menubar-specific, separate from gui_types.h MenuItem)
 typedef enum {
-    MENU_ITEM_NORMAL,
-    MENU_ITEM_SEPARATOR,
-    MENU_ITEM_SUBMENU,
-    MENU_ITEM_CHECKBOX,
-    MENU_ITEM_DISABLED
-} MenuItemType;
+    MENUBAR_ITEM_NORMAL,
+    MENUBAR_ITEM_SEPARATOR,
+    MENUBAR_ITEM_SUBMENU,
+    MENUBAR_ITEM_CHECKBOX,
+    MENUBAR_ITEM_DISABLED
+} MenubarItemType;
 
-// Menu item structure
+// Menu item structure (menubar-specific)
 typedef struct {
     char label[48];
     char shortcut[16];
-    MenuItemType type;
+    MenubarItemType type;
     int checked;
     int enabled;
     void (*callback)(void);
-    struct Menu* submenu;
-} MenuItem;
+    struct MenuBarMenu* submenu;
+} MenubarMenuItem;
 
-// Menu structure
-typedef struct Menu {
+// Menu structure (menubar-specific)
+typedef struct MenuBarMenu {
     char title[32];
-    MenuItem items[16];
+    MenubarMenuItem items[16];
     int item_count;
     int is_open;
     int hover_idx;
-} Menu;
+} MenubarMenu;
 
 // System tray item
 typedef struct {
@@ -62,7 +62,7 @@ typedef struct {
 
 // Menu bar state
 typedef struct {
-    Menu menus[8];
+    MenubarMenu menus[8];
     int menu_count;
     int open_menu_idx;
     int hover_menu_idx;
@@ -91,7 +91,7 @@ void menubar_reset(void);
 
 // Drawing
 void menubar_draw(void);
-void menubar_draw_menu(Menu* menu, int x, int y);
+void menubar_draw_menu(MenubarMenu* menu, int x, int y);
 void menubar_draw_tray(int x, int y);
 void menubar_draw_clock(int x, int y);
 
@@ -100,9 +100,9 @@ int menubar_handle_mouse(int mx, int my, int click, int pressed);
 void menubar_handle_key(int key);
 
 // Menu management
-Menu* menubar_add_menu(const char* title);
-void menubar_add_menu_item(Menu* menu, const char* label, const char* shortcut, void (*callback)(void));
-void menubar_add_separator(Menu* menu);
+MenubarMenu* menubar_add_menu(const char* title);
+void menubar_add_menu_item(MenubarMenu* menu, const char* label, const char* shortcut, void (*callback)(void));
+void menubar_add_separator(MenubarMenu* menu);
 
 // System tray
 void menubar_add_tray_item(const char* name, uint32_t color, int (*draw_fn)(int,int,int,int), void (*click_fn)(void));
