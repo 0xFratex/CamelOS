@@ -14,7 +14,7 @@ typedef void (*file_picker_callback_t)(const char* path);
 // File picker state (internal, but exposed for window callback access)
 typedef struct {
     int active;
-    Window* window;
+    window_t* window;
 
     // Navigation
     char current_path[256];

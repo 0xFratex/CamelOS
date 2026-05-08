@@ -37,7 +37,7 @@ extern void cm_draw_image(uint32_t* buffer, const char* name, int x, int y, int 
 void file_picker_open(const char* start_path, file_picker_callback_t on_selected) {
     // If already active, close the old one first
     if (g_file_picker.active && g_file_picker.window) {
-        window_t* w = (window_t*)g_file_picker.window;
+        window_t* w = g_file_picker.window;
         if (w->close_callback) {
             typedef void (*close_cb)(window_t*);
             ((close_cb)w->close_callback)(w);
@@ -60,7 +60,7 @@ void file_picker_open(const char* start_path, file_picker_callback_t on_selected
     }
 
     // Create modal window
-    g_file_picker.window = (Window*)ws_create_window_ex(
+    g_file_picker.window = ws_create_window_ex(
         "Choose From",
         200, 150, FP_WIN_W, FP_WIN_H,
         WIN_STYLE_MODAL | WIN_STYLE_TOOL_WINDOW,
@@ -75,7 +75,7 @@ void file_picker_open(const char* start_path, file_picker_callback_t on_selected
         return;
     }
 
-    window_t* w = (window_t*)g_file_picker.window;
+    window_t* w = g_file_picker.window;
     w->min_w = 300;
     w->min_h = 250;
     w->scroll_callback = (void*)fp_on_scroll;
@@ -86,8 +86,7 @@ void file_picker_open(const char* start_path, file_picker_callback_t on_selected
     fp_refresh();
 
     s_printf("[FilePicker] Opened at: ");
-    s_printf(g_file_picker.current_path);
-    s_printf("\n");
+    s_printf("%s\n", g_file_picker.current_path);
 }
 
 // ============================================================================
@@ -330,7 +329,7 @@ static void fp_on_mouse(window_t* win, int mx, int my, int btn) {
                     g_file_picker.active = 0;
 
                     // Close the window
-                    window_t* w = (window_t*)g_file_picker.window;
+                    window_t* w = g_file_picker.window;
                     if (w) w->anim_state = 2; // Start close animation
 
                     // Invoke callback after closing
@@ -350,7 +349,7 @@ static void fp_on_mouse(window_t* win, int mx, int my, int btn) {
         if (mx >= cancel_x && mx < cancel_x + 80) {
             g_file_picker.active = 0;
             g_file_picker.on_selected = NULL;
-            window_t* ww = (window_t*)g_file_picker.window;
+            window_t* ww = g_file_picker.window;
             if (ww) ww->anim_state = 2;
             return;
         }
@@ -364,7 +363,7 @@ static void fp_on_mouse(window_t* win, int mx, int my, int btn) {
             file_picker_callback_t cb = g_file_picker.on_selected;
             g_file_picker.active = 0;
 
-            window_t* w = (window_t*)g_file_picker.window;
+            window_t* w = g_file_picker.window;
             if (w) w->anim_state = 2;
 
             if (cb) cb(full_path);
@@ -384,7 +383,7 @@ static void fp_on_input(window_t* win, int key) {
         // Escape - Cancel
         g_file_picker.active = 0;
         g_file_picker.on_selected = NULL;
-        window_t* w = (window_t*)g_file_picker.window;
+        window_t* w = g_file_picker.window;
         if (w) w->anim_state = 2;
         return;
     }
@@ -403,7 +402,7 @@ static void fp_on_input(window_t* win, int key) {
 
                 file_picker_callback_t cb = g_file_picker.on_selected;
                 g_file_picker.active = 0;
-                window_t* w = (window_t*)g_file_picker.window;
+                window_t* w = g_file_picker.window;
                 if (w) w->anim_state = 2;
                 if (cb) cb(full_path);
             }
