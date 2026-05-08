@@ -1413,7 +1413,10 @@ int pfs32_open(const char* path, int flags) {
     }
 
     // Permission check (using existing logic)
-    int perm_check = (flags == 1) ? PFS_PERM_WRITE : PFS_PERM_READ;
+    // FIX: Check if ANY write intent is present. flags==1 only matched write-only,
+    // but O_RDWR is stored as flags=2, which would incorrectly check READ permission
+    // instead of WRITE. Now (flags & 0x03) catches write(1) and rdwr(2).
+    int perm_check = (flags & 0x03) ? PFS_PERM_WRITE : PFS_PERM_READ;
     if (!check_permission(entry.uid, entry.gid, entry.permissions, perm_check)) return PFS_ERR_ACCESS;
 
     handles[id].active = 1;
@@ -1494,7 +1497,10 @@ int pfs32_read_handle(int handle, void* buffer, uint32_t len) {
 
 int pfs32_write_handle(int handle, const void* buffer, uint32_t len) {
     if (handle < 0 || handle >= MAX_FILE_HANDLES || !handles[handle].active) return PFS_ERR_PARAM;
-    if (!(handles[handle].flags & 1)) return PFS_ERR_ACCESS; // Not opened for write
+    // FIX: Check for write OR read/write flags. Previous check (flags & 1) only
+    // matched write-only (1), but O_RDWR is stored as 2, causing writes to fail
+    // for files opened via VFS with O_RDWR. Now checks bits 0 or 1 of flags.
+    if (!(handles[handle].flags & 0x03)) return PFS_ERR_ACCESS; // Not opened for write
 
     uint32_t written = 0;
     (void)0; /* available removed */

@@ -214,6 +214,15 @@ int bsd_open(const char* path, int flags, int mode) {
     int exists = sys_fs_exists(path);
     int is_dir = sys_fs_is_dir(path);
 
+    // FIX: sys_fs_is_dir() returns -1 when the file does NOT exist.
+    // -1 is truthy in C, so without this fix, non-existent paths are
+    // treated as directories, causing bsd_open to:
+    //   1. Create a DIRECTORY instead of a regular file (is_dir ? 1 : 0)
+    //   2. Skip pfs32_open() because !is_dir is !(-1) = 0
+    //   3. Allocate FD_TYPE_DIR with kernel_handle = -1
+    //   4. All subsequent writes fail (bsd_write has no FD_TYPE_DIR handler)
+    if (is_dir < 0) is_dir = 0;  // Non-existent path → treat as regular file
+
     // Handle O_CREAT
     if (!exists && (flags & BSD_O_CREAT)) {
         int result = sys_fs_create(path, is_dir ? 1 : 0);

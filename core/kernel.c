@@ -437,13 +437,32 @@ void kernel_main(void* mboot_ptr) {
     s_printf("%s", boot_buf);
     s_printf("\n");
 
-    // Step 5: Filesystem
+    // Step 5: Filesystem — Mount PFS32 BEFORE any filesystem operations
+    // CRITICAL FIX: sys_fs_mount() must be called BEFORE sys_dirs_init(),
+    // pkg_init(), app_bootstrap_init(), etc. — all of which need the
+    // filesystem to be mounted. Previously, sys_fs_mount() was called at
+    // line ~665 (after sys_dirs_init), causing ALL directory creation and
+    // file write operations to fail with PFS_ERR_NO_FS.
     boot_step++;
     boot_print("["); int_to_str(boot_step * 100 / boot_total, boot_buf); boot_print(boot_buf);
     boot_print("%] Filesystem...\n");
 
     pfs32_init_handles();
     s_printf("[KERNEL] File Handle System Initialized.\n");
+
+    // Mount the PFS32 filesystem (auto-format if needed)
+    {
+        int m = sys_fs_mount();
+        s_printf("[DBG] sys_fs_mount returned ");
+        int_to_str(m, boot_buf);
+        s_printf("%s", boot_buf);
+        s_printf("\n");
+        if (m != 0) {
+            s_printf("[KERNEL] FATAL: Filesystem mount failed. Halting.\n");
+            while(1) asm("hlt");
+        }
+        sys_print("[OK] Filesystem Mounted.\n");
+    }
 
     // Step 6: Networking
     boot_step++;
@@ -662,16 +681,8 @@ void kernel_main(void* mboot_ptr) {
         }
     }
 
-    int m = sys_fs_mount();
-    s_printf("[DBG] sys_fs_mount returned ");
-    int_to_str(m, boot_buf);
-    s_printf("%s", boot_buf);
-    s_printf("\n");
-    if (m != 0) {
-        s_printf("[KERNEL] FATAL: Filesystem mount failed. Halting.\n");
-        while(1) asm("hlt");
-    }
-    sys_print("[OK] Filesystem Mounted.\n");
+    // NOTE: sys_fs_mount() was moved earlier in the boot sequence (Step 5),
+    // before sys_dirs_init() and other filesystem-dependent operations.
 
     // Step 10: Network initialization
     boot_step++;
