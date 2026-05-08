@@ -81,20 +81,21 @@ void compositor_draw_window(window_t* win) {
     // We use the EXACT same per-pixel circle test as gfx_fill_rounded_rect_aa:
     //   circle center at (R-1, R-1) relative to the corner, pixel (dx,dy) is
     //   inside if (R-1-dx)^2 + (R-1-dy)^2 <= R^2
+    int header_h = 38; // Must match HEADER_HEIGHT in bubbleview.c
     {
         int r = corner_radius;
         int r2 = r * r;
-        
-        for (int row = 0; row < 28; row++) {
+
+        for (int row = 0; row < header_h; row++) {
             // Smooth gradient using theme titlebar colors
             uint32_t top_col = win->is_focused ? theme->window_titlebar : theme->window_titlebar_unfocused;
             uint32_t bot_col = theme->window_titlebar_unfocused;
             // Interpolate
             uint8_t top_r = (top_col >> 16) & 0xFF, top_g = (top_col >> 8) & 0xFF, top_b = top_col & 0xFF;
             uint8_t bot_r = (bot_col >> 16) & 0xFF, bot_g = (bot_col >> 8) & 0xFF, bot_b = bot_col & 0xFF;
-            uint8_t gray_r = top_r + ((bot_r - top_r) * row) / 27;
-            uint8_t gray_g = top_g + ((bot_g - top_g) * row) / 27;
-            uint8_t gray_b = top_b + ((bot_b - top_b) * row) / 27;
+            uint8_t gray_r = top_r + ((bot_r - top_r) * row) / (header_h - 1);
+            uint8_t gray_g = top_g + ((bot_g - top_g) * row) / (header_h - 1);
+            uint8_t gray_b = top_b + ((bot_b - top_b) * row) / (header_h - 1);
             uint32_t header_col = (0xFF << 24) | (gray_r << 16) | (gray_g << 8) | gray_b;
             
             if (row < r) {
@@ -131,10 +132,10 @@ void compositor_draw_window(window_t* win) {
     }
     
     // Header separator line (thin, subtle) — uses theme
-    gfx_draw_line(win->x + 1, win->y + 28, win->x + win->width - 1, win->y + 28, theme->separator);
+    gfx_draw_line(win->x + 1, win->y + header_h - 1, win->x + win->width - 1, win->y + header_h - 1, theme->separator);
     
     // 4. Traffic Lights (macOS-style with hover icons)
-    int traffic_y = win->y + 10;
+    int traffic_y = win->y + (header_h - 12) / 2;  // Vertically center in header
     int traffic_spacing = 8;
     int traffic_size = 12;
     
@@ -142,7 +143,7 @@ void compositor_draw_window(window_t* win) {
     int mx, my, dummy;
     sys_mouse_read(&mx, &my, &dummy);
     int in_traffic_area = (mx >= win->x && mx < win->x + 70 &&
-                          my >= win->y + 6 && my < win->y + 22);
+                          my >= traffic_y - 2 && my < traffic_y + traffic_size + 2);
     
     // Close button (red)
     uint32_t close_col = in_traffic_area ? 0xFFFF5F57 : 0xFFFF3B30;
@@ -183,7 +184,7 @@ void compositor_draw_window(window_t* win) {
     if (win->title[0]) {
         int title_w = strlen(win->title) * 8;
         int title_x = win->x + (win->width - title_w) / 2;
-        int title_y = win->y + 9;
+        int title_y = win->y + (header_h - 8) / 2 + 1;  // Center text in header
         
         // Title shadow (subtle)
         gfx_draw_string(title_x + 1, title_y + 1, win->title, 0x30000000);
