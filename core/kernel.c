@@ -257,6 +257,7 @@ extern void init_browser_app_with_url(const char* url);
 extern void init_settings_app(void);
 extern void init_mactest_app(void);
 extern void init_calculator_app(void);
+extern void init_about_app(void);
 extern void init_console_app(void);
 extern void init_disk_utility_app(void);
 extern void init_process_monitor_app(void);
@@ -274,6 +275,7 @@ int kernel_launch_builtin_app(const char* name) {
         {"Settings",         init_settings_app},
         {"MacTest",          init_mactest_app},
         {"Calculator",       init_calculator_app},
+        {"About",            init_about_app},
         {"Console",          init_console_app},
         {"Disk Utility",     init_disk_utility_app},
         {"Activity Monitor", init_process_monitor_app},

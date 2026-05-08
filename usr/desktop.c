@@ -186,6 +186,90 @@ pfs32_direntry_t desk_entries[32];
 int desk_count = 0;
 int desk_selected[32];
 
+// --- Desktop Icon Drag ---
+// Per-icon grid positions (col, row). If -1, uses auto-layout.
+static int icon_grid_col[32];
+static int icon_grid_row[32];
+
+// Drag state
+static int icon_drag_idx = -1;       // Index of icon being dragged (-1 = none)
+static int icon_drag_off_x = 0;      // Mouse offset from icon top-left
+static int icon_drag_off_y = 0;
+static int icon_drag_start_col = -1;  // Original position (for cancel)
+static int icon_drag_start_row = -1;
+
+// Get the screen position for desktop icon at index i.
+// Uses icon_grid_col/row if set, otherwise auto-layout.
+static void desktop_icon_pos(int i, int* out_x, int* out_y) {
+    if (icon_grid_col[i] >= 0 && icon_grid_row[i] >= 0) {
+        *out_x = GRID_START_X + icon_grid_col[i] * ICON_SPACING_X;
+        *out_y = GRID_START_Y + icon_grid_row[i] * ICON_SPACING_Y;
+    } else {
+        // Auto-layout: column = i % max_rows, row = i / max_rows
+        // Icons go down first, then right (macOS-style)
+        int max_rows = (700 - GRID_START_Y) / ICON_SPACING_Y;
+        if (max_rows < 1) max_rows = 1;
+        *out_x = GRID_START_X + (i / max_rows) * ICON_SPACING_X;
+        *out_y = GRID_START_Y + (i % max_rows) * ICON_SPACING_Y;
+    }
+}
+
+// Find which desktop icon is at screen position (mx, my). Returns -1 if none.
+int desktop_icon_at(int mx, int my) {
+    for (int i = 0; i < desk_count; i++) {
+        int ix, iy;
+        desktop_icon_pos(i, &ix, &iy);
+        if (mx >= ix && mx <= ix + 48 && my >= iy && my <= iy + 60) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Check if a grid cell is occupied by any icon except the one being dragged
+static int desktop_grid_occupied(int col, int row, int skip_idx) {
+    for (int i = 0; i < desk_count; i++) {
+        if (i == skip_idx) continue;
+        if (icon_grid_col[i] == col && icon_grid_row[i] == row) return 1;
+    }
+    return 0;
+}
+
+// Find the nearest free grid cell to a screen position
+static void desktop_nearest_free_cell(int mx, int my, int skip_idx, int* out_col, int* out_row) {
+    int col = (mx - GRID_START_X + ICON_SPACING_X / 2) / ICON_SPACING_X;
+    int row = (my - GRID_START_Y + ICON_SPACING_Y / 2) / ICON_SPACING_Y;
+    if (col < 0) col = 0;
+    if (row < 0) row = 0;
+    if (col > 9) col = 9;
+    if (row > 6) row = 6;
+
+    // If the target cell is free, use it
+    if (!desktop_grid_occupied(col, row, skip_idx)) {
+        *out_col = col;
+        *out_row = row;
+        return;
+    }
+
+    // Search nearby cells in a spiral pattern
+    for (int dist = 1; dist < 8; dist++) {
+        for (int dy = -dist; dy <= dist; dy++) {
+            for (int dx = -dist; dx <= dist; dx++) {
+                if (abs(dx) != dist && abs(dy) != dist) continue;
+                int c = col + dx, r = row + dy;
+                if (c < 0 || r < 0 || c > 9 || r > 6) continue;
+                if (!desktop_grid_occupied(c, r, skip_idx)) {
+                    *out_col = c;
+                    *out_row = r;
+                    return;
+                }
+            }
+        }
+    }
+    *out_col = col;
+    *out_row = row;
+}
+
 void desktop_refresh() {
     uint32_t blk = 0xFFFFFFFF;
     extern int get_dir_block(const char*, uint32_t*);
@@ -214,6 +298,8 @@ void desktop_refresh() {
     desk_count = 0;
     memset(desk_entries, 0, sizeof(desk_entries));
     memset(desk_selected, 0, sizeof(desk_selected));
+    // Initialize icon positions to auto-layout (-1)
+    for (int i = 0; i < 32; i++) { icon_grid_col[i] = -1; icon_grid_row[i] = -1; }
     
     // Preserve rename state during refresh if active
     // (desktop_refresh is called periodically and would otherwise kill rename)
@@ -303,7 +389,7 @@ void desktop_init() {
     // If we couldn't resolve a username from config, use a sensible default.
     // Do NOT use /Users/Desktop (which causes duplicate desktop folder).
     if (g_desktop_path[0] == 0) {
-        strcpy(g_desktop_path, "/Users/Shared/Desktop");
+        strcpy(g_desktop_path, "/Users/user/Desktop");
     }
     
     // Ensure the path exists
@@ -317,6 +403,24 @@ void desktop_init() {
             sys_fs_create(parent, 1);
         }
         sys_fs_create(g_desktop_path, 1);
+    }
+    
+    // Create default desktop icons (as .app bundles) if they don't already exist.
+    // These appear as clickable icons on the desktop.
+    {
+        const char* default_apps[] = {
+            "Calculator.app",
+            "MacTest.app",
+            "About.app",
+            NULL
+        };
+        char app_path[256];
+        for (int i = 0; default_apps[i]; i++) {
+            snprintf(app_path, sizeof(app_path), "%s/%s", g_desktop_path, default_apps[i]);
+            if (!sys_fs_exists(app_path)) {
+                sys_fs_create(app_path, 1);  // Create as directory (.app bundle)
+            }
+        }
     }
     
     desktop_refresh();
@@ -462,9 +566,20 @@ void desktop_draw_icons(uint32_t* buffer) {
     int y = GRID_START_Y;
 
     for(int i=0; i<desk_count; i++) {
+        // Get icon position — either from grid or auto-layout
+        if (i == icon_drag_idx) {
+            // Draw dragged icon at mouse position (get mouse from kernel API)
+            int mmx, mmy, dummy;
+            sys_mouse_read(&mmx, &mmy, &dummy);
+            x = mmx - icon_drag_off_x;
+            y = mmy - icon_drag_off_y;
+            // Semi-transparent highlight behind dragged icon
+            gfx_fill_rect(x - 4, y - 4, 56, 68, 0x40007AFF);
+        } else {
+            desktop_icon_pos(i, &x, &y);
+        }
+
         // Always repaint the icon's background from the wallpaper cache first.
-        // This prevents stale highlights or ghost pixels from a previous frame
-        // when using the dirty-region optimisation during window dragging.
         desktop_fill_wallpaper_region(buffer, x - 10, y - 5, 68, 80);
 
         // Selection Highlight
@@ -475,7 +590,16 @@ void desktop_draw_icons(uint32_t* buffer) {
         const char* icon = (desk_entries[i].attributes & 0x10) ? "folder" : "file";
         // Check for .app extension - show as app icon (not installer)
         int len = strlen(desk_entries[i].filename);
-        if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".app") == 0) icon = "terminal";
+        if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".app") == 0) {
+            icon = "terminal";  // Default app icon
+            // App-specific icons
+            if (strncmp(desk_entries[i].filename, "Calculator", 10) == 0) icon = "calculator";
+            else if (strncmp(desk_entries[i].filename, "About", 5) == 0) icon = "control_center";
+            else if (strncmp(desk_entries[i].filename, "MacTest", 7) == 0) icon = "hdd_icon";
+            else if (strncmp(desk_entries[i].filename, "Settings", 8) == 0) icon = "control_center";
+            else if (strncmp(desk_entries[i].filename, "Terminal", 8) == 0) icon = "terminal";
+            else if (strncmp(desk_entries[i].filename, "Browser", 7) == 0) icon = "browser";
+        }
         // Check for .dmg extension - show as disk image
         if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".dmg") == 0) icon = "hdd_icon";
         // Check for .cdl extension - show as app
@@ -515,9 +639,6 @@ void desktop_draw_icons(uint32_t* buffer) {
             sys_gfx_string(label_x+1, y+53, desk_entries[i].filename, 0xFF000000); // Shadow
             sys_gfx_string(label_x, y+52, desk_entries[i].filename, 0xFFFFFFFF);   // Text
         }
-        
-        y += ICON_SPACING_Y;
-        if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
     }
 }
 
@@ -572,21 +693,11 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
     }
 
     if (rb) {
-        // Right-click: cancel any active selection and show context menu
+        // Right-click: cancel any active selection/drag and show context menu
         selbox_cancel(&g_desk_selbox);
+        icon_drag_idx = -1;
 
-        int x = GRID_START_X;
-        int y = GRID_START_Y;
-        int hit_idx = -1;
-
-        for(int i=0; i<desk_count; i++) {
-             if (mx >= x && mx <= x+48 && my >= y && my <= y+60) {
-                 hit_idx = i;
-                 break;
-             }
-             y += ICON_SPACING_Y;
-             if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
-        }
+        int hit_idx = desktop_icon_at(mx, my);
 
         if (hit_idx != -1) {
             static char path_buf[128];
@@ -610,23 +721,50 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
             return;
         }
 
+        // --- Icon dragging ---
+        if (icon_drag_idx >= 0) {
+            // Already dragging an icon — just update (position is drawn in desktop_draw_icons)
+            return;
+        }
+
         // If the selbox is already being dragged, just update it.
-        // This handles the continuous drag dispatch from bubbleview.c
-        // where desktop_on_mouse is called every frame while lb is held.
         if (g_desk_selbox.state == SELBOX_DRAGGING) {
             selbox_update(&g_desk_selbox, mx, my);
             desktop_apply_selection(&g_desk_selbox);
             return;
         }
 
-        // Start a new selbox drag from this point.  We always start the
-        // selbox — even if the click is on an icon — so the user can
-        // drag-select starting near icons.  The selbox_start coordinates
-        // are recorded; on release, if the user didn't drag far enough
-        // for the selbox to be visible (min_drag threshold), we treat it
-        // as a simple click and handle icon selection instead.
+        // Check if clicking on an icon to start a drag
+        int hit_idx = desktop_icon_at(mx, my);
+        if (hit_idx >= 0 && desk_selected[hit_idx]) {
+            // Clicked on an already-selected icon — start icon drag
+            icon_drag_idx = hit_idx;
+            int ix, iy;
+            desktop_icon_pos(hit_idx, &ix, &iy);
+            icon_drag_off_x = mx - ix;
+            icon_drag_off_y = my - iy;
+            icon_drag_start_col = icon_grid_col[hit_idx];
+            icon_drag_start_row = icon_grid_row[hit_idx];
+            // Cancel any selbox that might have started
+            selbox_cancel(&g_desk_selbox);
+            return;
+        }
+
+        // Start a new selbox drag from this point.
         selbox_start(&g_desk_selbox, mx, my);
     } else {
+        // Mouse button released
+        // --- Finish icon drag ---
+        if (icon_drag_idx >= 0) {
+            // Drop the icon at the nearest free grid cell
+            int new_col, new_row;
+            desktop_nearest_free_cell(mx, my, icon_drag_idx, &new_col, &new_row);
+            icon_grid_col[icon_drag_idx] = new_col;
+            icon_grid_row[icon_drag_idx] = new_row;
+            icon_drag_idx = -1;
+            return;
+        }
+
         // Mouse button released — finish any active selection drag.
         if (g_desk_selbox.state == SELBOX_DRAGGING) {
             // Check if this was a real drag or just a click (no movement)
@@ -642,25 +780,15 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
 
             if (!was_drag) {
                 // User clicked without dragging — treat as a simple click.
-                // Check if an icon was hit and select it.
-                int x = GRID_START_X;
-                int y = GRID_START_Y;
-                for(int i=0; i<desk_count; i++) {
-                    if (mx >= x && mx <= x+48 && my >= y && my <= y+60) {
-                        memset(desk_selected, 0, sizeof(desk_selected));
-                        desk_selected[i] = 1;
-                        return;
-                    }
-                    y += ICON_SPACING_Y;
-                    if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
+                int hit_idx = desktop_icon_at(mx, my);
+                if (hit_idx >= 0) {
+                    memset(desk_selected, 0, sizeof(desk_selected));
+                    desk_selected[hit_idx] = 1;
+                    return;
                 }
                 // Clicked on empty space without dragging — deselect all
                 memset(desk_selected, 0, sizeof(desk_selected));
             }
-            // If it was a drag, the selection was already applied by
-            // desktop_apply_selection() during the drag. Items stay
-            // highlighted via desk_selected[] which is independent
-            // of the selbox state.
         }
     }
 }
@@ -679,18 +807,17 @@ void desktop_apply_selection(selection_box_t* sb) {
     // Clear all selections first, then re-select icons that intersect
     memset(desk_selected, 0, sizeof(desk_selected));
 
-    int x = GRID_START_X;
-    int y = GRID_START_Y;
     for(int i=0; i<desk_count; i++) {
-        // Icon bounding box: (x, y) to (x+48, y+60)
+        int ix, iy;
+        desktop_icon_pos(i, &ix, &iy);
+        // Icon bounding box: (ix, iy) to (ix+48, iy+60)
         // Check intersection with selection rect
-        if (x < rx + rw && x + 48 > rx && y < ry + rh && y + 60 > ry) {
+        if (ix < rx + rw && ix + 48 > rx && iy < ry + rh && iy + 60 > ry) {
             desk_selected[i] = 1;
         }
-        y += ICON_SPACING_Y;
-        if (y > 600) { y = GRID_START_Y; x += ICON_SPACING_X; }
     }
 }
+
 // =====================================================================
 // DRAG-TO-APPLICATIONS INSTALL MECHANISM
 // macOS-like: drag .app to Applications folder to install

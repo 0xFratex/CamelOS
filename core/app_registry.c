@@ -262,6 +262,7 @@ void app_registry_init(void) {
     app_registry_register_builtin("Activity Monitor", "com.camelos.activitymonitor", "activitymonitor", "activitymonitor", APP_CAT_UTILITIES);
     app_registry_register_builtin("Image Viewer",     "com.camelos.imageviewer",     "imageviewer",     "imageviewer",     APP_CAT_MEDIA);
     app_registry_register_builtin("MacTest",          "com.camelos.mactest",         "mactest",         "mactest",         APP_CAT_DEVELOPER);
+    app_registry_register_builtin("About",            "com.camelos.about",           "about",           "about",           APP_CAT_SYSTEM);
 
     // Scan filesystem for .app bundles
     app_registry_scan_applications();

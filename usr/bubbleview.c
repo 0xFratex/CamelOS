@@ -1309,15 +1309,8 @@ void handle_input(int mx, int my, int lb, int rb) {
         // Double Click Detection
         if (click) {
             // Check double click OR click-again-on-select
-            int hit_idx = -1;
-            int x = 30; int y = 60; // GRID_START matches desktop.c
-            for(int i=0; i<32; i++) {
-                if (desk_entries[i].filename[0] == 0) continue;
-                if (mx >= x && mx <= x+48 && my >= y && my <= y+60) {
-                    hit_idx = i; break;
-                }
-                y += 100; if(y>600) { y=60; x+=100; }
-            }
+            extern int desktop_icon_at(int mx, int my);
+            int hit_idx = desktop_icon_at(mx, my);
 
             if (hit_idx != -1) {
                 // If clicking the ALREADY selected item -> Trigger open
@@ -1983,7 +1976,7 @@ void start_bubble_view() {
         }
 
         dock_render(buffer, 1024, 768, mx, my);
-        process_global_bar(mx, my, (lb && !prev_lb));
+        process_global_bar(mx, my, 0);  // Render only — clicks handled in handle_input()
 
         ctx_menu_draw();
 
