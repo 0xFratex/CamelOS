@@ -24,6 +24,12 @@ task_t* create_task(int id, uint32_t entry_point, uint32_t stack_top) {
     task_t* new_task = (task_t*)kmalloc(sizeof(task_t));
     if (!new_task) return 0;
     
+    /* Zero the entire struct so all fields (especially address_space,
+     * signal_state, etc.) start as NULL/0 rather than containing
+     * garbage from the heap.  Without this, the scheduler's
+     * address_space switch check could dereference a garbage pointer. */
+    memset(new_task, 0, sizeof(task_t));
+    
     new_task->id = id;
     new_task->uid = 0; // Default to Root
     new_task->state = TASK_STATE_READY;

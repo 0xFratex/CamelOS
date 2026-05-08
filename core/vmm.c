@@ -1077,6 +1077,52 @@ int vmm_handle_page_fault(uint32_t fault_addr, uint32_t error_code)
         vma_t* vma = 0;
         address_space_t* active_space = cur_space ? cur_space : kernel_address_space;
 
+        /* --- Kernel MMIO fault sync ---
+         * Addresses >= 0x80000000 are in the high kernel MMIO range
+         * (VRAM at 0xFD000000, APIC at 0xFEE00000, etc.).  These are
+         * mapped into kernel_directory by paging_map_region() during boot,
+         * but the current page directory might not have these entries if:
+         *   1. The process was created before the MMIO was mapped
+         *   2. A new device was mapped after the process was forked
+         *   3. The current directory is kernel_directory itself but a
+         *      new page table was just allocated and CR3 hasn't been
+         *      reloaded yet (TLB staleness)
+         *
+         * We handle this by syncing the missing page table entries (or
+         * the entire page table pointer) from kernel_directory.  This
+         * is safe because all high-kernel entries are supervisor-only. */
+        if (fault_addr >= (KERNEL_HIGH_DIR_INDEX << 22)) {
+            uint32_t table_idx = fault_addr >> 22;
+            uint32_t page_idx  = (fault_addr >> 12) & 0x3FF;
+
+            if (kernel_directory && kernel_directory->tables[table_idx]) {
+                /* The kernel has a page table for this region.
+                 * Sync it to the current page directory. */
+                if (!dir->tables[table_idx]) {
+                    /* The current directory is missing the entire page table.
+                     * Share the kernel's page table pointer. */
+                    dir->tables[table_idx]         = kernel_directory->tables[table_idx];
+                    dir->tablesPhysical[table_idx] = kernel_directory->tablesPhysical[table_idx];
+                    /* Reload CR3 to flush TLB */
+                    switch_page_directory(dir);
+                    return 0;  /* Handled — retry the faulting instruction */
+                }
+
+                /* The page table exists but this specific entry is missing.
+                 * Copy the PTE from the kernel directory. */
+                uint32_t kpte = kernel_directory->tables[table_idx]->entries[page_idx];
+                if (kpte & VMM_FLAG_PRESENT) {
+                    dir->tables[table_idx]->entries[page_idx] = kpte;
+                    /* Flush TLB for this page */
+                    asm volatile("invlpg (%0)" :: "r"(page_floor(fault_addr)) : "memory");
+                    return 0;  /* Handled */
+                }
+            }
+            /* Kernel directory doesn't have this mapping either — fatal */
+            VMM_ERR("Kernel MMIO fault at 0x%x — no mapping in kernel_directory\n", fault_addr);
+            return -1;
+        }
+
         if (fault_addr >= KERNEL_SPACE_END) {
             /* User-space fault: find the VMA in the current process's
              * address space. Falls back to kernel_address_space if no
