@@ -90,6 +90,7 @@ typedef struct {
     // Double-click tracking (for open-on-double-click behavior)
     int last_click_idx;     // Index of last clicked entry (-1 = none)
     int last_click_frame;   // Frame counter when last click happened
+    int btn_prev;           // Previous frame's btn value (for edge detection)
 } FMInstance;
 
 static FMInstance fm_instances[MAX_FM_INSTANCES];
@@ -134,6 +135,7 @@ static FMInstance* fm_alloc_instance(int window_id) {
             fm_instances[i].selbox_inited = 1;
             fm_instances[i].last_click_idx = -1;
             fm_instances[i].last_click_frame = 0;
+            fm_instances[i].btn_prev = 0;
             return &fm_instances[i];
         }
     }
@@ -796,6 +798,7 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
         if (fm_cur->sb_dragging) {
             fm_cur->sb_dragging = 0;
         }
+        fm_cur->btn_prev = 0;  // Reset so next press is detected as click edge
         return; // Don't process a release as a click
     }
     
@@ -907,12 +910,14 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
         return; // During drag, don't process icon clicks
     }
 
-    // Only tick the double-click timer on actual left-click events (btn==1),
-    // NOT during continuous drag dispatch (which also sends btn==1 every frame).
-    // We detect a real click vs drag by checking if no selbox drag was started.
-    // The counter is used for double-click timing, so it must only advance
-    // once per user click, not once per frame during a hold.
-    if (btn == 1 && !(fm_cur->selbox_inited && fm_cur->selbox.state == SELBOX_DRAGGING)) {
+    // Only process click/selection logic on the RISING EDGE of a button press
+    // (i.e., the frame where btn first becomes 1). This prevents the continuous
+    // drag dispatch (which sends btn==1 every frame while held) from triggering
+    // false double-clicks — the single biggest cause of "one click opens file".
+    int click_edge = (btn == 1 && fm_cur->btn_prev == 0);
+    fm_cur->btn_prev = btn;
+
+    if (click_edge) {
         fm_frame_counter++;
     }
 
@@ -935,7 +940,11 @@ void files_on_mouse(window_t* win, int x, int y, int btn) {
                 return;
             }
             
-            // Left-click on icon: single click = select, double click = open
+            // Left-click on icon: only process on the click edge (initial press),
+            // NOT on every frame while the button is held
+            if (!click_edge) return;
+            
+            // Single click = select, double click = open
             // Check if this is a double-click (same item clicked within threshold)
             int is_dblclick = 0;
             if (fm_cur->last_click_idx == i &&

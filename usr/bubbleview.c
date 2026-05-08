@@ -1242,13 +1242,19 @@ void handle_input(int mx, int my, int lb, int rb) {
 
                 // Title Bar (Drag)
                 if (ly < HEADER_HEIGHT && click) {
-                    // Traffic Lights Logic (Circular areas)
-                    // Red: Center ~16,14. R=6 -> 10..22
-                    if (lx >= 10 && lx <= 22) { w->anim_state = 2; return; }
-                    // Yellow: Center ~36,14 -> 30..42
-                    if (lx >= 30 && lx <= 42) { win_minimize(w); return; }
-                    // Green: Center ~56,14 -> 50..62
-                    if (lx >= 50 && lx <= 62) { win_maximize(w); return; }
+                    // Traffic Lights Logic — match compositor centered position:
+                    // traffic_y = win->y + (HEADER_HEIGHT - 12) / 2 = win->y + 13
+                    // so in local coords: 13..25 with 12px size
+                    int tl_y_min = (HEADER_HEIGHT - 12) / 2;
+                    int tl_y_max = tl_y_min + 12;
+                    if (ly >= tl_y_min && ly <= tl_y_max) {
+                        // Red (Close): drawn at win->x+8, size 12 → lx 8..20
+                        if (lx >= 8 && lx <= 20) { w->anim_state = 2; return; }
+                        // Yellow (Minimize): drawn at win->x+28, size 12 → lx 28..40
+                        if (lx >= 28 && lx <= 40) { win_minimize(w); return; }
+                        // Green (Maximize): drawn at win->x+48, size 12 → lx 48..60
+                        if (lx >= 48 && lx <= 60) { win_maximize(w); return; }
+                    }
 
                     // Start Drag
                     // FIX: Snap Restore Logic
