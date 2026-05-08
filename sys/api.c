@@ -353,6 +353,15 @@ int sys_fs_rename(const char* o, const char* n) {
 }
 void sys_fs_copy(const char* s, const char* d) { pfs32_copy(s, d); }
 
+int sys_fs_stat(const char* path, int* total_blocks, int* free_blocks) {
+    (void)path;  // Only one filesystem in CamelOS currently
+    pfs32_stats_t stats;
+    if (pfs32_get_stats(&stats) != 0) return -1;
+    if (total_blocks) *total_blocks = stats.total_sectors_used + stats.blocks_free;
+    if (free_blocks)  *free_blocks  = stats.blocks_free;
+    return 0;
+}
+
 // GFX Wrappers
 void sys_gfx_init() { gfx_init_hal(0); }
 void sys_gfx_text_mode() {}

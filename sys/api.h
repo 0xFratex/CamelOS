@@ -47,6 +47,7 @@ int sys_fs_exists(const char* full_path);
 int sys_fs_is_dir(const char* full_path);
 int sys_fs_rename(const char* old_path, const char* new_path);
 void sys_fs_copy(const char* src, const char* dest);
+int sys_fs_stat(const char* path, int* total_blocks, int* free_blocks);
 
 // --- User/Clipboard ---
 int sys_get_uid();

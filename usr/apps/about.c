@@ -26,7 +26,6 @@ static void about_read_system_info(void) {
     sprintf(sys_mem_str, "%d MB (%d MB free)", total, free_mem);
 
     // Disk
-    extern int sys_fs_stat(const char* path, int* total_blocks, int* free_blocks);
     int total_blocks = 0, free_blocks = 0;
     sys_fs_stat("/", &total_blocks, &free_blocks);
     int total_mb = (total_blocks * 4096) / (1024 * 1024);
