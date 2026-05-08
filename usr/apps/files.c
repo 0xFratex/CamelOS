@@ -1115,7 +1115,37 @@ void init_files_app() {
         strncpy(initial_path, args, FM_PATH_MAX - 1);
         initial_path[FM_PATH_MAX - 1] = 0;
     } else {
-        strcpy(initial_path, "/");
+        // Default to user's Desktop directory (reads username from system.conf)
+        initial_path[0] = 0;
+        char conf_buf[512];
+        int conf_len = sys_fs_read("/etc/system.conf", conf_buf, sizeof(conf_buf) - 1);
+        if (conf_len <= 0) {
+            conf_len = sys_fs_read("/Library/Preferences/system.conf", conf_buf, sizeof(conf_buf) - 1);
+        }
+        if (conf_len > 0) {
+            conf_buf[conf_len] = 0;
+            char* line = strstr(conf_buf, "username=");
+            if (line) {
+                char username[64];
+                strncpy(username, line + 9, sizeof(username) - 1);
+                username[sizeof(username) - 1] = 0;
+                char* nl = username;
+                while (*nl && *nl != '\n' && *nl != '\r') nl++;
+                *nl = 0;
+                if (username[0]) {
+                    strcpy(initial_path, "/Users/");
+                    strcat(initial_path, username);
+                    strcat(initial_path, "/Desktop");
+                    // Fall back to home dir if Desktop doesn't exist
+                    if (!sys_fs_exists(initial_path)) {
+                        initial_path[strlen(initial_path) - 7] = 0; // Remove "/Desktop"
+                    }
+                }
+            }
+        }
+        if (initial_path[0] == 0) {
+            strcpy(initial_path, "/");
+        }
     }
     
     window_t* w = ws_create_window("Finder", 550, 400, files_on_paint, files_on_input, files_on_mouse);
