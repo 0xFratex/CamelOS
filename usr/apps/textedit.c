@@ -36,6 +36,9 @@ static char status_msg[64] = "New File";
 // Window reference for title updates
 static Window* te_window = 0;
 
+// Forward declaration (needed because textedit_on_file_selected calls it before definition)
+static void te_open_file(const char* path);
+
 // File picker callback — opens the selected file in the editor
 static void textedit_on_file_selected(const char* path) {
     if (path && path[0]) {
