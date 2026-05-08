@@ -8,6 +8,7 @@
 #include "../dock.h"
 #include "../../fs/pfs32.h"
 #include "../../core/window_server.h"
+#include "../lib/file_picker.h"
 
 // Layout
 #define PAD 8
@@ -34,6 +35,13 @@ static char status_msg[64] = "New File";
 
 // Window reference for title updates
 static Window* te_window = 0;
+
+// File picker callback — opens the selected file in the editor
+static void textedit_on_file_selected(const char* path) {
+    if (path && path[0]) {
+        te_open_file(path);
+    }
+}
 
 // Prompt state (for file open/save path input)
 static int prompt_active = 0;  // 0=none, 1=save, 2=open
@@ -440,11 +448,9 @@ static void textedit_on_mouse(window_t* win, int x, int y, int btn) {
         // New
         if (x >= bx && x < bx + 36) { te_new(); return; }
         bx += 40;
-        // Open
+        // Open (launches file picker)
         if (x >= bx && x < bx + 40) {
-            prompt_active = 2;
-            prompt_buf[0] = 0;
-            prompt_len = 0;
+            file_picker_open("/Users", textedit_on_file_selected);
             return;
         }
         bx += 44;
@@ -503,6 +509,27 @@ static void textedit_on_resize(window_t* win, int new_w, int new_h) {
     te_ensure_cursor_visible(new_w);
 }
 
+// Menu action handler — dispatches menu bar clicks
+static void textedit_on_menu_action(int menu_id, int item_idx) {
+    if (menu_id == 0) {  // File menu
+        if (item_idx == 0) {         // New
+            te_new();
+        } else if (item_idx == 1) {  // Open...
+            file_picker_open("/Users", textedit_on_file_selected);
+        } else if (item_idx == 2) {  // Save
+            if (current_file[0]) {
+                te_save_file(current_file);
+            } else {
+                prompt_active = 1;
+                prompt_buf[0] = 0;
+                prompt_len = 0;
+            }
+        }
+    } else if (menu_id == 1) {  // Edit menu
+        // Cut/Copy/Paste — no-op for now (clipboard integration TBD)
+    }
+}
+
 void init_textedit_app() {
     // Check for launch arguments (file path passed via "Open With" or command line)
     char launch_path[256];
@@ -529,7 +556,7 @@ void init_textedit_app() {
     ((window_t*)te_window)->menu_count = 3;
     strcpy(((window_t*)te_window)->menus[0].name, "File");
     strcpy(((window_t*)te_window)->menus[0].items[0].label, "New");
-    strcpy(((window_t*)te_window)->menus[0].items[1].label, "Open");
+    strcpy(((window_t*)te_window)->menus[0].items[1].label, "Open...");
     strcpy(((window_t*)te_window)->menus[0].items[2].label, "Save");
     ((window_t*)te_window)->menus[0].item_count = 3;
     
@@ -542,6 +569,9 @@ void init_textedit_app() {
     strcpy(((window_t*)te_window)->menus[2].name, "View");
     strcpy(((window_t*)te_window)->menus[2].items[0].label, "Word Wrap");
     ((window_t*)te_window)->menus[2].item_count = 1;
+    
+    // Wire up menu action handler so "Open..." and other menu items work
+    ((window_t*)te_window)->on_menu_action = (void*)textedit_on_menu_action;
     
     fw_register_dock("TextEdit", 3, te_window);
 }
