@@ -26,6 +26,10 @@ extern int desktop_is_ctx_open();
 // (used by bubbleview.c to keep dispatching mouse events during the drag)
 extern int desktop_selbox_active();
 
+// Check if a desktop icon is currently being dragged
+// (used by bubbleview.c to keep dispatching mouse events during icon drag)
+extern int desktop_icon_drag_active();
+
 // Cancel the desktop selbox (e.g., when a double-click opens an item)
 extern void desktop_cancel_selbox();
 

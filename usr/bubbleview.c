@@ -1384,6 +1384,18 @@ void handle_input(int mx, int my, int lb, int rb) {
         desktop_on_mouse(mx, my, lb, rb);
         return;
     }
+
+    // 7c. Desktop icon drag
+    // If a desktop icon is being dragged (user clicked and held on icon),
+    // keep calling desktop_on_mouse every frame so the icon position
+    // updates in real-time and the drag ends on button release.
+    // Without this, desktop_on_mouse is only called on click events,
+    // so the icon would never actually follow the mouse and the drag
+    // would never complete.
+    if (desktop_icon_drag_active()) {
+        desktop_on_mouse(mx, my, lb, rb);
+        return;
+    }
 }
 
 // Screenlock + Welcome Setup state

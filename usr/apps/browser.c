@@ -580,6 +580,20 @@ static void browser_load_page(const char* url) {
 
     load_progress = 15;
 
+    // Repaint after DNS resolution so user sees progress
+    http_process_events();
+    if (browser_window) {
+        window_t* bw = (window_t*)browser_window;
+        if (bw->paint_callback) {
+            typedef void (*pcb)(window_t*,int,int,int,int);
+            extern uint32_t* gfx_get_active_buffer(void);
+            uint32_t* fb = gfx_get_active_buffer();
+            if (fb) ((pcb)bw->paint_callback)(bw, bw->x, bw->y + 38, bw->width, bw->height - 38);
+        }
+        extern void gfx_swap_buffers(void);
+        gfx_swap_buffers();
+    }
+
     extern uint32_t ip_parse(const char* str);
     uint32_t ip = ip_parse(ip_str);
 
@@ -600,6 +614,20 @@ static void browser_load_page(const char* url) {
     server_addr.sin_addr = ip;
 
     strcpy(status_text, "Connecting...");
+
+    // Process GUI events during connection to keep cursor/UI responsive
+    http_process_events();
+    if (browser_window) {
+        window_t* bw = (window_t*)browser_window;
+        if (bw->paint_callback) {
+            typedef void (*pcb)(window_t*,int,int,int,int);
+            extern uint32_t* gfx_get_active_buffer(void);
+            uint32_t* fb = gfx_get_active_buffer();
+            if (fb) ((pcb)bw->paint_callback)(bw, bw->x, bw->y + 38, bw->width, bw->height - 38);
+        }
+        extern void gfx_swap_buffers(void);
+        gfx_swap_buffers();
+    }
 
     if (k_connect(sockfd, &server_addr) < 0) {
         k_close(sockfd);
@@ -655,6 +683,20 @@ static void browser_load_page(const char* url) {
         strcpy(status_text, "Secure connection established");
     }
 
+    // Repaint after connection/TLS so user sees progress
+    http_process_events();
+    if (browser_window) {
+        window_t* bw = (window_t*)browser_window;
+        if (bw->paint_callback) {
+            typedef void (*pcb)(window_t*,int,int,int,int);
+            extern uint32_t* gfx_get_active_buffer(void);
+            uint32_t* fb = gfx_get_active_buffer();
+            if (fb) ((pcb)bw->paint_callback)(bw, bw->x, bw->y + 38, bw->width, bw->height - 38);
+        }
+        extern void gfx_swap_buffers(void);
+        gfx_swap_buffers();
+    }
+
     char request[768];
     int rlen = 0;
     rlen += sprintf(request + rlen, "GET %s HTTP/1.1\r\n", path);
@@ -697,8 +739,8 @@ static void browser_load_page(const char* url) {
     int total_read = 0;
 
     uint32_t browser_recv_start = get_tick_count();
-    #define BROWSER_RECV_TIMEOUT 8000  // 8 seconds — large pages need more time
-    for (int retry = 0; retry < 1200 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
+    #define BROWSER_RECV_TIMEOUT 15000  // 15 seconds — some pages are very large or on slow connections
+    for (int retry = 0; retry < 3000 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         if (get_tick_count() - browser_recv_start > BROWSER_RECV_TIMEOUT) break;
         extern void rtl8139_poll(); rtl8139_poll();
         int n;
@@ -712,18 +754,21 @@ static void browser_load_page(const char* url) {
             load_progress = prog;
         }
         else if (n == 0) break;
-        else { for (volatile int d = 0; d < 50000; d++); }
+        else {
+            // Short yield — don't burn CPU in a tight spin loop.
+            // A brief pause lets the NIC and other hardware catch up.
+            for (volatile int d = 0; d < 5000; d++);
+        }
         http_process_events();
 
-        // Force a repaint of the browser window every 16 iterations (~320ms)
-        // so the loading progress bar, cursor, and UI stay responsive.
-        // Without this, the entire GUI appears frozen during page loads.
-        if ((retry & 0xF) == 0 && browser_window) {
+        // Repaint the browser window every 4 iterations (~80ms) to keep
+        // the progress bar, cursor, and UI responsive during page loads.
+        // Also swap buffers so the user sees the update immediately.
+        if ((retry & 0x3) == 0 && browser_window) {
             window_t* bw = (window_t*)browser_window;
             if (bw->paint_callback) {
                 typedef void (*pcb)(window_t*,int,int,int,int);
                 extern uint32_t* gfx_get_active_buffer(void);
-                extern int gfx_ctx_width, gfx_ctx_height;
                 uint32_t* fb = gfx_get_active_buffer();
                 if (fb) {
                     ((pcb)bw->paint_callback)(bw, bw->x, bw->y + 38, bw->width, bw->height - 38);

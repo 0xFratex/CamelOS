@@ -203,6 +203,12 @@ int desktop_selbox_active() {
     return g_desk_selbox_inited && g_desk_selbox.state == SELBOX_DRAGGING;
 }
 
+// Returns 1 if a desktop icon is currently being dragged (mouse held on icon).
+// Used by bubbleview.c to keep dispatching mouse events during the drag.
+int desktop_icon_drag_active() {
+    return icon_drag_idx >= 0;
+}
+
 // Cancel the desktop selbox (e.g., when a double-click opens an item
 // and the selbox from the first click needs to be dismissed).
 void desktop_cancel_selbox() {
@@ -479,6 +485,11 @@ static void wallpaper_cache_ensure(int w, int h) {
     if (wallpaper_cache && !using_static_wallpaper) {
         kfree(wallpaper_cache);
         wallpaper_cache = 0;
+    } else if (wallpaper_cache && using_static_wallpaper) {
+        // Static buffer in use but dimensions changed — reset to clean state
+        // so reallocation can proceed correctly
+        wallpaper_cache = 0;
+        using_static_wallpaper = 0;
     }
 
     // Try heap allocation first
@@ -500,6 +511,10 @@ static void wallpaper_cache_ensure(int w, int h) {
         wallpaper_cache_h = 0;
         return;
     }
+
+    // Zero the cache to prevent stale data if the scaling loop
+    // doesn't fill all pixels (e.g. edge cases with 1px images)
+    memset(wallpaper_cache, 0, needed);
 
     // Try loading embedded wallpaper image first (compiled into the kernel)
     // The image is stored at a reduced resolution and scaled up at runtime.
@@ -663,9 +678,6 @@ void desktop_draw_icons(uint32_t* buffer) {
         } else {
             desktop_icon_pos(i, &x, &y);
         }
-
-        // Always repaint the icon's background from the wallpaper cache first.
-        desktop_fill_wallpaper_region(buffer, x - 10, y - 5, 68, 80);
 
         // Selection Highlight
         if(desk_selected[i] && !(desktop_rename_active && desktop_rename_idx == i)) {
