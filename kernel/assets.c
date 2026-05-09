@@ -5369,6 +5369,12 @@ static const embedded_image_t embedded_assets[] = {
     { .name = "wifi", .data = embedded_wifi_png_data, .width = 50u, .height = 50u },
     { .name = "hdd_icon", .data = embedded_hdd_icon_png_data, .width = 50u, .height = 50u },
     { .name = "backpack", .data = embedded_backpack_png_data, .width = 50u, .height = 50u },
+    // Aliases — reuse existing pixel data with distinct names so that
+    // each app category gets a visually different icon in dock & desktop.
+    { .name = "calculator", .data = embedded_writemachine_png_data, .width = 50u, .height = 50u },
+    { .name = "about",      .data = embedded_control_center_png_data, .width = 50u, .height = 50u },
+    { .name = "mactest",    .data = embedded_backpack_png_data, .width = 50u, .height = 50u },
+    { .name = "settings",   .data = embedded_control_center_png_data, .width = 50u, .height = 50u },
 };
 
 const embedded_image_t* get_embedded_images(uint32_t* count) {

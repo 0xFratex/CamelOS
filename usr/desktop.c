@@ -136,27 +136,56 @@ static int wallpaper_load_bmp(const char* path, int screen_w, int screen_h) {
     kfree(file_buf);
 
     // Copy BMP pixel data into wallpaper_cache, scaling to screen size
-    // using simple nearest-neighbor sampling
+    // using bilinear interpolation for smooth rendering (matches the
+    // quality of the embedded wallpaper scaling above).
     for (int sy = 0; sy < screen_h; sy++) {
+        int src_y_fp = (sy * (bmp_h - 1) * 65536) / (screen_h > 1 ? screen_h - 1 : 1);
+        int by0 = src_y_fp >> 16;
+        int fy  = src_y_fp & 0xFFFF;
+        int by1 = by0 + 1;
+        if (by1 >= bmp_h) by1 = bmp_h - 1;
+
+        int row0 = top_down ? by0 : (bmp_h - 1 - by0);
+        int row1 = top_down ? by1 : (bmp_h - 1 - by1);
+        uint8_t* pix_row0 = &pixel_buf[row0 * row_bytes];
+        uint8_t* pix_row1 = &pixel_buf[row1 * row_bytes];
+        int px_bytes = bpp / 8;
+
         for (int sx = 0; sx < screen_w; sx++) {
-            // Map screen pixel to BMP pixel
-            int bx = (sx * bmp_w) / screen_w;
-            int by = (sy * bmp_h) / screen_h;
+            int src_x_fp = (sx * (bmp_w - 1) * 65536) / (screen_w > 1 ? screen_w - 1 : 1);
+            int bx0 = src_x_fp >> 16;
+            int fx  = src_x_fp & 0xFFFF;
+            int bx1 = bx0 + 1;
+            if (bx1 >= bmp_w) bx1 = bmp_w - 1;
 
-            // Clamp to valid range
-            if (bx >= bmp_w) bx = bmp_w - 1;
-            if (by >= bmp_h) by = bmp_h - 1;
+            uint8_t* p00 = &pix_row0[bx0 * px_bytes];
+            uint8_t* p10 = &pix_row0[bx1 * px_bytes];
+            uint8_t* p01 = &pix_row1[bx0 * px_bytes];
+            uint8_t* p11 = &pix_row1[bx1 * px_bytes];
 
-            // Get the BMP row (bottom-up unless top_down)
-            int bmp_row = top_down ? by : (bmp_h - 1 - by);
-            uint8_t* pixel = &pixel_buf[bmp_row * row_bytes + bx * (bpp / 8)];
+            // Bilinear blend per channel
+            #define BMP_BLERP(arr) do {                                          \
+                int top = (int)(arr[0]) + (((int)(arr[1]) - (int)(arr[0])) * fx) / 65536;  \
+                int bot = (int)(arr[2]) + (((int)(arr[3]) - (int)(arr[2])) * fx) / 65536;  \
+                int val = top + ((bot - top) * fy) / 65536;                      \
+                if (val < 0) val = 0; if (val > 255) val = 255;                 \
+                ch = (uint8_t)val;                                                \
+            } while(0)
 
-            uint8_t b_val = pixel[0];
-            uint8_t g_val = pixel[1];
-            uint8_t r_val = pixel[2];
-            uint32_t col = 0xFF000000 | ((uint32_t)r_val << 16) | ((uint32_t)g_val << 8) | b_val;
+            uint8_t ch;
+            // Blue channel
+            uint8_t b_arr[4] = {p00[0], p10[0], p01[0], p11[0]};
+            BMP_BLERP(b_arr); uint8_t b_val = ch;
+            // Green channel
+            uint8_t g_arr[4] = {p00[1], p10[1], p01[1], p11[1]};
+            BMP_BLERP(g_arr); uint8_t g_val = ch;
+            // Red channel
+            uint8_t r_arr[4] = {p00[2], p10[2], p01[2], p11[2]};
+            BMP_BLERP(r_arr); uint8_t r_val = ch;
+            #undef BMP_BLERP
 
-            wallpaper_cache[sy * screen_w + sx] = col;
+            wallpaper_cache[sy * screen_w + sx] =
+                0xFF000000 | ((uint32_t)r_val << 16) | ((uint32_t)g_val << 8) | b_val;
         }
     }
 
@@ -197,6 +226,10 @@ static int icon_drag_off_x = 0;      // Mouse offset from icon top-left
 static int icon_drag_off_y = 0;
 static int icon_drag_start_col = -1;  // Original position (for cancel)
 static int icon_drag_start_row = -1;
+static int icon_drag_active = 0;      // 1 = mouse has moved past threshold (visual drag)
+static int icon_drag_start_mx = 0;    // Mouse position when drag was initiated
+static int icon_drag_start_my = 0;
+#define ICON_DRAG_THRESHOLD 6         // Pixels of mouse movement before drag starts
 
 // Get the screen position for desktop icon at index i.
 // Uses icon_grid_col/row if set, otherwise auto-layout.
@@ -405,20 +438,25 @@ void desktop_init() {
         sys_fs_create(g_desktop_path, 1);
     }
     
-    // Create default desktop icons (as .app bundles) if they don't already exist.
-    // These appear as clickable icons on the desktop.
+    // Create default desktop icons (as .app bundles) ONLY on first boot
+    // (before the system is configured).  On subsequent boots the desktop
+    // should only show files the user has placed there — creating shortcuts
+    // every time causes unwanted icons to reappear after reboot.
     {
-        const char* default_apps[] = {
-            "Calculator.app",
-            "MacTest.app",
-            "About.app",
-            NULL
-        };
-        char app_path[256];
-        for (int i = 0; default_apps[i]; i++) {
-            snprintf(app_path, sizeof(app_path), "%s/%s", g_desktop_path, default_apps[i]);
-            if (!sys_fs_exists(app_path)) {
-                sys_fs_create(app_path, 1);  // Create as directory (.app bundle)
+        extern int welcome_setup_needs_setup(void);
+        if (welcome_setup_needs_setup()) {
+            const char* default_apps[] = {
+                "Calculator.app",
+                "MacTest.app",
+                "About.app",
+                NULL
+            };
+            char app_path[256];
+            for (int i = 0; default_apps[i]; i++) {
+                snprintf(app_path, sizeof(app_path), "%s/%s", g_desktop_path, default_apps[i]);
+                if (!sys_fs_exists(app_path)) {
+                    sys_fs_create(app_path, 1);  // Create as directory (.app bundle)
+                }
             }
         }
     }
@@ -474,14 +512,61 @@ static void wallpaper_cache_ensure(int w, int h) {
 
         if (img_w > 0 && img_h > 0 && wallpaper_img_data[0] != 0) {
             // Scale the embedded image to screen resolution using
-            // nearest-neighbor sampling (fast, no floating-point needed)
+            // bilinear interpolation for smooth quality (fixes
+            // blocky/pixelated wallpaper when the source image is
+            // only 320x240 but the screen is 1024x768).
+            // Uses integer math only — no floating-point needed.
             for (int sy = 0; sy < h; sy++) {
-                int iy = (sy * img_h) / h;
-                if (iy >= img_h) iy = img_h - 1;
+                // Map screen Y to source Y in 16.16 fixed-point
+                int src_y_fp = (sy * (img_h - 1) * 65536) / (h > 1 ? h - 1 : 1);
+                int iy0 = src_y_fp >> 16;
+                int fy  = src_y_fp & 0xFFFF;
+                int iy1 = iy0 + 1;
+                if (iy1 >= img_h) iy1 = img_h - 1;
+
                 for (int sx = 0; sx < w; sx++) {
-                    int ix = (sx * img_w) / w;
-                    if (ix >= img_w) ix = img_w - 1;
-                    wallpaper_cache[sy * w + sx] = wallpaper_img_data[iy * img_w + ix];
+                    // Map screen X to source X in 16.16 fixed-point
+                    int src_x_fp = (sx * (img_w - 1) * 65536) / (w > 1 ? w - 1 : 1);
+                    int ix0 = src_x_fp >> 16;
+                    int fx  = src_x_fp & 0xFFFF;
+                    int ix1 = ix0 + 1;
+                    if (ix1 >= img_w) ix1 = img_w - 1;
+
+                    // Sample 4 neighbours
+                    uint32_t c00 = wallpaper_img_data[iy0 * img_w + ix0];
+                    uint32_t c10 = wallpaper_img_data[iy0 * img_w + ix1];
+                    uint32_t c01 = wallpaper_img_data[iy1 * img_w + ix0];
+                    uint32_t c11 = wallpaper_img_data[iy1 * img_w + ix1];
+
+                    // Bilinear blend per channel (ARGB)
+                    // fx and fy are 0..65535, we need (fx*fy)/65536 etc.
+                    // Weight:  w00 = (65536-fx)*(65536-fy), w10 = fx*(65536-fy),
+                    //          w01 = (65536-fx)*fy,          w11 = fx*fy
+                    // All divided by 65536*65536 to normalise.
+                    // To avoid 64-bit overflow we compute per-channel in two steps.
+                    #define BLERP_CH(shft) do {                                     \
+                        int v00 = (c00 >> shft) & 0xFF;                             \
+                        int v10 = (c10 >> shft) & 0xFF;                             \
+                        int v01 = (c01 >> shft) & 0xFF;                             \
+                        int v11 = (c11 >> shft) & 0xFF;                             \
+                        int top = v00 + ((v10 - v00) * fx) / 65536;                \
+                        int bot = v01 + ((v11 - v01) * fx) / 65536;                \
+                        int val = top + ((bot - top) * fy) / 65536;                \
+                        if (val < 0) val = 0; if (val > 255) val = 255;           \
+                        ch = (uint8_t)val;                                          \
+                    } while(0)
+
+                    uint8_t ra, ga, ba, aa;
+                    uint8_t ch;  // temporary for BLERP_CH macro
+                    BLERP_CH(16); ra = ch;
+                    BLERP_CH(8);  ga = ch;
+                    BLERP_CH(0);  ba = ch;
+                    BLERP_CH(24); aa = ch;
+                    #undef BLERP_CH
+
+                    wallpaper_cache[sy * w + sx] =
+                        ((uint32_t)aa << 24) | ((uint32_t)ra << 16) |
+                        ((uint32_t)ga << 8)  | ba;
                 }
             }
             return;  // Wallpaper image loaded successfully
@@ -567,7 +652,7 @@ void desktop_draw_icons(uint32_t* buffer) {
 
     for(int i=0; i<desk_count; i++) {
         // Get icon position — either from grid or auto-layout
-        if (i == icon_drag_idx) {
+        if (i == icon_drag_idx && icon_drag_active) {
             // Draw dragged icon at mouse position (get mouse from kernel API)
             int mmx, mmy, dummy;
             sys_mouse_read(&mmx, &mmy, &dummy);
@@ -592,11 +677,11 @@ void desktop_draw_icons(uint32_t* buffer) {
         int len = strlen(desk_entries[i].filename);
         if(len > 4 && strcmp(desk_entries[i].filename + len - 4, ".app") == 0) {
             icon = "terminal";  // Default app icon
-            // App-specific icons
+            // App-specific icons — each app gets a visually distinct icon
             if (strncmp(desk_entries[i].filename, "Calculator", 10) == 0) icon = "calculator";
-            else if (strncmp(desk_entries[i].filename, "About", 5) == 0) icon = "control_center";
-            else if (strncmp(desk_entries[i].filename, "MacTest", 7) == 0) icon = "hdd_icon";
-            else if (strncmp(desk_entries[i].filename, "Settings", 8) == 0) icon = "control_center";
+            else if (strncmp(desk_entries[i].filename, "About", 5) == 0) icon = "about";
+            else if (strncmp(desk_entries[i].filename, "MacTest", 7) == 0) icon = "mactest";
+            else if (strncmp(desk_entries[i].filename, "Settings", 8) == 0) icon = "settings";
             else if (strncmp(desk_entries[i].filename, "Terminal", 8) == 0) icon = "terminal";
             else if (strncmp(desk_entries[i].filename, "Browser", 7) == 0) icon = "browser";
         }
@@ -723,7 +808,14 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
 
         // --- Icon dragging ---
         if (icon_drag_idx >= 0) {
-            // Already dragging an icon — just update (position is drawn in desktop_draw_icons)
+            // Already tracking an icon — check if mouse has moved past threshold
+            int dx = mx - icon_drag_start_mx;
+            int dy = my - icon_drag_start_my;
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+            if (dx >= ICON_DRAG_THRESHOLD || dy >= ICON_DRAG_THRESHOLD) {
+                icon_drag_active = 1;  // Past threshold — visual drag is active
+            }
             return;
         }
 
@@ -736,9 +828,16 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
 
         // Check if clicking on an icon to start a drag
         int hit_idx = desktop_icon_at(mx, my);
-        if (hit_idx >= 0 && desk_selected[hit_idx]) {
-            // Clicked on an already-selected icon — start icon drag
+        if (hit_idx >= 0) {
+            // Clicked on an icon — select it and prepare for potential drag.
+            // Drag only becomes active after mouse moves past ICON_DRAG_THRESHOLD
+            // pixels, so a simple click still works for selection/double-click.
+            memset(desk_selected, 0, sizeof(desk_selected));
+            desk_selected[hit_idx] = 1;
             icon_drag_idx = hit_idx;
+            icon_drag_active = 0;  // Not yet — wait for movement
+            icon_drag_start_mx = mx;
+            icon_drag_start_my = my;
             int ix, iy;
             desktop_icon_pos(hit_idx, &ix, &iy);
             icon_drag_off_x = mx - ix;
@@ -756,12 +855,17 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
         // Mouse button released
         // --- Finish icon drag ---
         if (icon_drag_idx >= 0) {
-            // Drop the icon at the nearest free grid cell
-            int new_col, new_row;
-            desktop_nearest_free_cell(mx, my, icon_drag_idx, &new_col, &new_row);
-            icon_grid_col[icon_drag_idx] = new_col;
-            icon_grid_row[icon_drag_idx] = new_row;
+            if (icon_drag_active) {
+                // Real drag — drop the icon at the nearest free grid cell
+                int new_col, new_row;
+                desktop_nearest_free_cell(mx, my, icon_drag_idx, &new_col, &new_row);
+                icon_grid_col[icon_drag_idx] = new_col;
+                icon_grid_row[icon_drag_idx] = new_row;
+            }
+            // If not drag_active, the user just clicked without moving —
+            // keep the icon at its original position (already selected above)
             icon_drag_idx = -1;
+            icon_drag_active = 0;
             return;
         }
 

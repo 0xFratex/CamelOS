@@ -714,6 +714,24 @@ static void browser_load_page(const char* url) {
         else if (n == 0) break;
         else { for (volatile int d = 0; d < 50000; d++); }
         http_process_events();
+
+        // Force a repaint of the browser window every 16 iterations (~320ms)
+        // so the loading progress bar, cursor, and UI stay responsive.
+        // Without this, the entire GUI appears frozen during page loads.
+        if ((retry & 0xF) == 0 && browser_window) {
+            window_t* bw = (window_t*)browser_window;
+            if (bw->paint_callback) {
+                typedef void (*pcb)(window_t*,int,int,int,int);
+                extern uint32_t* gfx_get_active_buffer(void);
+                extern int gfx_ctx_width, gfx_ctx_height;
+                uint32_t* fb = gfx_get_active_buffer();
+                if (fb) {
+                    ((pcb)bw->paint_callback)(bw, bw->x, bw->y + 38, bw->width, bw->height - 38);
+                }
+            }
+            extern void gfx_swap_buffers(void);
+            gfx_swap_buffers();
+        }
     }
     response[total_read] = 0;
 

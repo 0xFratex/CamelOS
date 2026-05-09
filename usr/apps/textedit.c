@@ -534,13 +534,29 @@ static void textedit_on_menu_action(int menu_id, int item_idx) {
 }
 
 void init_textedit_app() {
+    // Reset ALL static state to prevent stale data from a previous instance.
+    // When an app is "closed" its window is destroyed but static globals
+    // persist.  Without this reset, reopening TextEdit would show the
+    // previous file's content and the wrong filename in the title bar.
+    te_window = 0;
+    current_file[0] = 0;
+    file_modified = 0;
+    strcpy(status_msg, "New File");
+    prompt_active = 0;
+    prompt_len = 0;
+    scroll_offset = 0;
+    hscroll_offset = 0;
+    cursor_line = 0;
+    cursor_col = 0;
+    line_count = 1;
+    for (int i = 0; i < MAX_LINES; i++) text_lines[i][0] = 0;
+
     // Check for launch arguments (file path passed via "Open With" or command line)
     char launch_path[256];
     launch_path[0] = 0;
     extern void wrap_get_args(char* b, int m);
     wrap_get_args(launch_path, sizeof(launch_path) - 1);
     if (launch_path[0] && sys_fs_exists(launch_path)) {
-        te_new();
         te_open_file(launch_path);
     } else {
         te_new_with_welcome();

@@ -37,8 +37,8 @@ void dock_init() {
     dock_add_app("TextEdit",  "/Applications/TextEdit.app",   "file");
     dock_add_app("Browser",   "/Applications/Browser.app",    "browser");
     dock_add_app("Calculator","/Applications/Calculator.app", "calculator");
-    dock_add_app("Settings",  "/Applications/Settings.app",   "hdd_icon");
-    dock_add_app("MacTest",   "/Applications/MacTest.app",    "hdd_icon");
+    dock_add_app("Settings",  "/Applications/Settings.app",   "settings");
+    dock_add_app("MacTest",   "/Applications/MacTest.app",    "mactest");
 }
 
 void dock_add_app(const char* label, const char* path, const char* icon_res) {
@@ -60,13 +60,25 @@ void dock_register(const char* label, int color, Window* win) {
     for (int i = 0; i < dock_count; i++) {
         if (strcmp(dock_icons[i].label, label) == 0) return;
     }
-    // Add to dock with a default path
+    // Add to dock with a default path and try to match a known icon
     if (dock_count < MAX_DOCK_APPS) {
         char path[128];
         strcpy(path, "/Applications/");
         strcat(path, label);
         strcat(path, ".app");
-        dock_add_app(label, path, "hdd_icon");
+        // Pick an icon that matches the app name
+        const char* icon = "terminal";  // generic app icon
+        if (strcmp(label, "Calculator") == 0) icon = "calculator";
+        else if (strcmp(label, "MacTest") == 0) icon = "mactest";
+        else if (strcmp(label, "About") == 0) icon = "about";
+        else if (strcmp(label, "Settings") == 0) icon = "settings";
+        else if (strcmp(label, "Browser") == 0) icon = "browser";
+        else if (strcmp(label, "Terminal") == 0) icon = "terminal";
+        else if (strcmp(label, "TextEdit") == 0) icon = "file";
+        else if (strcmp(label, "Finder") == 0 || strcmp(label, "Files") == 0) icon = "folder";
+        else if (strcmp(label, "Monitor") == 0) icon = "waterhole";
+        else if (strcmp(label, "NetDiag") == 0) icon = "networking";
+        dock_add_app(label, path, icon);
     }
 }
 
