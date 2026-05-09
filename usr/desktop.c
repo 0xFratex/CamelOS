@@ -216,6 +216,14 @@ static int icon_drag_start_row = -1;
 static int icon_drag_active = 0;      // 1 = mouse has moved past threshold (visual drag)
 static int icon_drag_start_mx = 0;    // Mouse position when drag was initiated
 static int icon_drag_start_my = 0;
+// Multi-drag: when multiple icons are selected and one is dragged, all move together
+static int icon_drag_selected_count = 0;          // Number of selected icons being dragged
+static int icon_drag_selected_indices[32];         // Indices of all dragged icons
+static int icon_drag_start_cols[32];               // Original grid cols for all dragged icons
+static int icon_drag_start_rows[32];               // Original grid rows for all dragged icons
+// Grid offsets of each dragged icon relative to the primary (icon_drag_idx)
+static int icon_drag_rel_cols[32];
+static int icon_drag_rel_rows[32];
 #define ICON_DRAG_THRESHOLD 6         // Pixels of mouse movement before drag starts
 
 // Inline abs() to avoid implicit declaration (no stdlib in kernel mode)
@@ -716,14 +724,30 @@ void desktop_draw_icons(uint32_t* buffer) {
 
     for(int i=0; i<desk_count; i++) {
         // Get icon position — either from grid or auto-layout
-        if (i == icon_drag_idx && icon_drag_active) {
-            // Draw dragged icon at mouse position (get mouse from kernel API)
-            int mmx, mmy, dummy;
-            sys_mouse_read(&mmx, &mmy, &dummy);
-            x = mmx - icon_drag_off_x;
-            y = mmy - icon_drag_off_y;
-            // Semi-transparent highlight behind dragged icon
-            gfx_fill_rect(x - 4, y - 4, 56, 68, 0x40007AFF);
+        if (icon_drag_active) {
+            // Check if this icon is part of the multi-drag
+            int is_dragged = 0;
+            int drag_slot = -1;
+            for (int d = 0; d < icon_drag_selected_count; d++) {
+                if (icon_drag_selected_indices[d] == i) {
+                    is_dragged = 1;
+                    drag_slot = d;
+                    break;
+                }
+            }
+            if (is_dragged) {
+                // Draw at offset from primary drag icon
+                int mmx, mmy, dummy;
+                sys_mouse_read(&mmx, &mmy, &dummy);
+                int base_x = mmx - icon_drag_off_x;
+                int base_y = mmy - icon_drag_off_y;
+                x = base_x + icon_drag_rel_cols[drag_slot] * ICON_SPACING_X;
+                y = base_y + icon_drag_rel_rows[drag_slot] * ICON_SPACING_Y;
+                // Semi-transparent highlight behind dragged icon
+                gfx_fill_rect(x - 4, y - 4, 56, 68, 0x40007AFF);
+            } else {
+                desktop_icon_pos(i, &x, &y);
+            }
         } else {
             desktop_icon_pos(i, &x, &y);
         }
@@ -842,6 +866,8 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
         // Right-click: cancel any active selection/drag and show context menu
         selbox_cancel(&g_desk_selbox);
         icon_drag_idx = -1;
+        icon_drag_active = 0;
+        icon_drag_selected_count = 0;
 
         int hit_idx = desktop_icon_at(mx, my);
 
@@ -890,11 +916,13 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
         // Check if clicking on an icon to start a drag
         int hit_idx = desktop_icon_at(mx, my);
         if (hit_idx >= 0) {
-            // Clicked on an icon — select it and prepare for potential drag.
-            // Drag only becomes active after mouse moves past ICON_DRAG_THRESHOLD
-            // pixels, so a simple click still works for selection/double-click.
-            memset(desk_selected, 0, sizeof(desk_selected));
-            desk_selected[hit_idx] = 1;
+            // If the clicked icon is already part of a multi-selection,
+            // drag ALL selected icons together. Otherwise, select only this icon.
+            if (!desk_selected[hit_idx]) {
+                // Not currently selected — start fresh selection
+                memset(desk_selected, 0, sizeof(desk_selected));
+                desk_selected[hit_idx] = 1;
+            }
             icon_drag_idx = hit_idx;
             icon_drag_active = 0;  // Not yet — wait for movement
             icon_drag_start_mx = mx;
@@ -905,6 +933,20 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
             icon_drag_off_y = my - iy;
             icon_drag_start_col = icon_grid_col[hit_idx];
             icon_drag_start_row = icon_grid_row[hit_idx];
+            // Capture all selected icons for multi-drag
+            icon_drag_selected_count = 0;
+            int primary_col = icon_grid_col[hit_idx];
+            int primary_row = icon_grid_row[hit_idx];
+            for (int j = 0; j < desk_count; j++) {
+                if (desk_selected[j]) {
+                    icon_drag_selected_indices[icon_drag_selected_count] = j;
+                    icon_drag_start_cols[icon_drag_selected_count] = icon_grid_col[j];
+                    icon_drag_start_rows[icon_drag_selected_count] = icon_grid_row[j];
+                    icon_drag_rel_cols[icon_drag_selected_count] = icon_grid_col[j] - primary_col;
+                    icon_drag_rel_rows[icon_drag_selected_count] = icon_grid_row[j] - primary_row;
+                    icon_drag_selected_count++;
+                }
+            }
             // Cancel any selbox that might have started
             selbox_cancel(&g_desk_selbox);
             return;
@@ -917,16 +959,96 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
         // --- Finish icon drag ---
         if (icon_drag_idx >= 0) {
             if (icon_drag_active) {
-                // Real drag — drop the icon at the nearest free grid cell
-                int new_col, new_row;
-                desktop_nearest_free_cell(mx, my, icon_drag_idx, &new_col, &new_row);
-                icon_grid_col[icon_drag_idx] = new_col;
-                icon_grid_row[icon_drag_idx] = new_row;
+                // Check if dropped on a folder icon — move files into it
+                int drop_target = desktop_icon_at(mx, my);
+                int drop_on_folder = 0;
+                if (drop_target >= 0) {
+                    // Make sure the drop target is not one of the dragged icons
+                    int is_dragged = 0;
+                    for (int d = 0; d < icon_drag_selected_count; d++) {
+                        if (icon_drag_selected_indices[d] == drop_target) {
+                            is_dragged = 1;
+                            break;
+                        }
+                    }
+                    if (!is_dragged && (desk_entries[drop_target].attributes & 0x10)) {
+                        drop_on_folder = 1;
+                    }
+                }
+
+                if (drop_on_folder) {
+                    // Move all dragged files into the folder
+                    for (int d = 0; d < icon_drag_selected_count; d++) {
+                        int si = icon_drag_selected_indices[d];
+                        // Skip directories — don't move folders into folders
+                        if (desk_entries[si].attributes & 0x10) continue;
+
+                        char src_path[256];
+                        strcpy(src_path, g_desktop_path);
+                        strcat(src_path, "/");
+                        strcat(src_path, desk_entries[si].filename);
+
+                        char dst_path[256];
+                        strcpy(dst_path, g_desktop_path);
+                        strcat(dst_path, "/");
+                        strcat(dst_path, desk_entries[drop_target].filename);
+                        strcat(dst_path, "/");
+                        strcat(dst_path, desk_entries[si].filename);
+
+                        // Overwrite check: skip if destination already exists
+                        if (sys_fs_exists(dst_path)) continue;
+
+                        sys_fs_rename(src_path, dst_path);
+                    }
+                    desktop_refresh();
+                } else {
+                    // Normal grid drop — place all dragged icons at new positions
+                    // First, clear grid positions of all dragged icons so they
+                    // don't occupy cells during the placement search
+                    for (int d = 0; d < icon_drag_selected_count; d++) {
+                        int si = icon_drag_selected_indices[d];
+                        icon_grid_col[si] = -1;
+                        icon_grid_row[si] = -1;
+                    }
+
+                    // Compute the primary icon's target cell
+                    int primary_col, primary_row;
+                    desktop_nearest_free_cell(mx, my, icon_drag_idx, &primary_col, &primary_row);
+                    icon_grid_col[icon_drag_idx] = primary_col;
+                    icon_grid_row[icon_drag_idx] = primary_row;
+
+                    // Place other dragged icons at offset positions
+                    for (int d = 0; d < icon_drag_selected_count; d++) {
+                        int si = icon_drag_selected_indices[d];
+                        if (si == icon_drag_idx) continue;  // Primary already placed
+
+                        int target_col = primary_col + icon_drag_rel_cols[d];
+                        int target_row = primary_row + icon_drag_rel_rows[d];
+
+                        // Clamp to grid bounds
+                        if (target_col < 0) target_col = 0;
+                        if (target_row < 0) target_row = 0;
+                        if (target_col > 9) target_col = 9;
+                        if (target_row > 6) target_row = 6;
+
+                        // If that cell is occupied, find nearest free cell
+                        if (desktop_grid_occupied(target_col, target_row, si)) {
+                            desktop_nearest_free_cell(
+                                GRID_START_X + target_col * ICON_SPACING_X + ICON_SPACING_X / 2,
+                                GRID_START_Y + target_row * ICON_SPACING_Y + ICON_SPACING_Y / 2,
+                                si, &target_col, &target_row);
+                        }
+
+                        icon_grid_col[si] = target_col;
+                        icon_grid_row[si] = target_row;
+                    }
+                }
             }
             // If not drag_active, the user just clicked without moving —
             // keep the icon at its original position (already selected above)
             icon_drag_idx = -1;
             icon_drag_active = 0;
+            icon_drag_selected_count = 0;
             return;
         }
 

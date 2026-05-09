@@ -535,7 +535,7 @@ static int http_get_internal(const char* url, char* response, int response_size,
                   "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
                   "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7\r\n"
                   "Accept-Language: en-US,en;q=0.9\r\n"
-                  "Accept-Encoding: identity\r\n"
+                  "Accept-Encoding: gzip, deflate\r\n"
                   "Upgrade-Insecure-Requests: 1\r\n"
                   "Sec-Fetch-Dest: document\r\n"
                   "Sec-Fetch-Mode: navigate\r\n"
@@ -754,6 +754,44 @@ static int http_get_internal(const char* url, char* response, int response_size,
     // Decode if chunked
     if (is_chunked) {
         total_received = http_decode_chunked_in_place(response, total_received);
+    }
+    
+    // Decompress gzip if Content-Encoding: gzip and body has gzip magic bytes
+    if (total_received >= 2 && headers_buffer) {
+        char* ce_header = http_get_header(headers_buffer, "Content-Encoding:");
+        int is_gzip_response = 0;
+        if (ce_header) {
+            // Case-insensitive check for "gzip" value
+            while (*ce_header == ' ') ce_header++;
+            if ((ce_header[0]=='g'||ce_header[0]=='G') &&
+                (ce_header[1]=='z'||ce_header[1]=='Z') &&
+                (ce_header[2]=='i'||ce_header[2]=='I') &&
+                (ce_header[3]=='p'||ce_header[3]=='P')) {
+                is_gzip_response = 1;
+            }
+        }
+        if (is_gzip_response && (uint8_t)response[0] == 0x1F && (uint8_t)response[1] == 0x8B) {
+            extern int gzip_inflate(const uint8_t* src, uint32_t src_len,
+                                    uint8_t* dst, uint32_t dst_cap,
+                                    uint32_t* dst_len);
+            // Allocate decompression buffer (up to 4x compressed size, capped at response_size)
+            int dec_cap = response_size;
+            char* decompressed = (char*)kmalloc(dec_cap);
+            if (decompressed) {
+                uint32_t decompressed_len = 0;
+                int compressed_len = total_received;
+                int gz_result = gzip_inflate((const uint8_t*)response, total_received,
+                                             (uint8_t*)decompressed, dec_cap - 1,
+                                             &decompressed_len);
+                if (gz_result == 0 && decompressed_len > 0 && (int)decompressed_len < response_size) {
+                    memcpy(response, decompressed, decompressed_len);
+                    response[decompressed_len] = 0;
+                    total_received = decompressed_len;
+                    s_printf("[HTTP] Gzip decompressed: %d -> %u bytes\n", compressed_len, decompressed_len);
+                }
+                kfree(decompressed);
+            }
+        }
     }
     
     // Cleanup Resources BEFORE potential recursion
