@@ -237,6 +237,14 @@ int desktop_icon_drag_active() {
     return icon_drag_idx >= 0;
 }
 
+// Returns 1 if the current icon drag has moved past the threshold
+// (i.e., it's a real drag, not just a click-hold). Used by bubbleview.c
+// to distinguish between a completed drag and a simple click release,
+// so that double-click detection can be suppressed after a real drag.
+int desktop_icon_drag_moved() {
+    return icon_drag_active;
+}
+
 // Cancel the desktop selbox (e.g., when a double-click opens an item
 // and the selbox from the first click needs to be dismissed).
 void desktop_cancel_selbox() {
@@ -341,6 +349,24 @@ void desktop_refresh() {
         get_dir_block(g_desktop_path, &blk);
     }
     
+    // Save icon grid positions by filename before clearing, so that
+    // desktop_refresh() doesn't lose user-set icon positions when
+    // called from desktop_install_app() or periodic updates.
+    char saved_names[32][64];
+    int  saved_col[32];
+    int  saved_row[32];
+    int  saved_pos_count = 0;
+    for (int i = 0; i < desk_count; i++) {
+        if (icon_grid_col[i] >= 0 && icon_grid_row[i] >= 0 &&
+            desk_entries[i].filename[0] != 0) {
+            strncpy(saved_names[saved_pos_count], desk_entries[i].filename, 63);
+            saved_names[saved_pos_count][63] = 0;
+            saved_col[saved_pos_count] = icon_grid_col[i];
+            saved_row[saved_pos_count] = icon_grid_row[i];
+            saved_pos_count++;
+        }
+    }
+    
     // Clear old state explicitly
     desk_count = 0;
     memset(desk_entries, 0, sizeof(desk_entries));
@@ -383,6 +409,17 @@ void desktop_refresh() {
                     seen_count++;
                     desk_entries[desk_count++] = temp[i];
                 }
+            }
+        }
+    }
+    
+    // Restore saved icon grid positions by matching filenames
+    for (int i = 0; i < desk_count; i++) {
+        for (int j = 0; j < saved_pos_count; j++) {
+            if (strcmp(desk_entries[i].filename, saved_names[j]) == 0) {
+                icon_grid_col[i] = saved_col[j];
+                icon_grid_row[i] = saved_row[j];
+                break;
             }
         }
     }

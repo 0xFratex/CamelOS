@@ -1393,7 +1393,21 @@ void handle_input(int mx, int my, int lb, int rb) {
     // so the icon would never actually follow the mouse and the drag
     // would never complete.
     if (desktop_icon_drag_active()) {
+        // Check if the icon has been moved past the drag threshold.
+        // We need to capture this BEFORE desktop_on_mouse processes
+        // the release, because after release icon_drag_active is cleared.
+        extern int desktop_icon_drag_moved(void);
+        int drag_was_moved = desktop_icon_drag_moved();
         desktop_on_mouse(mx, my, lb, rb);
+        // When the drag ends (mouse released) after a real drag
+        // (icon moved past threshold), reset the double-click state
+        // so that the next click on this icon starts a fresh selection
+        // instead of being treated as a double-click (which would open
+        // the item). This fixes the bug where dragging an icon and then
+        // clicking it again would open it instead of starting a new drag.
+        if (!lb && drag_was_moved) {
+            last_select_idx = -1;
+        }
         return;
     }
 }
