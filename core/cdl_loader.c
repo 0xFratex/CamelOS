@@ -278,7 +278,7 @@ int wrap_ping(const char* ip, char* buf, int len) { return sys_net_ping(ip, buf,
 int wrap_fs_list(const char* p, void* b, int c) { return sys_fs_list_dir(p, b, c); }
 static char g_launch_args[256] = {0};
 void sys_set_launch_args(const char* args) { if(args) strncpy(g_launch_args, args, 255); else g_launch_args[0]=0; }
-int wrap_exec_with_args(const char* p, const char* a) { sys_set_launch_args(a); return wrap_exec(p); }
+int wrap_exec_with_args(const char* p, const char* a) { sys_set_launch_args(a); g_launch_args_consumed = 0; return wrap_exec(p); }
 void wrap_get_args(char* b, int m) { 
     if(b) strncpy(b, g_launch_args, m); 
     g_launch_args_consumed = 1;  // Mark args as consumed so next wrap_exec clears them

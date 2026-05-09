@@ -739,10 +739,11 @@ static void browser_load_page(const char* url) {
     int total_read = 0;
 
     uint32_t browser_recv_start = get_tick_count();
-    #define BROWSER_RECV_TIMEOUT 15000  // 15 seconds — some pages are very large or on slow connections
-    for (int retry = 0; retry < 3000 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
+    #define BROWSER_RECV_TIMEOUT 30000  // 30 seconds — allow more time for slow connections
+    for (int retry = 0; retry < 30000 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         if (get_tick_count() - browser_recv_start > BROWSER_RECV_TIMEOUT) break;
-        extern void rtl8139_poll(); rtl8139_poll();
+        // Poll NIC in bursts to drain packets faster
+        for (int p = 0; p < 8; p++) { extern void rtl8139_poll(); rtl8139_poll(); }
         int n;
         if (use_tls && tls_session) n = tls_read(tls_session, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
         else n = k_recvfrom(sockfd, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1, 0, NULL);
@@ -755,16 +756,15 @@ static void browser_load_page(const char* url) {
         }
         else if (n == 0) break;
         else {
-            // Short yield — don't burn CPU in a tight spin loop.
-            // A brief pause lets the NIC and other hardware catch up.
-            for (volatile int d = 0; d < 5000; d++);
+            // Minimal yield — just a few cycles to avoid burning CPU
+            for (volatile int d = 0; d < 500; d++);
         }
-        http_process_events();
+        // Process GUI events less frequently to reduce overhead
+        if ((retry & 0x7) == 0) http_process_events();
 
-        // Repaint the browser window every 4 iterations (~80ms) to keep
-        // the progress bar, cursor, and UI responsive during page loads.
-        // Also swap buffers so the user sees the update immediately.
-        if ((retry & 0x3) == 0 && browser_window) {
+        // Repaint the browser window every 16 iterations to keep
+        // the progress bar and UI responsive during page loads.
+        if ((retry & 0xF) == 0 && browser_window) {
             window_t* bw = (window_t*)browser_window;
             if (bw->paint_callback) {
                 typedef void (*pcb)(window_t*,int,int,int,int);

@@ -138,8 +138,12 @@ static int wallpaper_load_bmp(const char* path, int screen_w, int screen_h) {
     // Copy BMP pixel data into wallpaper_cache, scaling to screen size
     // using bilinear interpolation for smooth rendering (matches the
     // quality of the embedded wallpaper scaling above).
+    // Pre-compute Y step to avoid signed integer overflow in the
+    // multiplication sy * (bmp_h - 1) * 65536 which overflows int32
+    // when sy > ~137 for a 240px source on a 768px screen.
+    int src_y_step = ((bmp_h - 1) * 65536) / (screen_h > 1 ? screen_h - 1 : 1);
     for (int sy = 0; sy < screen_h; sy++) {
-        int src_y_fp = (sy * (bmp_h - 1) * 65536) / (screen_h > 1 ? screen_h - 1 : 1);
+        int src_y_fp = sy * src_y_step;
         int by0 = src_y_fp >> 16;
         int fy  = src_y_fp & 0xFFFF;
         int by1 = by0 + 1;
@@ -151,8 +155,9 @@ static int wallpaper_load_bmp(const char* path, int screen_w, int screen_h) {
         uint8_t* pix_row1 = &pixel_buf[row1 * row_bytes];
         int px_bytes = bpp / 8;
 
+        int src_x_step = ((bmp_w - 1) * 65536) / (screen_w > 1 ? screen_w - 1 : 1);
         for (int sx = 0; sx < screen_w; sx++) {
-            int src_x_fp = (sx * (bmp_w - 1) * 65536) / (screen_w > 1 ? screen_w - 1 : 1);
+            int src_x_fp = sx * src_x_step;
             int bx0 = src_x_fp >> 16;
             int fx  = src_x_fp & 0xFFFF;
             int bx1 = bx0 + 1;
@@ -193,6 +198,29 @@ static int wallpaper_load_bmp(const char* path, int screen_w, int screen_h) {
     return 1;
 }
 
+pfs32_direntry_t desk_entries[32];
+int desk_count = 0;
+int desk_selected[32];
+
+// --- Desktop Icon Drag ---
+// Per-icon grid positions (col, row). If -1, uses auto-layout.
+static int icon_grid_col[32];
+static int icon_grid_row[32];
+
+// Drag state — declared BEFORE desktop_icon_drag_active() which references icon_drag_idx
+static int icon_drag_idx = -1;       // Index of icon being dragged (-1 = none)
+static int icon_drag_off_x = 0;      // Mouse offset from icon top-left
+static int icon_drag_off_y = 0;
+static int icon_drag_start_col = -1;  // Original position (for cancel)
+static int icon_drag_start_row = -1;
+static int icon_drag_active = 0;      // 1 = mouse has moved past threshold (visual drag)
+static int icon_drag_start_mx = 0;    // Mouse position when drag was initiated
+static int icon_drag_start_my = 0;
+#define ICON_DRAG_THRESHOLD 6         // Pixels of mouse movement before drag starts
+
+// Inline abs() to avoid implicit declaration (no stdlib in kernel mode)
+static inline int iabs(int x) { return x < 0 ? -x : x; }
+
 int desktop_is_ctx_open() {
     return g_ctx_menu.active;
 }
@@ -216,26 +244,6 @@ void desktop_cancel_selbox() {
         selbox_cancel(&g_desk_selbox);
     }
 }
-
-pfs32_direntry_t desk_entries[32];
-int desk_count = 0;
-int desk_selected[32];
-
-// --- Desktop Icon Drag ---
-// Per-icon grid positions (col, row). If -1, uses auto-layout.
-static int icon_grid_col[32];
-static int icon_grid_row[32];
-
-// Drag state
-static int icon_drag_idx = -1;       // Index of icon being dragged (-1 = none)
-static int icon_drag_off_x = 0;      // Mouse offset from icon top-left
-static int icon_drag_off_y = 0;
-static int icon_drag_start_col = -1;  // Original position (for cancel)
-static int icon_drag_start_row = -1;
-static int icon_drag_active = 0;      // 1 = mouse has moved past threshold (visual drag)
-static int icon_drag_start_mx = 0;    // Mouse position when drag was initiated
-static int icon_drag_start_my = 0;
-#define ICON_DRAG_THRESHOLD 6         // Pixels of mouse movement before drag starts
 
 // Get the screen position for desktop icon at index i.
 // Uses icon_grid_col/row if set, otherwise auto-layout.
@@ -294,7 +302,7 @@ static void desktop_nearest_free_cell(int mx, int my, int skip_idx, int* out_col
     for (int dist = 1; dist < 8; dist++) {
         for (int dy = -dist; dy <= dist; dy++) {
             for (int dx = -dist; dx <= dist; dx++) {
-                if (abs(dx) != dist && abs(dy) != dist) continue;
+                if (iabs(dx) != dist && iabs(dy) != dist) continue;
                 int c = col + dx, r = row + dy;
                 if (c < 0 || r < 0 || c > 9 || r > 6) continue;
                 if (!desktop_grid_occupied(c, r, skip_idx)) {
@@ -531,9 +539,13 @@ static void wallpaper_cache_ensure(int w, int h) {
             // blocky/pixelated wallpaper when the source image is
             // only 320x240 but the screen is 1024x768).
             // Uses integer math only — no floating-point needed.
+            // Pre-compute step values to avoid signed integer overflow
+            // (sy * (img_h-1) * 65536 overflows int32 when sy > ~137).
+            int src_y_step = ((img_h - 1) * 65536) / (h > 1 ? h - 1 : 1);
+            int src_x_step = ((img_w - 1) * 65536) / (w > 1 ? w - 1 : 1);
             for (int sy = 0; sy < h; sy++) {
                 // Map screen Y to source Y in 16.16 fixed-point
-                int src_y_fp = (sy * (img_h - 1) * 65536) / (h > 1 ? h - 1 : 1);
+                int src_y_fp = sy * src_y_step;
                 int iy0 = src_y_fp >> 16;
                 int fy  = src_y_fp & 0xFFFF;
                 int iy1 = iy0 + 1;
@@ -541,7 +553,7 @@ static void wallpaper_cache_ensure(int w, int h) {
 
                 for (int sx = 0; sx < w; sx++) {
                     // Map screen X to source X in 16.16 fixed-point
-                    int src_x_fp = (sx * (img_w - 1) * 65536) / (w > 1 ? w - 1 : 1);
+                    int src_x_fp = sx * src_x_step;
                     int ix0 = src_x_fp >> 16;
                     int fx  = src_x_fp & 0xFFFF;
                     int ix1 = ix0 + 1;

@@ -556,6 +556,10 @@ void init_textedit_app() {
     launch_path[0] = 0;
     extern void wrap_get_args(char* b, int m);
     wrap_get_args(launch_path, sizeof(launch_path) - 1);
+    // Clear stale launch args immediately after reading to prevent
+    // leaking the file path into the next TextEdit launch
+    extern void sys_set_launch_args(const char*);
+    sys_set_launch_args(NULL);
     if (launch_path[0] && sys_fs_exists(launch_path)) {
         te_open_file(launch_path);
     } else {
