@@ -995,8 +995,19 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
                         strcat(dst_path, "/");
                         strcat(dst_path, desk_entries[si].filename);
 
-                        // Overwrite check: skip if destination already exists
-                        if (sys_fs_exists(dst_path)) continue;
+                        // Overwrite check: if destination already exists, ask user
+                        if (sys_fs_exists(dst_path)) {
+                            // Show overwrite confirmation dialog
+                            extern int desktop_show_overwrite_dialog(const char* filename);
+                            int choice = desktop_show_overwrite_dialog(desk_entries[si].filename);
+                            if (choice == 0) {
+                                // User chose "Skip" — don't overwrite
+                                continue;
+                            }
+                            // User chose "Replace" — delete existing file first
+                            extern int sys_fs_delete(const char*);
+                            sys_fs_delete(dst_path);
+                        }
 
                         sys_fs_rename(src_path, dst_path);
                     }
@@ -1078,6 +1089,120 @@ void desktop_on_mouse(int mx, int my, int lb, int rb) {
             }
         }
     }
+}
+
+// =====================================================================
+// OVERWRITE CONFIRMATION DIALOG
+// Shows a modal dialog asking the user whether to replace or skip
+// a file that already exists at the destination. Returns:
+//   1 = Replace (overwrite)
+//   0 = Skip (keep existing)
+// =====================================================================
+int desktop_show_overwrite_dialog(const char* filename) {
+    // Dialog dimensions
+    int dw = 360, dh = 140;
+    int dx = (1024 - dw) / 2;
+    int dy = (768 - dh) / 2;
+    
+    // Button dimensions
+    int btn_w = 100, btn_h = 28;
+    int btn_skip_x = dx + 40;
+    int btn_replace_x = dx + dw - 40 - btn_w;
+    int btn_y = dy + dh - 40;
+    
+    int result = -1;  // -1 = no choice yet
+    
+    // Draw and run the modal dialog loop
+    while (result < 0) {
+        // Draw dialog background (dark overlay + white box)
+        uint32_t* buf = gfx_get_active_buffer();
+        if (buf) {
+            // Semi-transparent overlay
+            for (int y = 0; y < 768; y++) {
+                for (int x = 0; x < 1024; x++) {
+                    uint32_t* px = &buf[y * 1024 + x];
+                    *px = ((*px & 0xFEFEFEFE) >> 1) | 0x80000000;
+                }
+            }
+        }
+        
+        // Dialog box
+        sys_gfx_rect(dx, dy, dw, dh, 0xFFF2F2F7);
+        sys_gfx_rect(dx, dy, dw, 1, 0xFFC8C8CC);      // Top border
+        sys_gfx_rect(dx, dy+dh-1, dw, 1, 0xFFC8C8CC);  // Bottom border
+        sys_gfx_rect(dx, dy, 1, dh, 0xFFC8C8CC);        // Left border
+        sys_gfx_rect(dx+dw-1, dy, 1, dh, 0xFFC8C8CC);   // Right border
+        
+        // Title bar
+        sys_gfx_rect(dx+1, dy+1, dw-2, 28, 0xFFE8E8ED);
+        sys_gfx_string(dx + 12, dy + 7, "Replace file?", 0xFF000000);
+        
+        // Message
+        char msg[256];
+        snprintf(msg, sizeof(msg), "A file named \"%s\" already exists.", filename);
+        sys_gfx_string(dx + 16, dy + 44, msg, 0xFF3C3C43);
+        sys_gfx_string(dx + 16, dy + 60, "Do you want to replace it?", 0xFF3C3C43);
+        
+        // Skip button (gray)
+        sys_gfx_rect(btn_skip_x, btn_y, btn_w, btn_h, 0xFFE5E5EA);
+        sys_gfx_rect(btn_skip_x, btn_y, btn_w, 1, 0xFFC8C8CC);
+        sys_gfx_rect(btn_skip_x, btn_y+btn_h-1, btn_w, 1, 0xFFC8C8CC);
+        sys_gfx_rect(btn_skip_x, btn_y, 1, btn_h, 0xFFC8C8CC);
+        sys_gfx_rect(btn_skip_x+btn_w-1, btn_y, 1, btn_h, 0xFFC8C8CC);
+        {
+            int text_w = 4 * 4;  // "Skip" = 4 chars
+            sys_gfx_string(btn_skip_x + (btn_w - text_w) / 2, btn_y + 8, "Skip", 0xFF000000);
+        }
+        
+        // Replace button (blue)
+        sys_gfx_rect(btn_replace_x, btn_y, btn_w, btn_h, 0xFF007AFF);
+        sys_gfx_rect(btn_replace_x, btn_y, btn_w, 1, 0xFF0062CC);
+        sys_gfx_rect(btn_replace_x, btn_y+btn_h-1, btn_w, 1, 0xFF0062CC);
+        sys_gfx_rect(btn_replace_x, btn_y, 1, btn_h, 0xFF0062CC);
+        sys_gfx_rect(btn_replace_x+btn_w-1, btn_y, 1, btn_h, 0xFF0062CC);
+        {
+            int text_w = 7 * 4;  // "Replace" = 7 chars
+            sys_gfx_string(btn_replace_x + (btn_w - text_w) / 2, btn_y + 8, "Replace", 0xFFFFFFFF);
+        }
+        
+        // Swap buffers to show dialog
+        gfx_swap_buffers();
+        
+        // Wait for user click
+        while (1) {
+            extern void http_process_events(void);
+            http_process_events();
+            
+            int mx, my, mb;
+            sys_mouse_read(&mx, &my, &mb);
+            
+            if (mb) {
+                // Check Skip button
+                if (mx >= btn_skip_x && mx <= btn_skip_x + btn_w &&
+                    my >= btn_y && my <= btn_y + btn_h) {
+                    result = 0;  // Skip
+                    break;
+                }
+                // Check Replace button
+                if (mx >= btn_replace_x && mx <= btn_replace_x + btn_w &&
+                    my >= btn_y && my <= btn_y + btn_h) {
+                    result = 1;  // Replace
+                    break;
+                }
+            }
+        }
+        
+        // Wait for mouse release to avoid double-processing
+        while (1) {
+            int mx, my, mb;
+            sys_mouse_read(&mx, &my, &mb);
+            if (!mb) break;
+            extern void http_process_events(void);
+            http_process_events();
+        }
+    }
+    
+    return result;
 }
 
 // Apply the current selection box to desktop icons — select any icon

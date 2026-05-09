@@ -317,28 +317,38 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
                 // Check sequence number
                 if (seq == conn->rcv_nxt) {
-                    // Add to receive buffer with BOUNDS CHECK against actual buffer size
-                    if (conn->recv_tail + data_len <= sizeof(conn->recv_buffer)) {
-                        memcpy(conn->recv_buffer + conn->recv_tail, data, data_len);
-                        conn->recv_tail += data_len;
-                    } else if (conn->recv_tail < sizeof(conn->recv_buffer)) {
-                        // Partial write: fill remaining space
-                        uint32_t remaining = sizeof(conn->recv_buffer) - conn->recv_tail;
-                        memcpy(conn->recv_buffer + conn->recv_tail, data, remaining);
-                        conn->recv_tail = sizeof(conn->recv_buffer);
-                    }
-                    // If buffer is completely full, data is silently dropped (window closed)
-
-                    conn->rcv_nxt += data_len;
-
-                    // Call data callback
+                    // FIXED: The on_data callback (socket_tcp_data_callback) copies data
+                    // directly into the socket's ring buffer. The TCP recv_buffer was
+                    // redundant — it would fill up and never be drained, causing data loss.
+                    // Now we ONLY use the callback path and skip the redundant flat buffer.
+                    // The flat buffer is still available for tcp_conn_recv() users but
+                    // socket layer uses the callback instead.
+                    
+                    // Call data callback FIRST — this is the primary data delivery mechanism
                     if (conn->on_data) {
                         conn->on_data(data, data_len, conn->callback_user_data);
+                    } else {
+                        // No callback — fall back to flat buffer for direct tcp_conn_recv() users
+                        if (conn->recv_tail + data_len <= sizeof(conn->recv_buffer)) {
+                            memcpy(conn->recv_buffer + conn->recv_tail, data, data_len);
+                            conn->recv_tail += data_len;
+                        } else if (conn->recv_tail < sizeof(conn->recv_buffer)) {
+                            uint32_t remaining = sizeof(conn->recv_buffer) - conn->recv_tail;
+                            memcpy(conn->recv_buffer + conn->recv_tail, data, remaining);
+                            conn->recv_tail = sizeof(conn->recv_buffer);
+                        }
                     }
-                }
 
-                // Send ACK for received data
-                tcp_send(conn, TCP_ACK, NULL, 0);
+                    conn->rcv_nxt += data_len;
+                    
+                    // Send ACK for in-order received data
+                    tcp_send(conn, TCP_ACK, NULL, 0);
+                } else {
+                    // Out-of-order packet: send duplicate ACK to trigger fast retransmit
+                    // on the sender side. Without this, the sender won't know we missed
+                    // a packet and will wait for a timeout before retransmitting.
+                    tcp_send(conn, TCP_ACK, NULL, 0);
+                }
             }
 
             // Handle FIN

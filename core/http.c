@@ -13,9 +13,9 @@
 #include "../hal/cpu/timer.h"
 #include "../usr/framework.h"
 
-#define HTTP_BUFFER_SIZE (8192 + 16)
+#define HTTP_BUFFER_SIZE (32768 + 16)
 #define HTTP_MAX_REDIRECTS 5
-#define HTTP_TIMEOUT 15000 // 15 seconds - increased to get full page content
+#define HTTP_TIMEOUT 30000 // 30 seconds - generous timeout for slow connections
 #define HTTP_MAX_URL_LEN 1024
 #define HTTP_MAX_HEADERS_SIZE (8192 + 16)
 
@@ -630,17 +630,21 @@ static int http_get_internal(const char* url, char* response, int response_size,
         http_process_events();
         
         int received;
+        // FIXED: Read at most HTTP_BUFFER_SIZE-1 bytes to prevent buffer overflow.
+        // Previously used 32767 which far exceeded the 8208-byte buffer, causing
+        // heap corruption when the TCP stack returned more data than the buffer could hold.
+        int read_size = HTTP_BUFFER_SIZE - 1;
         if (is_https && tls_session) {
-            received = tls_read(tls_session, buffer, 32767);
+            received = tls_read(tls_session, buffer, read_size);
         } else {
-            received = k_recvfrom(sockfd, buffer, 32767, 0, NULL);
+            received = k_recvfrom(sockfd, buffer, read_size, 0, NULL);
         }
 
         if (received <= 0) {
             break;
         }
 
-        if (received <= 32767) buffer[received] = 0;
+        if (received < read_size) buffer[received] = 0;
 
         if (!in_body) {
             if (headers_len < HTTP_MAX_HEADERS_SIZE - 1) {

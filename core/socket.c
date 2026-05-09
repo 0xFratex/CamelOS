@@ -18,7 +18,7 @@ extern int tcp_send(void* conn, uint8_t flags, const void* data, uint32_t len);
 #define SOCKET_DEBUG_ERRORS    0    // Disable error logs for production
 
 #define MAX_SOCKETS 64
-#define SOCKET_TIMEOUT 5000 // 5 seconds (reduced from 10)
+#define SOCKET_TIMEOUT 10000 // 10 seconds for TCP operations
 #define POLL_BATCH_SIZE 32   // Increased batch size for faster polling
 
 typedef struct {
@@ -78,9 +78,9 @@ static socket_t* socket_alloc() {
             sockets[i].timeout = SOCKET_TIMEOUT;
             sockets[i].listener_id = -1;
 
-            // Allocate default buffers (8KB — reduces fragmentation vs old 32KB)
-            sockets[i].recv_buffer_size = 8192 + 16;
-            sockets[i].recv_buffer = (uint8_t*)kmalloc(8192 + 16);
+            // Allocate default buffers (32KB — needed for HTTP responses with TLS overhead)
+            sockets[i].recv_buffer_size = 32768 + 16;
+            sockets[i].recv_buffer = (uint8_t*)kmalloc(32768 + 16);
             sockets[i].send_buffer_size = 8192 + 16;
             sockets[i].send_buffer = (uint8_t*)kmalloc(8192 + 16);
 
@@ -174,8 +174,8 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
             uint32_t timeout_ticks = sock->timeout / 10; // Convert to ticks
             
             while (sock->state != SOCKET_CONNECTED) {
-                // Batch poll for efficiency
-                for (int i = 0; i < POLL_BATCH_SIZE; i++) {
+                // Poll NIC — small batch to avoid CPU starvation
+                for (int i = 0; i < 4; i++) {
                     rtl8139_poll();
                 }
                 
@@ -280,6 +280,10 @@ void socket_setup_tcp_callbacks(int fd) {
 }
 
 // recvfrom() function - OPTIMIZED
+// FIXED: Reduced POLL_BATCH_SIZE to prevent CPU starvation in nested loops.
+// Previously, POLL_BATCH_SIZE=32 caused tls_recv_all -> k_recvfrom -> 32x rtl8139_poll()
+// -> http_process_events -> timer_sleep(1) on every iteration, which added ~32ms
+// of latency per recv attempt and caused the browser to appear frozen.
 int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr) {
     socket_t* sock = socket_get(fd);
     if (!sock) {
@@ -304,8 +308,9 @@ int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr
         uint32_t timeout_ticks = sock->timeout / 10;
         
         while (available == 0) {
-            // Batch poll for efficiency
-            for (int i = 0; i < POLL_BATCH_SIZE; i++) {
+            // Poll NIC a small number of times — just enough to process
+            // any pending packets without excessive CPU usage
+            for (int i = 0; i < 4; i++) {
                 rtl8139_poll();
             }
 
@@ -322,7 +327,8 @@ int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr
                 available = sock->recv_buffer_size - sock->recv_head + sock->recv_tail;
             }
 
-            // Process GUI events to prevent system freeze
+            // Process GUI events to prevent system freeze — but only
+            // every few iterations to avoid excessive latency
             if (available == 0) {
                 extern void http_process_events(void);
                 http_process_events();
@@ -507,7 +513,7 @@ int k_accept(int fd, sockaddr_in_t* addr) {
     tcp_process_listeners();
 
     // Poll the network to catch any pending SYN-ACK completions
-    for (int i = 0; i < POLL_BATCH_SIZE; i++) {
+    for (int i = 0; i < 4; i++) {
         rtl8139_poll();
     }
     tcp_process_listeners();
@@ -522,7 +528,7 @@ int k_accept(int fd, sockaddr_in_t* addr) {
             uint32_t timeout_ticks = sock->timeout / 10;
 
             while (1) {
-                for (int i = 0; i < POLL_BATCH_SIZE; i++) {
+                for (int i = 0; i < 4; i++) {
                     rtl8139_poll();
                 }
                 tcp_process_listeners();

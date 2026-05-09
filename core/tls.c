@@ -1826,8 +1826,8 @@ static int tls_send_record(tls_session_t* session, uint8_t content_type,
     tls_record_header_t* header = (tls_record_header_t*)record;
     
     header->content_type = content_type;
-    header->version = session->version;
-    header->length = len;
+    header->version = htons(session->version);  // CRITICAL FIX: version MUST be network byte order too
+    header->length = htons(len);  // CRITICAL FIX: TLS record length MUST be network byte order (big-endian)
     
     memcpy(record + 5, data, len);
     
@@ -1835,12 +1835,18 @@ static int tls_send_record(tls_session_t* session, uint8_t content_type,
 }
 
 // Helper to receive exactly N bytes from a socket
-// Includes event processing to prevent GUI freeze during TLS operations
+// FIXED: Removed redundant rtl8139_poll() and http_process_events() calls.
+// k_recvfrom() already polls the NIC and calls http_process_events() internally
+// when waiting for data. Calling them AGAIN here creates nested blocking loops
+// that can deadlock:
+//   tls_recv_all -> k_recvfrom (blocks, polls NIC) -> returns no data
+//   tls_recv_all -> rtl8139_poll() (redundant) -> http_process_events() (redundant)
+// This also starved the GUI because the outer poll+sleep was unnecessary overhead.
 static int tls_recv_all(int fd, uint8_t* buffer, size_t len) {
     size_t total = 0;
     uint32_t start = get_tick_count();
-    // TLS per-read timeout: 3 seconds (500 ticks at ~50Hz = 10s, use 150 = ~3s)
-    uint32_t tls_timeout = 150;
+    // TLS per-read timeout: 10 seconds (in tick units, ~50 ticks/sec)
+    uint32_t tls_timeout = 500;
     
     while (total < len) {
         int r = k_recvfrom(fd, buffer + total, len - total, 0, NULL);
@@ -1848,20 +1854,15 @@ static int tls_recv_all(int fd, uint8_t* buffer, size_t len) {
             total += r;
             start = get_tick_count(); // Reset timeout on successful data
         } else if (r == 0) {
+            // Connection closed by peer
             return (total > 0) ? (int)total : -1;
         } else {
             // r < 0: no data available or error
-            // Check overall timeout
+            // Check overall timeout — k_recvfrom already polls internally
             if (get_tick_count() - start > tls_timeout) {
                 return (total > 0) ? (int)total : -1; // Timeout
             }
         }
-        
-        // Poll network and process GUI events to prevent system freeze
-        extern void rtl8139_poll(void);
-        rtl8139_poll();
-        extern void http_process_events(void);
-        http_process_events();
     }
     return (int)total;
 }
@@ -1878,7 +1879,10 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
     tls_record_header_t* hdr = (tls_record_header_t*)header;
     *content_type = hdr->content_type;
     
-    uint16_t len = hdr->length;
+    // CRITICAL FIX: TLS record length is in network byte order (big-endian)
+    // Without ntohs(), on little-endian x86 the length is byte-swapped, causing
+    // us to wait for the wrong number of bytes — classic TLS deadlock.
+    uint16_t len = ntohs(hdr->length);
     if (len > max_len) {
         len = max_len;
     }

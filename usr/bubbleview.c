@@ -130,6 +130,13 @@ static int prev_cursor_y = -1;
 // Double Click State
 static int frame_counter = 0; // Simple tick simulation
 static int last_select_idx = -1; // New: track for "select -> click again" logic
+// Pending open: when user clicks an already-selected icon, we don't open
+// immediately on mouse-down — instead we defer to mouse-up so that a drag
+// can still be initiated. If the user drags past the threshold, the open
+// is cancelled. This fixes the "second click opens instead of dragging" bug.
+static int pending_open_idx = -1;    // Icon index waiting for mouse-up to open
+static int pending_open_mx = 0;     // Mouse X when pending open was recorded
+static int pending_open_my = 0;     // Mouse Y when pending open was recorded
 
 // --- Config ---
 #define STARTUP_GRACE_FRAMES 30 // Wait 0.5s before accepting mouse clicks
@@ -1306,39 +1313,64 @@ void handle_input(int mx, int my, int lb, int rb) {
         // If we get here, no window trapped the click.
         active_win = 0;
 
-        // Double Click Detection
+        // Double Click Detection (DEFERRED to mouse-up)
+        // FIXED: Previously, clicking an already-selected icon would immediately
+        // open it on mouse-down, preventing the user from dragging it. Now we
+        // record a "pending open" and only execute it on mouse-up if the mouse
+        // didn't move past the drag threshold.
         if (click) {
             // Check double click OR click-again-on-select
             extern int desktop_icon_at(int mx, int my);
             int hit_idx = desktop_icon_at(mx, my);
 
             if (hit_idx != -1) {
-                // If clicking the ALREADY selected item -> Trigger open
+                // If clicking the ALREADY selected item -> Defer open to mouse-up
                 if (hit_idx == last_select_idx) {
-                    char path[128]; 
-                    strcpy(path, g_desktop_path);
-                    strcat(path, "/");
-                    strcat(path, desk_entries[hit_idx].filename);
-                    // .app directories should be launched, not opened as folders
-                    int is_dir = (desk_entries[hit_idx].attributes & 0x10);
-                    int elen = strlen(desk_entries[hit_idx].filename);
-                    if (is_dir && elen > 4 && strcmp(desk_entries[hit_idx].filename + elen - 4, ".app") == 0) {
-                        is_dir = 0;  // Treat .app bundles as files, not directories
-                    }
-                    desktop_execute_item(path, is_dir);
-                    last_select_idx = -1; // Reset
-                    // Cancel any desktop selbox that might have started from
-                    // the first click of this double-click sequence
-                    extern int desktop_selbox_active();
-                    if (desktop_selbox_active()) {
-                        extern void desktop_cancel_selbox();
-                        desktop_cancel_selbox();
-                    }
-                    return;
+                    // Don't open yet — defer until mouse-up
+                    pending_open_idx = hit_idx;
+                    pending_open_mx = mx;
+                    pending_open_my = my;
+                } else {
+                    last_select_idx = hit_idx;
                 }
-                last_select_idx = hit_idx;
             } else {
                 last_select_idx = -1;
+            }
+        }
+
+        // Check pending open on mouse-up (button released)
+        if (!lb && prev_lb && pending_open_idx >= 0) {
+            int hit_idx = pending_open_idx;
+            pending_open_idx = -1;
+
+            // Check if the mouse moved past drag threshold — if so, cancel open
+            int dx = mx - pending_open_mx;
+            int dy = my - pending_open_my;
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+            if (dx >= 6 || dy >= 6) {
+                // Mouse moved too much — this was a drag, not a double-click
+                last_select_idx = -1;  // Reset so next click starts fresh
+            } else {
+                // Mouse barely moved — treat as double-click and open the item
+                char path[128]; 
+                strcpy(path, g_desktop_path);
+                strcat(path, "/");
+                strcat(path, desk_entries[hit_idx].filename);
+                // .app directories should be launched, not opened as folders
+                int is_dir = (desk_entries[hit_idx].attributes & 0x10);
+                int elen = strlen(desk_entries[hit_idx].filename);
+                if (is_dir && elen > 4 && strcmp(desk_entries[hit_idx].filename + elen - 4, ".app") == 0) {
+                    is_dir = 0;  // Treat .app bundles as files, not directories
+                }
+                desktop_execute_item(path, is_dir);
+                last_select_idx = -1; // Reset
+                // Cancel any desktop selbox that might have started
+                extern int desktop_selbox_active();
+                if (desktop_selbox_active()) {
+                    extern void desktop_cancel_selbox();
+                    desktop_cancel_selbox();
+                }
             }
         }
 
@@ -1393,6 +1425,9 @@ void handle_input(int mx, int my, int lb, int rb) {
     // so the icon would never actually follow the mouse and the drag
     // would never complete.
     if (desktop_icon_drag_active()) {
+        // Cancel any pending open — we're dragging, not double-clicking
+        pending_open_idx = -1;
+        
         // Check if the icon has been moved past the drag threshold.
         // We need to capture this BEFORE desktop_on_mouse processes
         // the release, because after release icon_drag_active is cleared.
