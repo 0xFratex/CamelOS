@@ -1114,6 +1114,11 @@ void CFRetain(CFTypeRef cf) {
 // Extended Foundation Initialization
 // ============================================================================
 
+// Forward declarations for mutable subclass method registration
+static void register_NSMutableArray_methods(Class cls);
+static void register_NSMutableDictionary_methods(Class cls);
+static void register_NSMutableString_methods(Class cls);
+
 void foundation_extra_init(void) {
     s_printf("[Foundation] Initializing extended Foundation classes...\n");
 

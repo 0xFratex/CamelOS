@@ -5,12 +5,13 @@
 #include "pfs32.h"
 #include "disk.h"
 
-// Forward declarations for bitmap functions (defined later in this file)
+// Forward declarations for functions defined later in this file
 void pfs32_bitmap_set(uint32_t block);
 void pfs32_bitmap_clear(uint32_t block);
 void pfs32_bitmap_set_bad(uint32_t block);
 void pfs32_flush_bitmap(void);
 int pfs32_bitmap_test(uint32_t block);
+void free_chain(uint32_t start_block);
 #include "memory.h"
 #include "string.h"
 #include "../hal/drivers/serial.h"

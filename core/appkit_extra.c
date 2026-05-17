@@ -530,6 +530,9 @@ static void register_NSCheckBox_methods(Class cls) {
 // Additional AppKit Initialization
 // ============================================================================
 
+// Forward declarations for static methods registered in appkit_extra_init
+static void register_NSEvent_methods(Class cls);
+
 void appkit_extra_init(void) {
     s_printf("[AppKit] Initializing extra controls...\n");
     

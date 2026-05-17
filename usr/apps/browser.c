@@ -482,7 +482,7 @@ static void js_browser_process_timers(js_State* J) {
         if (!browser_timer_slots[i].active) continue;
         if ((now - browser_timer_slots[i].start_tick) >= browser_timer_slots[i].delay_ticks) {
             js_getregistry(J, browser_timer_slots[i].registry_key);
-            if (js_isfunction(J, -1)) {
+            if (js_iscallable(J, -1)) {
                 js_pcall(J, 0);
                 js_pop(J, 1);  // pop result
             } else {
@@ -510,7 +510,7 @@ static void js_browser_window_setTimeout(js_State* J) {
 
     int id = browser_next_timer_id++;
     char key[32];
-    s_sprintf(key, "timer_cb_%d", id);
+    snprintf(key, sizeof(key), "timer_cb_%d", id);
     js_copy(J, 1);           // copy callback arg to top of stack
     js_setregistry(J, key);  // store in registry for later retrieval
 
@@ -539,7 +539,7 @@ static void js_browser_window_setInterval(js_State* J) {
 
     int id = browser_next_timer_id++;
     char key[32];
-    s_sprintf(key, "interval_cb_%d", id);
+    snprintf(key, sizeof(key), "interval_cb_%d", id);
     js_copy(J, 1);
     js_setregistry(J, key);
 
