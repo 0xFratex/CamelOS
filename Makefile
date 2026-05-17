@@ -60,10 +60,10 @@ USR_SRC =       usr/shell.c     usr/bubbleview.c        usr/desktop.c   usr/fram
 
 #       NOTE:   files.c and terminal.c are compiled into the kernel as built-in apps
 #       They are launched via the kernel_launch_builtin_app() dispatch mechanism
-KERNEL_OBJ      =       system/entry.o  core/objc_msgSend.o     lib/setjmp.o    $(HAL_SRC:.c=.o)        $(CORE_SRC:.c=.o)       $(FS_SRC:.c=.o) $(USR_SRC:.c=.o)        $(ASSETS_SRC:.c=.o)     $(COMMON_SRC:.c=.o)
+KERNEL_OBJ      =       system/entry.o  core/objc_msgSend.o     lib/setjmp.o    lib/soft_float.o        $(HAL_SRC:.c=.o)        $(CORE_SRC:.c=.o)       $(FS_SRC:.c=.o) $(USR_SRC:.c=.o)        $(ASSETS_SRC:.c=.o)     $(COMMON_SRC:.c=.o)
 
 #       Installer       objects -       explicitly      list    them    to      avoid   dependency      issues
-INSTALLER_OBJ   =       installer/entry.o       installer/installer_main.o      installer/panic_framework.o     sys/api_installer.o     core/string.o   core/memory.o   core/spinlock.o core/task.o     core/scheduler.o        core/panic.o    hal/drivers/ata.o       hal/drivers/vga.o       hal/video/gfx_hal.o     hal/drivers/serial.o    hal/drivers/acpi.o      hal/cpu/apic.o  hal/cpu/timer.o hal/cpu/paging.o        fs/pfs32.o      fs/disk.o       hal/drivers/keyboard.o  hal/drivers/mouse.o     hal/drivers/rtc.o       installer/payload.o     common/font.o   kernel/assets.o installer/arp_stub.o    installer/disk_tools.o  installer/sys_requirements.o    installer/disk_health.o   installer/soft_div.o     installer/syscall_stub.o
+INSTALLER_OBJ   =       installer/entry.o       installer/installer_main.o      installer/panic_framework.o     sys/api_installer.o     core/string.o   core/memory.o   core/spinlock.o core/task.o     core/scheduler.o        core/panic.o    hal/drivers/ata.o       hal/drivers/vga.o       hal/video/gfx_hal.o     hal/drivers/serial.o    hal/drivers/acpi.o      hal/cpu/apic.o  hal/cpu/timer.o hal/cpu/paging.o        fs/pfs32.o      fs/disk.o       hal/drivers/keyboard.o  hal/drivers/mouse.o     hal/drivers/rtc.o       installer/payload.o     common/font.o   kernel/assets.o installer/arp_stub.o    installer/disk_tools.o  installer/sys_requirements.o    installer/disk_health.o   installer/soft_div.o     installer/syscall_stub.o        lib/soft_float.o
 
 #       ---     QEMU    AUDIO   CONFIG  ---
 #       Try     SDL     first,  it      usually works   best    out     of      the     box
@@ -90,7 +90,7 @@ lib/setjmp.o: lib/setjmp.s
         gcc     -m32    -c      $<      -o      $@
 
 system.bin:     $(KERNEL_OBJ)
-        $(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L$(GCC_LIB32)  -lgcc
+        $(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L$(GCC_LIB32)
         objcopy -O      binary  system.elf      system.bin
 
 #       ---     APP     COMPILATION     (Hybrid: .cdl legacy + .dmg/.app macOS)       ---
@@ -156,7 +156,7 @@ installer/payload.o:    installer/payload.asm   system.bin      mbr.bin math.cdl
         $(AS)   -f      elf32   $<      -o      $@
 
 installer.elf:  $(INSTALLER_OBJ)        math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl
-        $(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L$(GCC_LIB32)  -lgcc
+        $(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L$(GCC_LIB32)
 
 camel_install.iso:      installer.elf
         mkdir   -p      iso/boot/grub
@@ -217,6 +217,12 @@ installer/%.o:  installer/%.c
 #       For     all     other   .c      files,  use     kernel  flags   by      default
 %.o:    %.c
         $(CC)   $(CFLAGS)       -c      $<      -o      $@
+
+#       Soft-float library compilation rule
+#       Must be compiled with -msoft-float to match the calling convention
+#       used by the rest of the kernel. Uses integer-only operations internally.
+lib/soft_float.o:        lib/soft_float.c
+        $(CC)   $(CFLAGS)       -fno-tree-loop-distribute-patterns      -c      $<      -o      $@
 
 #       Socket  compilation     rule
 core/socket.o:  core/socket.c
