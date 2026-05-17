@@ -19,24 +19,33 @@ void free_chain(uint32_t start_block);
 
 // --- Concurrency / Thread Safety (BUG-001) ---
 // Simple spinlock implementation using interrupt disable
+// Uses a nesting counter to properly handle nested lock/unlock calls
 static volatile int pfs_spin_lock_var = 0;
-static int pfs_interrupt_state = 0;
+static volatile int pfs_lock_nest_count = 0;
+static int pfs_saved_interrupt_state = 0;
 
 void pfs_spin_lock(void) {
-    // Save interrupt state and disable interrupts
-    pfs_interrupt_state = 0;
-    asm volatile("pushf; pop %0" : "=r"(pfs_interrupt_state));
-    asm volatile("cli");
+    // Save interrupt state and disable interrupts on first lock acquisition
+    if (pfs_lock_nest_count == 0) {
+        pfs_saved_interrupt_state = 0;
+        asm volatile("pushf; pop %0" : "=r"(pfs_saved_interrupt_state));
+        asm volatile("cli");
+    }
     while(__sync_lock_test_and_set(&pfs_spin_lock_var, 1)) {
         asm volatile("pause");
     }
+    pfs_lock_nest_count++;
 }
 
 void pfs_spin_unlock(void) {
+    pfs_lock_nest_count--;
     __sync_lock_release(&pfs_spin_lock_var);
-    // Restore interrupt state instead of unconditionally enabling
-    if (pfs_interrupt_state & 0x200) { // IF flag was set
-        asm volatile("sti");
+    // Restore interrupt state only when all nested locks are released
+    if (pfs_lock_nest_count <= 0) {
+        pfs_lock_nest_count = 0;
+        if (pfs_saved_interrupt_state & 0x200) { // IF flag was set
+            asm volatile("sti");
+        }
     }
 }
 
@@ -1170,18 +1179,20 @@ void free_chain(uint32_t start_block) {
 int pfs32_delete(const char* path) {
     if(!mounted) return PFS_ERR_NO_FS;
 
+    PFS_LOCK();
+
     uint32_t pblk;
     char parent[128];
     get_parent_path(path, parent);
-    if(get_dir_block(parent, &pblk) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    if(get_dir_block(parent, &pblk) != PFS_OK) { PFS_UNLOCK(); return PFS_ERR_NOT_FOUND; }
 
     pfs32_direntry_t entry;
     uint32_t entry_blk; int entry_idx;
     char name[64];
     get_basename(path, name);
-    if(find_entry_in_dir(pblk, name, &entry, &entry_blk, &entry_idx) != PFS_OK) return PFS_ERR_NOT_FOUND;
+    if(find_entry_in_dir(pblk, name, &entry, &entry_blk, &entry_idx) != PFS_OK) { PFS_UNLOCK(); return PFS_ERR_NOT_FOUND; }
 
-    if(!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_WRITE)) return PFS_ERR_ACCESS;
+    if(!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_WRITE)) { PFS_UNLOCK(); return PFS_ERR_ACCESS; }
 
     if(entry.attributes & PFS32_ATTR_DIRECTORY) {
         // Check if directory is empty before deleting
@@ -1202,6 +1213,7 @@ int pfs32_delete(const char* path) {
             dir_blk = get_fat(dir_blk);
         }
         if(found) {
+            PFS_UNLOCK();
             return PFS_ERR_PARAM; // Directory not empty
         }
     }
@@ -1214,6 +1226,7 @@ int pfs32_delete(const char* path) {
     free_chain(entry.start_block);
     flush_fat();
 
+    PFS_UNLOCK();
     return PFS_OK;
 }
 

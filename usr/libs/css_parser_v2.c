@@ -351,9 +351,19 @@ static css_value_t* parse_value(css_parser_t* parser) {
         return val;
     }
     
-    // Skip unknown
-    next_char(parser);
-    return parse_value(parser);
+    // Skip unknown — use iterative approach instead of recursion to prevent
+    // stack overflow on streams of unexpected characters
+    while (1) {
+        char c = peek_char(parser);
+        if (c == '\0' || c == ';' || c == '}' || c == ')' || c == ']' ||
+            is_alpha(c) || c == '#' || c == '\'' || c == '"' || c == '-' ||
+            (c >= '0' && c <= '9') || c == '.') {
+            break;
+        }
+        next_char(parser);
+    }
+    // Return a simple error/null value instead of recursing
+    return NULL;
 }
 
 // ============================================================================

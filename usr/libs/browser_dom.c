@@ -2692,14 +2692,30 @@ void dom_set_attribute(dom_node_t* node, const char* name, const char* value) {
 
 // Set innerHTML - replaces all children with parsed HTML content
 // For simplicity, this stores the HTML as a single text child node
-void dom_set_inner_html(dom_node_t* node, const char* html) {
-    if (!node || !html) return;
-
-    // Remove all existing children by marking them unused
+// Recursively free a node subtree, decrementing doc->node_count
+static void dom_free_subtree(dom_document_t* doc, dom_node_t* node) {
+    if (!node) return;
+    // First, recursively free all children
     dom_node_t* child = node->first_child;
     while (child) {
         dom_node_t* next = child->next_sibling;
-        child->in_use = 0;
+        dom_free_subtree(doc, child);
+        child = next;
+    }
+    // Then mark this node as unused
+    node->in_use = 0;
+    if (doc) doc->node_count--;
+}
+
+void dom_set_inner_html(dom_node_t* node, const char* html) {
+    if (!node || !html) return;
+
+    // Remove all existing children by recursively freeing the subtree
+    dom_document_t* doc = dom_get_document();
+    dom_node_t* child = node->first_child;
+    while (child) {
+        dom_node_t* next = child->next_sibling;
+        dom_free_subtree(doc, child);
         child = next;
     }
     node->first_child = NULL;
@@ -2707,7 +2723,6 @@ void dom_set_inner_html(dom_node_t* node, const char* html) {
     node->child_count = 0;
 
     // If the node belongs to a document, create a text node for the content
-    dom_document_t* doc = dom_get_document();
     if (doc) {
         dom_node_t* text_node = dom_node_alloc(doc);
         if (text_node) {

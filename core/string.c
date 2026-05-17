@@ -298,14 +298,101 @@ int snprintf(char* buf, size_t size, const char* fmt, ...) {
 
 int vsnprintf(char* buf, size_t size, const char* fmt, va_list args) {
     if (buf == NULL || size == 0) return 0;
-    // Use a temporary buffer to format, then copy up to size-1 chars
-    // For a kernel OS, use a reasonable stack buffer
-    char tmp[1024];
-    int len = vsprintf(tmp, fmt, args);
-    int copy_len = (len < (int)(size - 1)) ? len : (int)(size - 1);
-    memcpy(buf, tmp, copy_len);
-    buf[copy_len] = '\0';
-    return len; // return total chars that would have been written
+
+    // Format directly into the output buffer, respecting size limit
+    size_t pos = 0;
+    const char* hex_chars_lower = "0123456789abcdef";
+    const char* hex_chars_upper = "0123456789ABCDEF";
+
+    // Helper macro: put a character, respecting size limit
+    #define PUTC(c) do { if (pos < size - 1) buf[pos] = (c); pos++; } while(0)
+
+    while (*fmt) {
+        if (*fmt == '%') {
+            fmt++;
+            if (*fmt == '%') { PUTC('%'); fmt++; continue; }
+            if (*fmt == 's') {
+                fmt++;
+                const char* str = va_arg(args, const char*);
+                if (!str) str = "(null)";
+                while (*str) { PUTC(*str); str++; }
+            }
+            else if (*fmt == 'd') {
+                fmt++;
+                int val = va_arg(args, int);
+                char tmp[32];
+                int_to_str(val, tmp);
+                char* p = tmp;
+                while (*p) { PUTC(*p); p++; }
+            }
+            else if (*fmt == 'u') {
+                fmt++;
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[32];
+                int i = 0;
+                if (val == 0) { PUTC('0'); }
+                else {
+                    while (val != 0) { tmp[i++] = '0' + (val % 10); val /= 10; }
+                    for (int j = i - 1; j >= 0; j--) PUTC(tmp[j]);
+                }
+            }
+            else if (*fmt == 'x') {
+                fmt++;
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[11]; int i = 0;
+                if (val == 0) { PUTC('0'); }
+                else {
+                    while (val != 0) { tmp[i++] = hex_chars_lower[val & 0xF]; val >>= 4; }
+                    for (int j = i - 1; j >= 0; j--) PUTC(tmp[j]);
+                }
+            }
+            else if (*fmt == 'X') {
+                fmt++;
+                unsigned int val = va_arg(args, unsigned int);
+                char tmp[11]; int i = 0;
+                if (val == 0) { PUTC('0'); }
+                else {
+                    while (val != 0) { tmp[i++] = hex_chars_upper[val & 0xF]; val >>= 4; }
+                    for (int j = i - 1; j >= 0; j--) PUTC(tmp[j]);
+                }
+            }
+            else if (*fmt == 'p') {
+                fmt++;
+                unsigned int val = (unsigned int)va_arg(args, void*);
+                PUTC('0'); PUTC('x');
+                for (int i = 7; i >= 0; i--) {
+                    PUTC(hex_chars_lower[(val >> (i * 4)) & 0xF]);
+                }
+            }
+            else if (*fmt == '0' && *(fmt+1) == '2' && *(fmt+2) == 'X') {
+                fmt += 3;
+                int val = va_arg(args, int);
+                PUTC(hex_chars_upper[(val >> 4) & 0xF]);
+                PUTC(hex_chars_upper[val & 0xF]);
+            }
+            else if (*fmt == 'c') {
+                fmt++;
+                char c = (char)va_arg(args, int);
+                PUTC(c);
+            }
+            else {
+                PUTC(*fmt); fmt++;
+            }
+        } else {
+            PUTC(*fmt); fmt++;
+        }
+    }
+
+    #undef PUTC
+
+    // Null-terminate at the appropriate position
+    if (pos < size) {
+        buf[pos] = '\0';
+    } else {
+        buf[size - 1] = '\0';
+    }
+
+    return (int)pos; // return total chars that would have been written
 }
 
 // Simple atoi implementation

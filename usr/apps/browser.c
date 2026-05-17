@@ -1334,14 +1334,64 @@ static void browser_load_page(const char* url) {
 static void browser_navigate(const char* url) {
     redirect_depth = 0;
     find_active = 0; find_match_count = 0; find_current_match = -1;
+
+    // Detect non-URL queries and redirect to search engine
+    // A URL should have a scheme (http://, https://) or contain a dot (domain.tld)
+    // If the input looks like a search query, construct a DuckDuckGo search URL
+    char nav_url[512];
+    strncpy(nav_url, url, 511); nav_url[511] = 0;
+
+    int is_url = 0;
+    // Check for scheme prefix
+    if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0 ||
+        strncmp(url, "file://", 7) == 0 || strncmp(url, "ftp://", 6) == 0) {
+        is_url = 1;
+    }
+    // Check for common domain patterns (contains a dot and no spaces)
+    if (!is_url) {
+        int has_dot = 0, has_space = 0;
+        for (int i = 0; url[i]; i++) {
+            if (url[i] == '.') has_dot = 1;
+            if (url[i] == ' ' || url[i] == '\t') has_space = 1;
+        }
+        if (has_dot && !has_space) is_url = 1;
+        // Also treat "localhost" as a URL
+        if (strncmp(url, "localhost", 9) == 0) is_url = 1;
+    }
+
+    if (!is_url) {
+        // Build DuckDuckGo search URL with URL-encoded query
+        char encoded[384];
+        int ei = 0;
+        for (int i = 0; url[i] && ei < 380; i++) {
+            if (url[i] == ' ') {
+                encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '0';
+            } else if (url[i] == '&') {
+                encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '6';
+            } else if (url[i] == '#') {
+                encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '3';
+            } else if (url[i] == '%') {
+                encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '5';
+            } else if (url[i] == '+') {
+                encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = 'B';
+            } else if (url[i] == '?') {
+                encoded[ei++] = '%'; encoded[ei++] = '3'; encoded[ei++] = 'F';
+            } else {
+                encoded[ei++] = url[i];
+            }
+        }
+        encoded[ei] = 0;
+        snprintf(nav_url, sizeof(nav_url), "http://duckduckgo.com/?q=%s", encoded);
+    }
+
     if (history_pos < HISTORY_MAX - 1) {
         history_pos++;
-        strncpy(history[history_pos], url, 255); history[history_pos][255] = 0;
+        strncpy(history[history_pos], nav_url, 255); history[history_pos][255] = 0;
         history_count = history_pos + 1;
     }
-    strncpy(url_buf, url, 255); url_buf[255] = 0;
+    strncpy(url_buf, nav_url, 255); url_buf[255] = 0;
     url_cursor = strlen(url_buf);
-    browser_load_page(url);
+    browser_load_page(nav_url);
 }
 
 static void browser_go_back(void) {
