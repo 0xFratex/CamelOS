@@ -252,6 +252,9 @@ void arp_receive(uint8_t* packet, uint32_t len) {
     s_printf("\n");
     
     // Update cache
+    // Don't cache 0.0.0.0 or broadcast addresses
+    if (sender_ip == 0 || sender_ip == 0xFFFFFFFF) return;
+    
     arp_entry_t* entry = arp_find_entry(sender_ip);
     if (!entry) entry = arp_alloc_entry(sender_ip);
     
@@ -317,8 +320,8 @@ int arp_resolve(uint32_t ip, uint8_t* mac_out) {
         // Poll for response with timeout (100 ticks = ~2 seconds)
         uint32_t start = get_tick_count();
         while (get_tick_count() - start < 100) {
-            extern void rtl8139_poll(void);
-            rtl8139_poll();  // Process incoming packets
+            extern void net_poll(void);
+            net_poll();  // Process incoming packets
             
             if (entry->state == ARP_STATE_COMPLETE) {
                 memcpy(mac_out, entry->mac_addr, 6);

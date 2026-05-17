@@ -92,6 +92,10 @@ void create_user_task(void (*entry)(), const char* name, int uid, int is_app) {
     // Allocate Stack
     uint32_t stack_size = 16384;
     uint32_t* stack = (uint32_t*)kmalloc(stack_size);
+    if (!stack) {
+        kfree(new_task);
+        return;
+    }
 
     // Setup CPU context on stack (must match irq_common_stub layout)
     uint32_t* top = (uint32_t*)((uint8_t*)stack + stack_size);

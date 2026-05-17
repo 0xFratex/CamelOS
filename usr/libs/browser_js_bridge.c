@@ -31,6 +31,20 @@ static inline int bridge_strcmp(const char* s1, const char* s2) {
     return *(unsigned char*)s1 - *(unsigned char*)s2;
 }
 
+// Case-insensitive string comparison (for DOM tag matching)
+static int strcasecmp_simple(const char* a, const char* b) {
+    if (!a) return b ? -1 : 0;
+    if (!b) return 1;
+    while (*a && *b) {
+        int ca = *(unsigned char*)a++;
+        int cb = *(unsigned char*)b++;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return ca - cb;
+    }
+    return *(unsigned char*)a - *(unsigned char*)b;
+}
+
 // Use inline functions to avoid linker issues
 #define strlen bridge_strlen
 #define strcpy bridge_strcpy
@@ -290,7 +304,7 @@ void js_bridge_set_innerHTML(js_v2_engine_t* engine, js_v2_value_t* element, con
     // If this is the document.body, append to pending HTML
     js_v2_value_t* tag = js_v2_object_get(engine, element, "tagName");
     if (tag && tag->type == JS_V2_TYPE_STRING) {
-        if (strcmp(tag->data.string, "BODY") == 0 || strcmp(tag->data.string, "body") == 0) {
+        if (strcasecmp_simple(tag->data.string, "body") == 0) {
             int html_len = strlen(html);
             if (pending_html_len + html_len < MAX_PENDING_HTML - 1) {
                 strcpy(pending_html + pending_html_len, html);
@@ -344,47 +358,130 @@ js_v2_value_t* js_bridge_document_querySelector(js_v2_engine_t* engine, int argc
 }
 
 // element.appendChild (v3.1 - wired to native C)
+// NOTE: The simplified JS engine does not pass 'this' context separately.
+// We use a "current parent" tracker set by the engine when method calls are dispatched.
+static dom_node_t* js_bridge_current_parent = NULL;
+
+void js_bridge_set_current_parent(dom_node_t* parent) {
+    js_bridge_current_parent = parent;
+}
+
 js_v2_value_t* js_bridge_element_appendChild(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
     if (argc < 1) return js_v2_new_null(engine);
     
-    // In a proper JS engine, 'this' would be passed separately
-    // For now, we assume the parent is stored in the engine context
-    // This is a simplified implementation
-    
-    js_v2_value_t* child = args[0];
-    if (child->type != JS_V2_TYPE_OBJECT) {
+    js_v2_value_t* child_val = args[0];
+    if (!child_val || child_val->type != JS_V2_TYPE_OBJECT) {
         return js_v2_new_null(engine);
     }
     
+    // Resolve the child's native DOM node from the JS wrapper
+    dom_node_t* child_node = get_native_node(engine, child_val);
+    if (!child_node) {
+        return js_v2_new_null(engine);
+    }
+    
+    // Resolve parent: use tracked current_parent if available,
+    // otherwise fall back to document body
+    dom_node_t* parent_node = js_bridge_current_parent;
+    if (!parent_node) {
+        dom_document_t* doc = dom_get_document();
+        if (doc && doc->body) {
+            parent_node = doc->body;
+        }
+    }
+    
+    if (parent_node && child_node) {
+        // Append child to parent using the native DOM function
+        dom_append_child(parent_node, child_node);
+    }
+    
+    // Clear current parent after use
+    js_bridge_current_parent = NULL;
+    
     // Return the appended child (standard DOM behavior)
-    return child;
+    return child_val;
 }
 
 // element.setAttribute (v3.1 - wired to native C)
 js_v2_value_t* js_bridge_element_setAttribute(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
     if (argc < 2) return js_v2_new_undefined(engine);
     
-    // args[0] = attribute name, args[1] = value
-    if (args[0]->type == JS_V2_TYPE_STRING && args[1]->type == JS_V2_TYPE_STRING) {
-        // In a real implementation, we'd get 'this' context
-        // dom_node_t* native_node = get_native_node(engine, this_val);
-        // if (native_node) {
-        //     dom_set_attribute(native_node, args[0]->data.string, args[1]->data.string);
-        // }
+    // Resolve the native DOM node from current parent context or engine state
+    dom_node_t* node = js_bridge_current_parent;
+    if (!node) {
+        // Fallback: try to get the document body
+        dom_document_t* doc = dom_get_document();
+        if (doc && doc->body) {
+            node = doc->body;
+        }
     }
+    
+    // Get attribute name and value strings
+    const char* name = NULL;
+    const char* value = NULL;
+    
+    if (args[0]->type == JS_V2_TYPE_STRING) {
+        name = args[0]->data.string;
+    }
+    if (args[1]->type == JS_V2_TYPE_STRING) {
+        value = args[1]->data.string;
+    }
+    
+    if (name && value && node) {
+        dom_set_attribute(node, name, value);
+    }
+    
+    // Clear current parent after use
+    js_bridge_current_parent = NULL;
     
     return js_v2_new_undefined(engine);
 }
 
-// element.addEventListener
+// element.addEventListener - Basic event registry
+#define MAX_EVENT_LISTENERS 32
+
+typedef struct {
+    dom_node_t* node;
+    char event_type[32];
+    js_v2_value_t* callback;
+} event_listener_t;
+
+static event_listener_t event_listeners[MAX_EVENT_LISTENERS];
+static int num_event_listeners = 0;
+
 js_v2_value_t* js_bridge_element_addEventListener(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
     if (argc < 2) return js_v2_new_undefined(engine);
     
-    // args[0] = event name (e.g., 'click', 'DOMContentLoaded')
-    // args[1] = callback function
+    // Resolve the native DOM node from current parent context
+    dom_node_t* node = js_bridge_current_parent;
+    if (!node) {
+        dom_document_t* doc = dom_get_document();
+        if (doc && doc->body) {
+            node = doc->body;
+        }
+    }
     
-    // Store callback for later event dispatch
-    // Note: Full implementation would store in event registry
+    // Get event type string
+    const char* event_type = NULL;
+    if (args[0]->type == JS_V2_TYPE_STRING) {
+        event_type = args[0]->data.string;
+    }
+    
+    if (num_event_listeners < MAX_EVENT_LISTENERS && node && event_type) {
+        event_listener_t* listener = &event_listeners[num_event_listeners++];
+        listener->node = node;
+        // Copy event type string with length check
+        int i = 0;
+        while (event_type[i] && i < 31) {
+            listener->event_type[i] = event_type[i];
+            i++;
+        }
+        listener->event_type[i] = '\0';
+        listener->callback = args[1];
+    }
+    
+    // Clear current parent after use
+    js_bridge_current_parent = NULL;
     
     return js_v2_new_undefined(engine);
 }

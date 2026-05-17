@@ -18,18 +18,25 @@ int pfs32_bitmap_test(uint32_t block);
 
 // --- Concurrency / Thread Safety (BUG-001) ---
 // Simple spinlock implementation using interrupt disable
-static volatile int pfs_lock = 0;
+static volatile int pfs_spin_lock_var = 0;
+static int pfs_interrupt_state = 0;
 
-static inline void pfs_spin_lock(void) {
+void pfs_spin_lock(void) {
+    // Save interrupt state and disable interrupts
+    pfs_interrupt_state = 0;
+    asm volatile("pushf; pop %0" : "=r"(pfs_interrupt_state));
     asm volatile("cli");
-    while(__sync_lock_test_and_set(&pfs_lock, 1)) {
-        asm volatile("sti; pause; cli");
+    while(__sync_lock_test_and_set(&pfs_spin_lock_var, 1)) {
+        asm volatile("pause");
     }
 }
 
-static inline void pfs_spin_unlock(void) {
-    __sync_lock_release(&pfs_lock);
-    asm volatile("sti");
+void pfs_spin_unlock(void) {
+    __sync_lock_release(&pfs_spin_lock_var);
+    // Restore interrupt state instead of unconditionally enabling
+    if (pfs_interrupt_state & 0x200) { // IF flag was set
+        asm volatile("sti");
+    }
 }
 
 #define PFS_LOCK()   pfs_spin_lock()
@@ -943,7 +950,11 @@ int pfs32_write_file(const char* path, uint8_t* data, uint32_t size) {
     uint32_t written = 0;
 
     while(written < size) {
-        uint8_t buf[512]; memset(buf, 0, 512);
+        uint8_t buf[512];
+        // Read existing block data first to preserve unwritten portions
+        if(disk_rw(0, blk, buf) != 0) {
+            memset(buf, 0, 512);  // If read fails, zero-fill as fallback
+        }
         uint32_t chunk = (size - written < 512) ? size - written : 512;
         memcpy(buf, data + written, chunk);
         
@@ -1160,7 +1171,26 @@ int pfs32_delete(const char* path) {
     if(!check_permission(entry.uid, entry.gid, entry.permissions, PFS_PERM_WRITE)) return PFS_ERR_ACCESS;
 
     if(entry.attributes & PFS32_ATTR_DIRECTORY) {
-        // Check empty logic...
+        // Check if directory is empty before deleting
+        int found = 0;
+        uint32_t dir_blk = entry.start_block;
+        while(dir_blk != PFS32_END_BLOCK && dir_blk != 0 && !found) {
+            uint8_t dbuf[512];
+            if(disk_rw(0, dir_blk, dbuf) != PFS_OK) break;
+            pfs32_direntry_t* children = (pfs32_direntry_t*)dbuf;
+            for(int ci = 0; ci < PFS32_ENTRIES_PER_BLOCK; ci++) {
+                if(children[ci].filename[0] == 0) continue;
+                if(children[ci].filename[0] == 0xFF) continue;
+                if(strncmp(children[ci].filename, ".", 2) == 0) continue;
+                if(strncmp(children[ci].filename, "..", 3) == 0) continue;
+                found = 1;
+                break;
+            }
+            dir_blk = get_fat(dir_blk);
+        }
+        if(found) {
+            return PFS_ERR_PARAM; // Directory not empty
+        }
     }
 
     uint8_t buf[512];

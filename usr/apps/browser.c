@@ -497,6 +497,38 @@ static void js_browser_parseInt(js_State* J) {
 
 #define BROWSER_RESPONSE_SIZE 131072  // 128KB — modern pages are 100KB+; 32KB was too small; 256KB causes fragmentation
 
+// Decode chunked transfer-encoding in-place
+static int decode_chunked(char* body, int body_len) {
+    char* src = body;
+    char* dst = body;
+    char* end = body + body_len;
+    
+    while (src < end) {
+        // Read chunk size (hex)
+        int chunk_size = 0;
+        while (src < end && *src != '\r' && *src != '\n') {
+            char c = *src++;
+            if (c >= '0' && c <= '9') chunk_size = chunk_size * 16 + (c - '0');
+            else if (c >= 'a' && c <= 'f') chunk_size = chunk_size * 16 + (c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') chunk_size = chunk_size * 16 + (c - 'A' + 10);
+        }
+        // Skip CRLF after chunk size
+        while (src < end && (*src == '\r' || *src == '\n')) src++;
+        
+        if (chunk_size == 0) break; // Last chunk
+        
+        // Copy chunk data
+        if (src + chunk_size > end) chunk_size = end - src;
+        for (int i = 0; i < chunk_size; i++) *dst++ = *src++;
+        
+        // Skip CRLF after chunk data
+        while (src < end && (*src == '\r' || *src == '\n')) src++;
+    }
+    
+    *dst = '\0';
+    return dst - body;
+}
+
 static void browser_load_page(const char* url) {
     // Empty URL = new tab page
     if (!url || url[0] == 0) {
@@ -649,33 +681,14 @@ static void browser_load_page(const char* url) {
 
         if (!tls_session) {
             k_close(sockfd);
-            // Fallback to HTTP
-            char http_url[256];
-            strcpy(http_url, "http://");
-            strcat(http_url, host);
-            if (port != 80 && port != 443) {
-                char port_str[8]; int p = (port == 443) ? 80 : port;
-                if (p == 0) p = 80;
-                int pp = p, ti = 0; char tmp[8];
-                while (pp > 0) { tmp[ti++] = '0' + (pp % 10); pp /= 10; }
-                tmp[ti] = 0;
-                for (int j = 0; j < ti; j++) port_str[j] = tmp[ti - 1 - j];
-                port_str[ti] = 0;
-                strcat(http_url, ":"); strcat(http_url, port_str);
-            }
-            strcat(http_url, path);
-
-            static int tls_fallback_depth = 0;
-            if (tls_fallback_depth < 1) {
-                tls_fallback_depth++;
-                browser_load_page(http_url);
-                tls_fallback_depth--;
-                return;
-            }
+            // TLS handshake failed - warn but do NOT silently fall back to HTTP
+            s_printf("[BROWSER] WARNING: TLS handshake failed for %s. Connection not secure.\n", url);
+            // Don't automatically fall back to HTTP - return error instead
+            // User can explicitly request HTTP if needed
             error_type = ERR_TLS;
             strncpy(error_detail, host, 127); error_detail[127] = 0;
             page_line_count = 0;
-            strcpy(status_text, "TLS Error");
+            strcpy(status_text, "TLS Error - Connection not secure");
             is_loading = 0; load_progress = 0;
             return;
         }
@@ -920,6 +933,42 @@ static void browser_load_page(const char* url) {
             kfree(decompressed);
             // Re-find body pointer (it hasn't moved since we copied in place)
         }
+    }
+
+    // Check for chunked Transfer-Encoding and decode if needed
+    int is_chunked = 0;
+    {
+        // Scan headers for Transfer-Encoding: chunked
+        char* h = response;
+        while (h < body) {
+            if ((h[0]=='T'||h[0]=='t') && (h[1]=='r'||h[1]=='R') && (h[2]=='a'||h[2]=='A') &&
+                (h[3]=='n'||h[3]=='N') && (h[4]=='s'||h[4]=='S') && (h[5]=='f'||h[5]=='F') &&
+                (h[6]=='e'||h[6]=='E') && (h[7]=='r'||h[7]=='R') && (h[8]=='-'||h[8]=='-') &&
+                (h[9]=='E'||h[9]=='e') && (h[10]=='n'||h[10]=='N') && (h[11]=='c'||h[11]=='C') &&
+                (h[12]=='o'||h[12]=='O') && (h[13]=='d'||h[13]=='D') && (h[14]=='i'||h[14]=='I') &&
+                (h[15]=='n'||h[15]=='N') && (h[16]=='g'||h[16]=='G') && h[17]==':') {
+                // Found Transfer-Encoding header — check value
+                char* val = h + 18;
+                while (*val == ' ') val++;
+                if ((val[0]=='c'||val[0]=='C') && (val[1]=='h'||val[1]=='H') &&
+                    (val[2]=='u'||val[2]=='U') && (val[3]=='n'||val[3]=='N') &&
+                    (val[4]=='k'||val[4]=='K') && (val[5]=='e'||val[5]=='E') &&
+                    (val[6]=='d'||val[6]=='D')) {
+                    is_chunked = 1;
+                }
+                break;
+            }
+            // Advance to next header line
+            while (h < body && *h != '\n') h++;
+            if (h < body) h++;
+        }
+    }
+
+    if (is_chunked) {
+        int body_len = total_read - (body - response);
+        int new_len = decode_chunked(body, body_len);
+        total_read = (body - response) + new_len;
+        s_printf("[Browser] Chunked encoding decoded: %d -> %d bytes\n", body_len, new_len);
     }
 
     // Save source HTML for view source (limit 32KB — was 8KB, too small for modern pages)

@@ -110,7 +110,7 @@ void sys_get_time(int* h, int* m, int* s) {
     rtc_read_time(h, m, s);
     // Apply timezone offset
     // Check pointer validity, not the values (midnight is 0:0:0 and should still be adjusted)
-    if (tz_offset_minutes != 0 && h != 0 && m != 0 && s != 0) {
+    if (tz_offset_minutes != 0) {
         int total_min = (*h) * 60 + (*m) + tz_offset_minutes;
         // Normalize to 0-23 hours
         while (total_min < 0) total_min += 24 * 60;
@@ -190,6 +190,7 @@ void sys_clipboard_set(const char* text) { if(text) strncpy(global_clipboard, te
 int sys_clipboard_get(char* buf, int max_len) {
     if(!buf) return 0;
     strncpy(buf, global_clipboard, max_len);
+    buf[max_len - 1] = '\0';  // Ensure null termination
     return strlen(global_clipboard);
 }
 

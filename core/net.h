@@ -63,6 +63,8 @@ void net_add_static_arp(uint32_t ip, uint8_t* mac);
 void net_set_ip(uint32_t ip);
 void net_set_gateway(uint32_t gateway);
 void net_set_dns(uint32_t dns);
+void net_set_poll_func(void (*func)(void));
+void net_poll(void);
 int net_send_udp_packet(uint32_t dest_ip, uint16_t src_port, uint16_t dest_port, const uint8_t* data, uint32_t len);
 uint16_t udp_checksum(uint8_t* packet, uint16_t len, uint32_t src_ip, uint32_t dst_ip);
 void debug_packet(const char* direction, uint8_t* packet, uint32_t len);

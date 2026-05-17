@@ -7,7 +7,7 @@
 #include "../hal/cpu/timer.h"
 #include "../hal/drivers/serial.h"
 
-extern void rtl8139_poll(void);
+extern void net_poll(void);
 extern uint32_t k_get_free_mem(void);
 extern int tcp_send(void* conn, uint8_t flags, const void* data, uint32_t len);
 
@@ -176,7 +176,7 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
             while (sock->state != SOCKET_CONNECTED) {
                 // Poll NIC — small batch to avoid CPU starvation
                 for (int i = 0; i < 4; i++) {
-                    rtl8139_poll();
+                    net_poll();
                 }
                 
                 // Check if connection is established
@@ -311,7 +311,7 @@ int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr
             // Poll NIC a small number of times — just enough to process
             // any pending packets without excessive CPU usage
             for (int i = 0; i < 4; i++) {
-                rtl8139_poll();
+                net_poll();
             }
 
             // Check timeout
@@ -514,7 +514,7 @@ int k_accept(int fd, sockaddr_in_t* addr) {
 
     // Poll the network to catch any pending SYN-ACK completions
     for (int i = 0; i < 4; i++) {
-        rtl8139_poll();
+        net_poll();
     }
     tcp_process_listeners();
 
@@ -529,7 +529,7 @@ int k_accept(int fd, sockaddr_in_t* addr) {
 
             while (1) {
                 for (int i = 0; i < 4; i++) {
-                    rtl8139_poll();
+                    net_poll();
                 }
                 tcp_process_listeners();
 

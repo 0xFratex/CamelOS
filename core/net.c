@@ -25,7 +25,18 @@ ip_addr_t gateway_ip = {{0,0,0,0}};
 mac_addr_t gateway_mac = {{0,0,0,0,0,0}};
 int net_is_connected = 0;
 
-extern void rtl8139_poll();
+// Network driver poll function pointer - set during NIC initialization
+static void (*net_poll_func)(void) = NULL;
+
+void net_set_poll_func(void (*func)(void)) {
+    net_poll_func = func;
+}
+
+void net_poll(void) {
+    if (net_poll_func) {
+        net_poll_func();
+    }
+}
 
 // Helper to update global "my_ip" legacy variable
 void net_update_globals() { 
@@ -63,7 +74,9 @@ uint32_t ip_parse(const char* str) {
             bytes[byte_idx++] = num;
             num = 0;
         } else if (*str >= '0' && *str <= '9') {
-            num = num * 10 + (*str - '0');
+            int digit = *str - '0';
+            if (num > (255 - digit) / 10) num = 255; // Clamp to max valid octet
+            else num = num * 10 + digit;
         }
         str++;
     }
@@ -309,6 +322,7 @@ void net_handle_packet(uint8_t* data, uint32_t len) {
 
     if (type == ETHERTYPE_IP) {
         ip_header_t* ip = (ip_header_t*)(data + sizeof(eth_header_t));
+        if (ip->ihl < 5 || ip->ihl > 15) return;  // Invalid IP header length
         int ip_hdr_len = ip->ihl * 4;
         
         uint32_t src_ip = ntohl(ip->src_ip);
@@ -324,8 +338,10 @@ void net_handle_packet(uint8_t* data, uint32_t len) {
         }
         else if (ip->proto == IP_PROTO_UDP) {
             udp_header_t* udp = (udp_header_t*)(data + sizeof(eth_header_t) + ip_hdr_len);
+            uint16_t udp_len = ntohs(udp->length);
+            if (udp_len < sizeof(udp_header_t)) return;  // Invalid UDP length
             uint8_t* payload = data + sizeof(eth_header_t) + ip_hdr_len + sizeof(udp_header_t);
-            uint32_t payload_len = ntohs(udp->length) - sizeof(udp_header_t);
+            uint32_t payload_len = udp_len - sizeof(udp_header_t);
             
             // DHCP
             if (ntohs(udp->dest_port) == 68) {
@@ -455,7 +471,7 @@ int ping(uint32_t dest_ip, uint32_t timeout_ticks) {
     // Wait for response with polling
     uint32_t start = get_tick_count();
     while ((get_tick_count() - start) < timeout_ticks) {
-        rtl8139_poll();
+        net_poll();
         
         if (ping_received) {
             return 0;

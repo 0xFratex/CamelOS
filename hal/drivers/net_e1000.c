@@ -403,6 +403,13 @@ static void e1000_init_rx(e1000_dev_t* dev) {
     // Allocate buffers
     for (int i = 0; i < E1000_NUM_RX_DESC; i++) {
         dev->rx_buffers[i] = (uint8_t*)kmalloc(E1000_BUFFER_SIZE);
+        if (!dev->rx_buffers[i]) {
+            // Clean up previously allocated buffers
+            for (int j = 0; j < i; j++) {
+                kfree(dev->rx_buffers[j]);
+            }
+            return;
+        }
         dev->rx_descs[i].buffer_addr = (uint64_t)(uint32_t)dev->rx_buffers[i];
         dev->rx_descs[i].status = 0;
     }
@@ -439,6 +446,13 @@ static void e1000_init_tx(e1000_dev_t* dev) {
     // Allocate buffers
     for (int i = 0; i < E1000_NUM_TX_DESC; i++) {
         dev->tx_buffers[i] = (uint8_t*)kmalloc(E1000_BUFFER_SIZE);
+        if (!dev->tx_buffers[i]) {
+            // Clean up previously allocated buffers
+            for (int j = 0; j < i; j++) {
+                kfree(dev->tx_buffers[j]);
+            }
+            return;
+        }
     }
     
     dev->tx_current = 0;
@@ -720,6 +734,10 @@ int e1000_init(uint16_t bus, uint16_t dev_num, uint16_t func) {
     dev->netif.send = e1000_send;
     net_register_interface(&dev->netif);
     
+    // Register poll function with network abstraction layer
+    extern void net_set_poll_func(void (*func)(void));
+    net_set_poll_func(e1000_poll_all);
+
     e1000_device_count++;
     return 0;
 }

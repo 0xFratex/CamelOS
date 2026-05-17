@@ -16,6 +16,12 @@ SECTIONS
         KEEP(*(.multiboot))
     }
 
+    .rodata ALIGN(4K) : AT(ADDR(.rodata))
+    {
+        *(.rodata)
+        *(.rodata.*)
+    }
+
     .data : ALIGN(4K)
     {
         *(.data)
@@ -24,7 +30,7 @@ SECTIONS
     .bss : ALIGN(4K)
     {
         _bss_start = .;
-        *(.COMMON)
+        *(COMMON)
         *(.bss)
         _bss_end = .;
     }

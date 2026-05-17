@@ -132,7 +132,7 @@ void int_to_str(int num, char* str) {
     int i = 0;
     int is_neg = 0;
     if(num == 0) { str[0]='0'; str[1]=0; return; }
-    if(num < 0) { is_neg=1; num=-num; }
+    if(num < 0) { is_neg=1; num = (num == -2147483648) ? 2147483647 : -num; }
 
     while(num != 0) {
         str[i++] = '0' + (num % 10);
@@ -288,23 +288,24 @@ int sprintf(char* buf, const char* fmt, ...) {
     return len;
 }
 
-// Simple snprintf implementation
 int snprintf(char* buf, size_t size, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    // For simplicity, ignore size and use vsprintf
-    int len = vsprintf(buf, fmt, args);
+    int len = vsnprintf(buf, size, fmt, args);
     va_end(args);
     return len;
 }
 
-// vsnprintf - needed by libc_compat
 int vsnprintf(char* buf, size_t size, const char* fmt, va_list args) {
-    int len = vsprintf(buf, fmt, args);
-    if (len >= (int)size && size > 0) {
-        buf[size - 1] = 0;
-    }
-    return len;
+    if (buf == NULL || size == 0) return 0;
+    // Use a temporary buffer to format, then copy up to size-1 chars
+    // For a kernel OS, use a reasonable stack buffer
+    char tmp[1024];
+    int len = vsprintf(tmp, fmt, args);
+    int copy_len = (len < (int)(size - 1)) ? len : (int)(size - 1);
+    memcpy(buf, tmp, copy_len);
+    buf[copy_len] = '\0';
+    return len; // return total chars that would have been written
 }
 
 // Simple atoi implementation

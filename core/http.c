@@ -55,16 +55,20 @@ http_loading_state_t* http_get_loading_state(void) {
 
 // Draw a loading overlay on the window content area
 static void __attribute__((unused)) draw_loading_overlay(int x, int y, int w, int h) {
+    // Get actual screen dimensions instead of hardcoding
+    int screen_w = gfx_get_width();
+    int screen_h = gfx_get_height();
+    
     // Semi-transparent overlay background
     (void)0;  // overlay_bg removed
     
     // Draw overlay
     for (int py = y; py < y + h; py++) {
         for (int px = x; px < x + w; px++) {
-            if (px >= 0 && px < 1024 && py >= 0 && py < 768) {
+            if (px >= 0 && px < screen_w && py >= 0 && py < screen_h) {
                 uint32_t* buf = gfx_get_active_buffer();
                 if (buf) {
-                    int idx = py * 1024 + px;  // Assuming 1024 width
+                    int idx = py * screen_w + px;
                     uint32_t bg = buf[idx];
                     // Alpha blend
                     uint8_t bg_r = (bg >> 16) & 0xFF;

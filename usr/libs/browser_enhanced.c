@@ -63,6 +63,47 @@ void browser_set_current_url_for_resources(const char* url) {
     }
 }
 
+// Normalize URL path by resolving . and .. segments
+static void normalize_path(char* path) {
+    char* src = path;
+    char* dst = path;
+    char* segments[64];
+    int seg_count = 0;
+    
+    // Preserve leading slash
+    if (*src == '/') {
+        *dst++ = '/';
+        src++;
+    }
+    
+    // Split into segments
+    while (*src) {
+        if (*src == '/') { src++; continue; }
+        segments[seg_count] = dst;
+        while (*src && *src != '/') *dst++ = *src++;
+        *dst++ = '\0';
+        seg_count++;
+    }
+    
+    // Resolve . and .. segments
+    int write = 0;
+    for (int i = 0; i < seg_count; i++) {
+        if (strcmp(segments[i], ".") == 0) continue;
+        if (strcmp(segments[i], "..") == 0) { if (write > 0) write--; continue; }
+        segments[write++] = segments[i];
+    }
+    
+    // Rebuild path
+    dst = path;
+    if (path[0] == '/') dst++;
+    for (int i = 0; i < write; i++) {
+        if (i > 0) *dst++ = '/';
+        char* s = segments[i];
+        while (*s) *dst++ = *s++;
+    }
+    *dst = '\0';
+}
+
 // Resolve relative URL to absolute URL
 static void resolve_url(const char* base_url, const char* relative_url, char* resolved, int max_len) {
     if (!relative_url || !relative_url[0]) {
@@ -120,6 +161,19 @@ static void resolve_url(const char* base_url, const char* relative_url, char* re
     }
     
     resolved[max_len - 1] = 0;
+    
+    // Normalize path to resolve . and .. segments
+    // Find the start of the path (after protocol://host)
+    const char* path_start = strstr(resolved, "://");
+    if (path_start) {
+        path_start += 3;
+        // Skip past host to find the path
+        while (*path_start && *path_start != '/') path_start++;
+        if (*path_start == '/') {
+            // Normalize just the path portion in-place
+            normalize_path((char*)path_start);
+        }
+    }
 }
 
 // Find or create resource slot

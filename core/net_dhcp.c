@@ -269,8 +269,6 @@ void dhcp_process_packet(uint8_t* payload, uint32_t len) {
 // ============================================================================
 
 int dhcp_auto_configure(void) {
-    extern void rtl8139_poll(void);
-
     s_printf("[DHCP] Starting auto-configuration...\n");
 
     // FIX: Try the DORA sequence up to 2 times.
@@ -304,7 +302,7 @@ int dhcp_auto_configure(void) {
 
         while (dhcp_state != 3 && dhcp_state != 4) {
             // Poll network to receive DHCP responses
-            rtl8139_poll();
+            net_poll();
 
             // Process TCP listeners during DHCP polling so that any
             // pending TCP connections (e.g., from earlier requests) don't
@@ -340,7 +338,7 @@ int dhcp_auto_configure(void) {
                 // Brief delay before retrying
                 uint32_t retry_start = get_tick_count();
                 while (get_tick_count() - retry_start < 25) {  // 0.5s delay
-                    rtl8139_poll();
+                    net_poll();
                     for (volatile int i = 0; i < 500; i++) asm volatile("pause");
                 }
                 continue;

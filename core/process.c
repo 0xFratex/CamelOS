@@ -285,6 +285,9 @@ int process_fork(void)
         }
         memset(stack_buf, 0, stack_size);
 
+        /* Store the kernel stack base for cleanup in process_reap */
+        child->kernel_stack = stack_buf;
+
         /* The parent's ESP points to a registers_t on its kernel stack.
          * Copy the entire register frame to the child's new stack. */
         registers_t* parent_regs = (registers_t*)parent->esp;
@@ -938,6 +941,12 @@ void process_reap(int pid)
     if (pe->task && pe->task->signal_state) {
         signal_state_destroy((signal_state_t*)pe->task->signal_state);
         pe->task->signal_state = NULL;
+    }
+
+    // Free kernel stack allocated in process_fork
+    if (pe->task && pe->task->kernel_stack) {
+        kfree(pe->task->kernel_stack);
+        pe->task->kernel_stack = NULL;
     }
 
     /* Free the task_t itself */

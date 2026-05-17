@@ -62,11 +62,18 @@ void rtl8169_handler() {
             
             if ((cmd & DESC_FS) && (cmd & DESC_LS)) {
                 uint32_t len = cmd & 0x3FFF;
+                if (len > 1536 || len < 60) continue;  // Invalid length, skip this descriptor
                 if (len > 4) {
                     s_printf("[R8169] RX OK. Len=");
                     char buf[8]; int_to_str(len-4, buf); s_printf(buf); s_printf("\n");
                     
-                    net_handle_packet(rx_buffers[cur_rx], len - 4);
+                    // Allocate a copy to pass to network stack (RX buffer may be overwritten)
+                    uint8_t* pkt_copy = (uint8_t*)kmalloc(len - 4);
+                    if (pkt_copy) {
+                        memcpy(pkt_copy, rx_buffers[cur_rx], len - 4);
+                        net_handle_packet(pkt_copy, len - 4);
+                        kfree(pkt_copy);
+                    }
                     rtl_if.rx_packets++;
                     rtl_if.rx_bytes += len - 4;
                 }
@@ -164,9 +171,12 @@ void rtl8169_init(pci_device_t* dev) {
     rtl_if.is_up = 1;
 
     net_register_interface(&rtl_if);
+
+    // Register poll function with network abstraction layer
+    extern void net_set_poll_func(void (*func)(void));
+    net_set_poll_func(rtl8169_poll);
+
     s_printf("[R8169] Driver Loaded. IRQ 45 -> Vec 0x81.\n");
-    
-    net_dhcp_discover();
 }
 
 // Poll function for RTL8169 - similar to RTL8139
@@ -186,8 +196,15 @@ void rtl8169_poll() {
                 
                 if ((cmd & DESC_FS) && (cmd & DESC_LS)) {
                     uint32_t len = cmd & 0x3FFF;
+                    if (len > 1536 || len < 60) continue;  // Invalid length, skip this descriptor
                     if (len > 4) {
-                        net_handle_packet(rx_buffers[cur_rx], len - 4);
+                        // Allocate a copy to pass to network stack (RX buffer may be overwritten)
+                        uint8_t* pkt_copy = (uint8_t*)kmalloc(len - 4);
+                        if (pkt_copy) {
+                            memcpy(pkt_copy, rx_buffers[cur_rx], len - 4);
+                            net_handle_packet(pkt_copy, len - 4);
+                            kfree(pkt_copy);
+                        }
                         rtl_if.rx_packets++;
                         rtl_if.rx_bytes += len - 4;
                     }

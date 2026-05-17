@@ -361,6 +361,11 @@ void rtl8139_init(pci_device_t* dev) {
     net_register_interface(&rtl_if);
     
     rtl_initialized = 1;
+
+    // Register poll function with network abstraction layer
+    extern void net_set_poll_func(void (*func)(void));
+    net_set_poll_func(rtl8139_poll);
+
 #if RTL_DEBUG_INIT
     s_printf("[RTL8139] Init Complete.\n");
 #endif

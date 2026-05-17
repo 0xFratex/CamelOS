@@ -98,7 +98,7 @@ uint16_t tcp_checksum(uint8_t* packet, uint16_t len, uint32_t src_ip, uint32_t d
 // CRITICAL: tcp_send can be called from deep call chains (e.g., interrupt → tcp_handle_packet → tcp_send)
 // Using a 1500-byte stack buffer was causing stack overflow with 16KB kernel stack
 int tcp_send(tcp_connection_t* conn, uint8_t flags, uint8_t* data, uint16_t len) {
-    static uint8_t packet[1500];  // Static to avoid stack overflow in deep call chains
+    uint8_t* packet = conn->send_packet;
     tcp_header_t* tcp = (tcp_header_t*)packet;
 
     memset(tcp, 0, sizeof(tcp_header_t));
@@ -152,7 +152,13 @@ int tcp_connect(uint32_t remote_ip, uint16_t remote_port) {
         return -1;
     }
 
-    // Find unused local port
+    // Find unused local port with collision check
+    uint16_t start_port = tcp_next_port;
+    do {
+        if (tcp_find_connection(net_get_ip(), tcp_next_port, remote_ip, remote_port) == NULL) break;
+        tcp_next_port++;
+        if (tcp_next_port > 65535) tcp_next_port = 49152;
+    } while (tcp_next_port != start_port);
     uint16_t local_port = tcp_next_port++;
     if (tcp_next_port > 65535) tcp_next_port = 49152;
 
@@ -188,6 +194,13 @@ tcp_connection_t* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port)
         return NULL;
     }
 
+    // Find unused local port with collision check
+    uint16_t start_port = tcp_next_port;
+    do {
+        if (tcp_find_connection(net_get_ip(), tcp_next_port, remote_ip, remote_port) == NULL) break;
+        tcp_next_port++;
+        if (tcp_next_port > 65535) tcp_next_port = 49152;
+    } while (tcp_next_port != start_port);
     uint16_t local_port = tcp_next_port++;
     if (tcp_next_port > 65535) tcp_next_port = 49152;
 
@@ -353,15 +366,13 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
             // Handle FIN
             if (flags & TCP_FIN) {
-                conn->rcv_nxt = seq + 1;
-                conn->state = TCP_CLOSE_WAIT;
-
-                // Send ACK for FIN
-                tcp_send(conn, TCP_ACK, NULL, 0);
-
-                // Send our FIN
-                tcp_send(conn, TCP_FIN | TCP_ACK, NULL, 0);
-                conn->state = TCP_LAST_ACK;
+                if (conn->state == TCP_ESTABLISHED) {
+                    conn->rcv_nxt = seq + 1;
+                    conn->state = TCP_CLOSE_WAIT;
+                    // Send ACK for the FIN, but don't send our own FIN yet
+                    // The application will call close() when ready
+                    tcp_send(conn, TCP_ACK, NULL, 0);
+                }
             }
             break;
 
@@ -370,9 +381,10 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                 // Simultaneous close: received FIN+ACK
                 conn->rcv_nxt = seq + 1;
                 tcp_send(conn, TCP_ACK, NULL, 0);
-                conn->state = TCP_CLOSED;
+                conn->state = TCP_TIME_WAIT;
+                conn->time_wait_start = timer_get_ticks();
                 if (conn->on_state_change) {
-                    conn->on_state_change(TCP_FIN_WAIT1, TCP_CLOSED);
+                    conn->on_state_change(TCP_FIN_WAIT1, TCP_TIME_WAIT);
                 }
             } else if (flags & TCP_ACK) {
                 conn->state = TCP_FIN_WAIT2;
@@ -388,18 +400,20 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             if (flags & TCP_FIN) {
                 conn->rcv_nxt = seq + 1;
                 tcp_send(conn, TCP_ACK, NULL, 0);
-                conn->state = TCP_CLOSED;
+                conn->state = TCP_TIME_WAIT;
+                conn->time_wait_start = timer_get_ticks();
                 if (conn->on_state_change) {
-                    conn->on_state_change(TCP_FIN_WAIT2, TCP_CLOSED);
+                    conn->on_state_change(TCP_FIN_WAIT2, TCP_TIME_WAIT);
                 }
             }
             break;
 
         case TCP_CLOSING:
             if (flags & TCP_ACK) {
-                conn->state = TCP_CLOSED;
+                conn->state = TCP_TIME_WAIT;
+                conn->time_wait_start = timer_get_ticks();
                 if (conn->on_state_change) {
-                    conn->on_state_change(TCP_CLOSING, TCP_CLOSED);
+                    conn->on_state_change(TCP_CLOSING, TCP_TIME_WAIT);
                 }
             }
             break;
@@ -733,6 +747,15 @@ void tcp_retransmit_check(void)
 
         /* Skip closed or idle connections */
         if (conn->state == TCP_CLOSED) continue;
+
+        // Check for TIME_WAIT expiry (2MSL = ~60 seconds)
+        if (conn->state == TCP_TIME_WAIT) {
+            uint32_t elapsed = now - conn->time_wait_start;
+            if (elapsed >= 6000) {  // Assuming 100Hz timer, 6000 ticks = 60 seconds
+                conn->state = TCP_CLOSED;
+            }
+            continue;
+        }
         if (conn->retransmit_timeout == 0) continue;
 
         /* Check if the retransmit timer has expired */

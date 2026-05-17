@@ -54,6 +54,7 @@ typedef struct tcp_connection {
     // Buffers - MUST match TCP_WINDOW_SIZE (16384) to prevent overflow
     uint8_t send_buffer[16384];
     uint8_t recv_buffer[16384];
+    uint8_t send_packet[1500];  // Per-connection send buffer (was static, caused reentrancy bug)
     uint32_t send_head;
     uint32_t send_tail;
     uint32_t recv_head;
@@ -68,6 +69,7 @@ typedef struct tcp_connection {
     uint32_t connect_time;
     uint16_t window;
     uint16_t mss;
+    uint32_t time_wait_start;  // Tick when TIME_WAIT was entered
 
     // Callbacks
     void (*on_data)(uint8_t* data, uint16_t len, void* user_data);

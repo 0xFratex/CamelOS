@@ -231,12 +231,20 @@ void vga_print(const char* str) {
                 g_con_y += 16;
             }
             
-            // Scroll (Reset to top for simplicity)
+            // Scroll (move content up by one line instead of wrapping to top)
             if (g_con_y >= screen_h - 16) {
-                g_con_y = 0;
-                // For performance, we don't full clear, just loop.
-                // Or clear strictly the top left area?
-                // gfx_fill_rect(0, 0, screen_w, screen_h, 0xFF000000);
+                // Scroll console up by one line
+                uint32_t* vga = gfx_mem;
+                if (vga) {
+                    for (int y = 0; y < (screen_h - 16); y++) {
+                        for (int x = 0; x < screen_w; x++) {
+                            vga[y * screen_w + x] = vga[(y + 16) * screen_w + x];
+                        }
+                    }
+                    // Clear the last line
+                    gfx_fill_rect(0, screen_h - 16, screen_w, 16, 0xFF000000);
+                }
+                g_con_y = screen_h - 16;
             }
         }
         

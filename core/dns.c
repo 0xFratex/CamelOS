@@ -85,6 +85,8 @@ static int dns_parse_name(const uint8_t* resp, int resp_len, int offset,
     int out_pos = 0;
     int saved_offset = -1;
     int jumped = 0;
+    int jump_count = 0;
+    const int MAX_JUMPS = 32;  // Prevent infinite loops from circular pointers
 
     while (offset < resp_len) {
         uint8_t b = resp[offset];
@@ -93,6 +95,7 @@ static int dns_parse_name(const uint8_t* resp, int resp_len, int offset,
             break;
         }
         if ((b & 0xC0) == 0xC0) {
+            if (++jump_count > MAX_JUMPS) break;  // Circular pointer protection
             if (!jumped) {
                 saved_offset = offset + 2;  // pointer takes 2 bytes
                 jumped = 1;
@@ -233,8 +236,8 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
         int timeout = retry_timeouts[retry];
 
         while ((get_tick_count() - start) < (uint32_t)timeout) {
-            extern void rtl8139_poll();
-            rtl8139_poll();
+            extern void net_poll(void);
+            net_poll();
 
             int r = k_recvfrom(s, resp, 4096, 0, 0);
             if (r > (int)sizeof(dns_header_t)) {

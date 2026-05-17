@@ -190,6 +190,12 @@ int screenlock_is_locked(void) {
 
 // --- Input Handling ---
 
+// Rate limiting state for wrong password attempts
+static int failed_attempts = 0;
+static uint32_t last_fail_time = 0;
+#define RATE_LIMIT_MAX_ATTEMPTS 3
+#define RATE_LIMIT_MAX_DELAY_SECONDS 30
+
 int screenlock_handle_key(int key) {
     if (g_lock.state != LOCK_STATE_LOCKED) {
         return 0;
@@ -206,18 +212,43 @@ int screenlock_handle_key(int key) {
     if (key == 0x0D || key == '\n') {
         // Enter - check password (has_password guaranteed true here)
         
+        // Rate limiting: check if locked out
+        if (failed_attempts > RATE_LIMIT_MAX_ATTEMPTS) {
+            uint32_t now = get_tick_count();
+            uint32_t elapsed_ms = now - last_fail_time;
+            int delay_seconds = failed_attempts - RATE_LIMIT_MAX_ATTEMPTS;
+            if (delay_seconds > RATE_LIMIT_MAX_DELAY_SECONDS) delay_seconds = RATE_LIMIT_MAX_DELAY_SECONDS;
+            uint32_t delay_ms = delay_seconds * 1000;
+            if (elapsed_ms < delay_ms) {
+                // Still in lockout period - show lockout message
+                g_lock.show_error = 1;
+                g_lock.error_timer = 120;
+                return 1;
+            }
+        }
+        
         // Hash the entered password and compare with stored hash
         if (sha256_verify_password(g_lock.entered_password, g_lock.user.password_hash)) {
+            // Successful unlock - reset rate limiter
+            failed_attempts = 0;
+            last_fail_time = 0;
             screenlock_unlock();
             // Reset activity timer on unlock
             last_activity_time = get_tick_count();
             return 1;
         } else {
-            // Wrong password
+            // Wrong password - increment rate limiter
+            failed_attempts++;
+            last_fail_time = get_tick_count();
             g_lock.show_error = 1;
             g_lock.error_timer = 60;
             g_lock.entered_password[0] = 0;
             g_lock.cursor_pos = 0;
+            
+            // Show lockout warning if rate limited
+            if (failed_attempts > RATE_LIMIT_MAX_ATTEMPTS) {
+                g_lock.error_timer = 120; // Show error longer during lockout
+            }
         }
     } else if (key == 0x08 || key == 0x7F) {
         // Backspace
