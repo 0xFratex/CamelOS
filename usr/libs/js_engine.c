@@ -166,12 +166,12 @@ js_value_t* js_new_object(js_engine_t* engine) {
     js_value_t* val = alloc_value(engine);
     if (val) {
         val->type = JS_TYPE_OBJECT;
-        // Use static object storage
-        static js_object_t static_objects[64];
-        static int obj_idx = 0;
-        if (obj_idx < 64) {
-            val->data.object = &static_objects[obj_idx++];
+        // Allocate from engine's object pool (resets with js_init)
+        if (engine->object_pool_idx < 128) {
+            val->data.object = &engine->object_pool[engine->object_pool_idx++];
             js_memset(val->data.object, 0, sizeof(js_object_t));
+        } else {
+            val->type = JS_TYPE_UNDEFINED; // Pool exhausted
         }
     }
     return val;
@@ -181,12 +181,12 @@ js_value_t* js_new_array(js_engine_t* engine) {
     js_value_t* val = alloc_value(engine);
     if (val) {
         val->type = JS_TYPE_ARRAY;
-        // Use static array storage
-        static js_array_t static_arrays[64];
-        static int arr_idx = 0;
-        if (arr_idx < 64) {
-            val->data.array = &static_arrays[arr_idx++];
+        // Allocate from engine's array pool (resets with js_init)
+        if (engine->array_pool_idx < 128) {
+            val->data.array = &engine->array_pool[engine->array_pool_idx++];
             js_memset(val->data.array, 0, sizeof(js_array_t));
+        } else {
+            val->type = JS_TYPE_UNDEFINED; // Pool exhausted
         }
     }
     return val;
@@ -611,7 +611,7 @@ static js_value_t* parse_primary(parser_t* parser) {
                 int condition_start = lexer->pos;
                 
                 js_value_t* result = js_new_undefined(parser->engine);
-                int max_iterations = 1000;
+                int max_iterations = 100000;
                 int iterations = 0;
                 
                 while (iterations < max_iterations) {

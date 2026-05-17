@@ -136,6 +136,12 @@ typedef struct {
     char error_msg[256];
     int has_error;
     
+    // Object/Array pool (moved from static to engine struct so they reset with js_init)
+    js_object_t object_pool[128];
+    int object_pool_idx;
+    js_array_t array_pool[128];
+    int array_pool_idx;
+    
     // DOM bindings (browser-specific)
     void* dom_document;
     void* dom_window;

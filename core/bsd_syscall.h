@@ -31,6 +31,7 @@
 #define SYS_BSD_chdir       12
 #define SYS_BSD_chmod       15
 #define SYS_BSD_chown       16
+#define SYS_BSD_getcwd      183  // macOS syscall number for __getcwd
 #define SYS_BSD_stat        38
 #define SYS_BSD_lstat       40
 #define SYS_BSD_dup         41

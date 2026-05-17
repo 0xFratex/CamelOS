@@ -270,6 +270,9 @@ static void macho_process_objc_sections(loaded_macho_t* image,
     section_t* methname_sect = 0;
     section_t* methlist_sect = 0;
     section_t* selrefs_sect = 0;
+    section_t* classrefs_sect = 0;
+    section_t* superrefs_sect = 0;
+    section_t* mod_init_sect = 0;
 
     section_t* sect = (section_t*)(seg + 1);
     for (uint32_t i = 0; i < seg->nsects; i++) {
@@ -283,6 +286,13 @@ static void macho_process_objc_sections(loaded_macho_t* image,
             methlist_sect = &sect[i];
         } else if (strncmp(sect[i].sectname, "__objc_selrefs", 16) == 0) {
             selrefs_sect = &sect[i];
+        } else if (strncmp(sect[i].sectname, "__objc_classrefs", 16) == 0) {
+            classrefs_sect = &sect[i];
+        } else if (strncmp(sect[i].sectname, "__objc_superrefs", 16) == 0) {
+            superrefs_sect = &sect[i];
+        } else if (sect[i].flags == 0x9 || strncmp(sect[i].sectname, "__mod_init_func", 16) == 0) {
+            // S_MOD_INIT_FUNC_POINTERS = section type 9
+            mod_init_sect = &sect[i];
         }
     }
 
@@ -445,6 +455,72 @@ static void macho_process_objc_sections(loaded_macho_t* image,
     // Log __objc_protolist
     if (protolist_sect) {
         s_printf("[MachO] Found __objc_protolist section\n");
+    }
+
+    // Fix up __objc_classrefs — these are pointers that need to point to the
+    // actual registered Class objects. Without this fixup, any code that
+    // references a class via __objc_classrefs (e.g., [SomeClass alloc])
+    // will crash because the pointer is stale/null.
+    if (classrefs_sect && classrefs_sect->offset + classrefs_sect->size <= raw_size && image_base) {
+        s_printf("[MachO] Processing __objc_classrefs\n");
+        uint32_t* refs = (uint32_t*)(image_base + classrefs_sect->addr);
+        uint32_t ref_count = classrefs_sect->size / sizeof(uint32_t);
+        for (uint32_t r = 0; r < ref_count; r++) {
+            // Each classref initially points to the class struct in the loaded image.
+            // We need to replace it with the registered Class pointer from our runtime.
+            if (refs[r] != 0) {
+                // The pointer may have been relocated to point into the loaded image.
+                // Try to read the class name from the struct at that address.
+                struct objc_class* candidate = (struct objc_class*)(refs[r]);
+                if (candidate && candidate->name[0]) {
+                    Class registered = objc_getClass(candidate->name);
+                    if (registered) {
+                        refs[r] = (uint32_t)registered;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fix up __objc_superrefs — these point to the superclass struct and need
+    // to be updated to point to the registered Class for the superclass
+    if (superrefs_sect && superrefs_sect->offset + superrefs_sect->size <= raw_size && image_base) {
+        s_printf("[MachO] Processing __objc_superrefs\n");
+        uint32_t* refs = (uint32_t*)(image_base + superrefs_sect->addr);
+        uint32_t ref_count = superrefs_sect->size / sizeof(uint32_t);
+        for (uint32_t r = 0; r < ref_count; r++) {
+            if (refs[r] != 0) {
+                struct objc_class* candidate = (struct objc_class*)(refs[r]);
+                if (candidate && candidate->name[0]) {
+                    Class registered = objc_getClass(candidate->name);
+                    if (registered) {
+                        refs[r] = (uint32_t)registered;
+                    }
+                }
+            }
+        }
+    }
+
+    // Process S_MOD_INIT_FUNC_POINTERS — these are constructor functions
+    // (C++ static initializers, __attribute__((constructor)) functions)
+    // that must run before main(). Without this, global C++ objects aren't
+    // constructed and constructor functions don't run.
+    if (mod_init_sect && mod_init_sect->offset + mod_init_sect->size <= raw_size && image_base) {
+        s_printf("[MachO] Processing __mod_init_func constructors\n");
+        uint32_t* init_funcs = (uint32_t*)(image_base + mod_init_sect->addr);
+        uint32_t func_count = mod_init_sect->size / sizeof(uint32_t);
+        for (uint32_t f = 0; f < func_count; f++) {
+            if (init_funcs[f] != 0) {
+                typedef void (*init_func_t)(void);
+                init_func_t fn = (init_func_t)init_funcs[f];
+                s_printf("[MachO] Calling constructor function ");
+                char addr_buf[16];
+                int_to_str((uint32_t)fn, addr_buf);
+                s_printf(addr_buf);
+                s_printf("\n");
+                fn();
+            }
+        }
     }
 }
 

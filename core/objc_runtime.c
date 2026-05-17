@@ -14,6 +14,72 @@
 #define MAX_PROTOCOLS    64
 #define MAX_INSTANCES    4096
 
+// Method cache: hash table for fast method lookup
+// Key = (class, selector) pair, Value = Method pointer
+#define METHOD_CACHE_SIZE 1024  // Must be power of 2
+#define METHOD_CACHE_MASK (METHOD_CACHE_SIZE - 1)
+
+typedef struct {
+    Class cls;       // Class pointer (0 = empty slot)
+    SEL selector;    // Selector pointer
+    Method method;   // Cached method pointer
+    uint32_t version; // Class version for invalidation
+} method_cache_entry_t;
+
+static method_cache_entry_t g_method_cache[METHOD_CACHE_SIZE];
+static uint32_t g_class_versions[MAX_CLASSES]; // Incremented when methods change
+
+// Simple hash function for (class, selector) pair
+static inline uint32_t method_cache_hash(Class cls, SEL sel) {
+    uint32_t h = (uint32_t)(uintptr_t)cls ^ ((uint32_t)(uintptr_t)sel << 5);
+    return h & METHOD_CACHE_MASK;
+}
+
+// Invalidate all cache entries for a specific class
+static void method_cache_invalidate_class(Class cls) {
+    if (!cls) return;
+    for (int i = 0; i < METHOD_CACHE_SIZE; i++) {
+        if (g_method_cache[i].cls == cls) {
+            g_method_cache[i].cls = 0;
+        }
+    }
+}
+
+// Look up method in cache
+static Method method_cache_lookup(Class cls, SEL sel) {
+    uint32_t h = method_cache_hash(cls, sel);
+    // Open addressing: probe up to 4 slots
+    for (int probe = 0; probe < 4; probe++) {
+        uint32_t idx = (h + probe) & METHOD_CACHE_MASK;
+        method_cache_entry_t* e = &g_method_cache[idx];
+        if (e->cls == cls && e->selector == sel) {
+            return e->method;
+        }
+        if (e->cls == 0) break; // Empty slot = not in cache
+    }
+    return 0; // Cache miss
+}
+
+// Store method in cache
+static void method_cache_store(Class cls, SEL sel, Method method) {
+    uint32_t h = method_cache_hash(cls, sel);
+    // Find an empty slot or matching slot
+    for (int probe = 0; probe < 4; probe++) {
+        uint32_t idx = (h + probe) & METHOD_CACHE_MASK;
+        method_cache_entry_t* e = &g_method_cache[idx];
+        if (e->cls == 0 || (e->cls == cls && e->selector == sel)) {
+            e->cls = cls;
+            e->selector = sel;
+            e->method = method;
+            return;
+        }
+    }
+    // Cache is full in this probe range — overwrite first slot (LRU eviction)
+    g_method_cache[h].cls = cls;
+    g_method_cache[h].selector = sel;
+    g_method_cache[h].method = method;
+}
+
 // Registered classes
 static Class g_classes[MAX_CLASSES];
 static int g_class_count = 0;
@@ -214,13 +280,21 @@ void objc_registerClassPair(Class cls) {
 Method class_getInstanceMethod(Class cls, SEL name) {
     if (!cls || !name) return 0;
     
-    // Guard against circular superclass chains (max depth 32)
+    // Fast path: check method cache first
+    Method cached = method_cache_lookup(cls, name);
+    if (cached) return cached;
+    
+    // Cache miss: walk class hierarchy
     int depth = 0;
     Class cur = cls;
     while (cur && depth < 32) {
         Method m = cur->methods;
         while (m) {
-            if (sel_isEqual(m->selector, name)) return m;
+            if (sel_isEqual(m->selector, name)) {
+                // Store in cache for future lookups
+                method_cache_store(cls, name, m);
+                return m;
+            }
             m = m->next;
         }
         cur = cur->superclass;
@@ -256,6 +330,9 @@ BOOL class_addMethod(Class cls, SEL name, void* imp, const char* types) {
     if (types) strncpy(m->types, types, 31);
     m->next = cls->methods;
     cls->methods = m;
+    
+    // Invalidate cache entries for this class since method list changed
+    method_cache_invalidate_class(cls);
     
     return YES;
 }

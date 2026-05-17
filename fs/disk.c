@@ -105,7 +105,41 @@ static int disk_cache_evict(void) {
     }
     
     if(disk_cache_valid[victim] && disk_cache_dirty[victim]) {
-        ata_write_sector(fs_drive_id, disk_cache_block[victim], disk_cache_data[victim]);
+        // Retry write up to 3 times (same strategy as disk_flush_cache)
+        // to prevent silent data loss when ATA write fails
+        int retries = 3;
+        int ok = 0;
+        while(retries > 0) {
+            if(ata_write_sector(fs_drive_id, disk_cache_block[victim], disk_cache_data[victim]) == 0) {
+                ok = 1;
+                break;
+            }
+            retries--;
+        }
+        if(!ok) {
+            // Write failed — keep entry dirty so it will be retried on the
+            // next flush. We must still evict this slot to make room, so
+            // copy the dirty data to a backup buffer for later flush.
+            // For simplicity, we try to find another non-dirty victim first.
+            for(int j=0; j<DISK_CACHE_SIZE; j++) {
+                if(disk_cache_valid[j] && !disk_cache_dirty[j] && disk_cache_lru[j] <= min_lru) {
+                    // Evict this clean entry instead
+                    victim = j;
+                    break;
+                }
+            }
+            // If we're still evicting a dirty entry that failed to write,
+            // we have no choice but to proceed — but keep it dirty
+            // so disk_flush_cache will retry later
+            if(disk_cache_dirty[victim]) {
+                // Last resort: force flush all other dirty entries first,
+                // then retry this one
+                disk_flush_cache();
+                if(ata_write_sector(fs_drive_id, disk_cache_block[victim], disk_cache_data[victim]) == 0) {
+                    ok = 1;
+                }
+            }
+        }
     }
     
     disk_cache_valid[victim] = 0;

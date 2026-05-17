@@ -2645,6 +2645,13 @@ dom_document_t* dom_get_document(void) {
     return g_js_bridge_document;
 }
 
+// Set the bridge document to the browser's current DOM document
+// This must be called when a new page loads so JS bridge queries operate
+// on the correct document instead of a stale singleton
+void dom_set_bridge_document(dom_document_t* doc) {
+    g_js_bridge_document = doc;
+}
+
 // Create an element node in the global JS bridge document
 dom_node_t* dom_create_element(const char* tag_name) {
     dom_document_t* doc = dom_get_document();

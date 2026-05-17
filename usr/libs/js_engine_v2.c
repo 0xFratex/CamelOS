@@ -266,14 +266,13 @@ js_v2_value_t* js_v2_new_object(js_v2_engine_t* engine) {
     js_v2_value_t* val = alloc_value(engine);
     if (val) {
         val->type = JS_V2_TYPE_OBJECT;
-        // Allocate on the stack instead of using static storage
-        static js_v2_object_t static_objects[128];
-        static int obj_idx = 0;
-        if (obj_idx < 128) {
-            val->data.object = &static_objects[obj_idx++];
-            // Use kernel memset
+        // Allocate from engine's object pool (resets with js_v2_init)
+        if (engine->object_pool_idx < 128) {
+            val->data.object = &engine->object_pool[engine->object_pool_idx++];
             extern void* memset(void* ptr, int value, size_t num);
             memset(val->data.object, 0, sizeof(js_v2_object_t));
+        } else {
+            val->type = JS_V2_TYPE_UNDEFINED; // Pool exhausted
         }
     }
     return val;
@@ -283,11 +282,12 @@ js_v2_value_t* js_v2_new_array(js_v2_engine_t* engine) {
     js_v2_value_t* val = alloc_value(engine);
     if (val) {
         val->type = JS_V2_TYPE_ARRAY;
-        static js_v2_array_t static_arrays[64];
-        static int arr_idx = 0;
-        if (arr_idx < 64) {
-            val->data.array = &static_arrays[arr_idx++];
+        // Allocate from engine's array pool (resets with js_v2_init)
+        if (engine->array_pool_idx < 64) {
+            val->data.array = &engine->array_pool[engine->array_pool_idx++];
             memset(val->data.array, 0, sizeof(js_v2_array_t));
+        } else {
+            val->type = JS_V2_TYPE_UNDEFINED; // Pool exhausted
         }
     }
     return val;
@@ -297,14 +297,15 @@ js_v2_value_t* js_v2_new_function(js_v2_engine_t* engine, const char* name) {
     js_v2_value_t* val = alloc_value(engine);
     if (val) {
         val->type = JS_V2_TYPE_FUNCTION;
-        static js_v2_function_t static_functions[64];
-        static int fn_idx = 0;
-        if (fn_idx < 64) {
-            val->data.function = &static_functions[fn_idx++];
+        // Allocate from engine's function pool (resets with js_v2_init)
+        if (engine->func_pool_idx < 64) {
+            val->data.function = &engine->func_pool[engine->func_pool_idx++];
             memset(val->data.function, 0, sizeof(js_v2_function_t));
             if (name) {
                 strncpy(val->data.function->name, name, 63);
             }
+        } else {
+            val->type = JS_V2_TYPE_UNDEFINED; // Pool exhausted
         }
     }
     return val;

@@ -461,6 +461,10 @@ void dom_debug_print_tree(dom_document_t *doc);
 // Get the global document singleton (created on first call)
 dom_document_t* dom_get_document(void);
 
+// Set the bridge document to the browser's current DOM document
+// Must be called when a new page loads so JS bridge queries use the correct doc
+void dom_set_bridge_document(dom_document_t* doc);
+
 // Create an element node in the global document
 dom_node_t* dom_create_element(const char* tag_name);
 

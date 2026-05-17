@@ -147,6 +147,22 @@ int32_t bsd_syscall_handler(uint32_t syscall_num,
             return bsd_rename((const char*)arg1, (const char*)arg2);
         case SYS_BSD_chdir:
             return bsd_chdir((const char*)arg1);
+        case SYS_BSD_getcwd:
+            return bsd_getcwd((char*)arg1, (uint32_t)arg2);
+
+        // Additional file operations
+        case SYS_BSD_readlink:
+            // readlink(path, buf, bufsize) — no symlink support, return -1
+            return -1;
+        case SYS_BSD_symlink:
+            // symlink(target, linkpath) — no symlink support
+            return -1;
+        case SYS_BSD_ftruncate:
+            // ftruncate(fd, length) — truncate file to specified length
+            return 0;  // Stub — PFS32 doesn't support truncation
+        case SYS_BSD_truncate:
+            // truncate(path, length) — truncate file by path
+            return 0;  // Stub
 
         // Memory
         case SYS_BSD_mmap:
@@ -165,12 +181,28 @@ int32_t bsd_syscall_handler(uint32_t syscall_num,
             return bsd_connect((int)arg1, (const void*)arg2, (uint32_t)arg3);
         case SYS_BSD_listen:
             return bsd_listen((int)arg1, (int)arg2);
+        case SYS_BSD_accept: {
+            // accept(sockfd, addr, addrlen)
+            return bsd_accept((int)arg1, (void*)arg2, (uint32_t*)arg3);
+        }
         case SYS_BSD_sendto:
             return bsd_sendto((int)arg1, (const void*)arg2, (uint32_t)arg3, (int)arg4, (const void*)arg5, 0);
         case SYS_BSD_recvfrom:
             return bsd_recvfrom((int)arg1, (void*)arg2, (uint32_t)arg3, (int)arg4, 0, 0);
         case SYS_BSD_shutdown:
             return bsd_shutdown((int)arg1, (int)arg2);
+        case SYS_BSD_setsockopt:
+            // setsockopt(sockfd, level, optname, optval, optlen) — stub
+            return 0;
+        case SYS_BSD_getsockopt:
+            // getsockopt(sockfd, level, optname, optval, optlen) — stub
+            return 0;
+        case SYS_BSD_getpeername:
+            // getpeername(sockfd, addr, addrlen) — stub
+            return -1;
+        case SYS_BSD_getsockname:
+            // getsockname(sockfd, addr, addrlen) — stub
+            return -1;
 
         // Time
         case SYS_BSD_gettimeofday:
@@ -189,6 +221,23 @@ int32_t bsd_syscall_handler(uint32_t syscall_num,
             return bsd_ioctl((int)arg1, (uint32_t)arg2, (void*)arg3);
         case SYS_BSD_fcntl:
             return bsd_fcntl((int)arg1, (int)arg2, (int)arg3);
+        case SYS_BSD_select:
+            return bsd_select((int)arg1, (void*)arg2, (void*)arg3, (void*)arg4, (const void*)arg5);
+        case SYS_BSD_getdtablesize:
+            return BSD_MAX_FDS;
+
+        // Time (additional)
+        case SYS_BSD_clock_gettime: {
+            // clock_gettime(clockid, timespec) — simplified
+            uint32_t* ts = (uint32_t*)arg2;
+            if (ts) {
+                extern uint32_t get_tick_count(void);
+                uint32_t ticks = get_tick_count();
+                ts[0] = ticks / 50;     // seconds
+                ts[1] = (ticks % 50) * 20000000;  // nanoseconds
+            }
+            return 0;
+        }
 
         // Signals
         case SYS_BSD_sigaction:

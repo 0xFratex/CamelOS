@@ -1210,6 +1210,10 @@ static void browser_load_page(const char* url) {
     // DOM Engine
     dom_doc = dom_document_create();
     if (dom_doc) {
+        // Sync the JS bridge document singleton with the browser's current DOM
+        // so JS bridge queries (getElementById, querySelector) operate on the
+        // correct document instead of a stale singleton from a previous page
+        dom_set_bridge_document(dom_doc);
         int dom_ok = dom_parse_html(dom_doc, body);
         if (dom_ok == 0) {
             dom_apply_all_stylesheets(dom_doc);
@@ -1266,8 +1270,13 @@ static void browser_load_page(const char* url) {
                     js_newcfunction(js_state, js_browser_parseInt, "parseInt", 1);
                     js_setglobal(js_state, "parseInt");
 
+                    // Set execution limit: 500K instructions max, 4MB memory
+                    // This prevents infinite loops in webpage JS from freezing the browser
+                    js_setlimit(js_state, 500000, 4 * 1024 * 1024);
                     if (js_dostring(js_state, scripts)) s_printf("[Browser] JS execution error\n");
                     // Process any setTimeout/setInterval callbacks that are due
+                    // Also set a lower limit for timer callbacks to prevent runaway scripts
+                    js_setlimit(js_state, 50000, 4 * 1024 * 1024);
                     uint32_t timer_loop_start = get_tick_count();
                     int any_active;
                     do {
@@ -1278,8 +1287,8 @@ static void browser_load_page(const char* url) {
                         }
                         if (any_active) {
                             http_process_events();
-                            // Safety: don't spin for more than 5 seconds processing timers
-                            if (get_tick_count() - timer_loop_start > 250) break;
+                            // Safety: don't spin for more than 2 seconds (100 ticks at 50Hz) processing timers
+                            if (get_tick_count() - timer_loop_start > 100) break;
                         }
                     } while (any_active);
                     // Clear all timer slots before freeing state
@@ -1295,8 +1304,9 @@ static void browser_load_page(const char* url) {
             use_dom_rendering = 1;
         } else {
             dom_document_destroy(dom_doc); dom_doc = 0; use_dom_rendering = 0;
+            dom_set_bridge_document(NULL); // Clear stale bridge document
         }
-    } else { use_dom_rendering = 0; }
+    } else { use_dom_rendering = 0; dom_set_bridge_document(NULL); }
 
     char count_str[16];
     if (use_dom_rendering) strcpy(status_text, "Loaded (DOM)");
@@ -1361,9 +1371,12 @@ static void browser_navigate(const char* url) {
 
     if (!is_url) {
         // Build DuckDuckGo search URL with URL-encoded query
-        char encoded[384];
+        // Reserve space for "http://duckduckgo.com/?q=" (28 chars) in the 512-byte nav_url
+        // So encoded query can be at most ~480 bytes, but we use 420 for safety margin
+        char encoded[424];
         int ei = 0;
-        for (int i = 0; url[i] && ei < 380; i++) {
+        for (int i = 0; url[i] && ei < 418; i++) {
+            if (ei + 3 >= 418) break; // prevent overflow on 3-char encodings
             if (url[i] == ' ') {
                 encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '0';
             } else if (url[i] == '&') {
@@ -1476,7 +1489,7 @@ static void browser_download_file(const char* url) {
         else n=k_recvfrom(sockfd,response+total_read,BROWSER_RESPONSE_SIZE-total_read-1,0,NULL);
         if (n>0) { total_read+=n; download_progress=10+(total_read*80)/BROWSER_RESPONSE_SIZE; }
         else if (n==0) break;
-        else { for(volatile int d=0;d<50000;d++); }
+        else { http_process_events(); } // yield CPU instead of busy-wait
         http_process_events();
     }
     response[total_read]=0;

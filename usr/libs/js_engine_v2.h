@@ -194,6 +194,14 @@ struct js_v2_engine {
     // Symbol counter
     uint32_t next_symbol_id;
     
+    // Object/Array/Function pool (moved from static to engine struct so they reset)
+    js_v2_object_t object_pool[128];
+    int object_pool_idx;
+    js_v2_array_t array_pool[64];
+    int array_pool_idx;
+    js_v2_function_t func_pool[64];
+    int func_pool_idx;
+    
     // Browser integration
     void* browser_context;
     void (*log_callback)(const char* message);

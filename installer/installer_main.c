@@ -2094,12 +2094,18 @@ void install_tick(void) {
         if (install_pct > install_target_pct) install_pct = install_target_pct;
     }
 
-    // Global step watchdog: if a step has been running for more than 500 ticks
-    // (10 seconds at 50Hz), force-advance to the next step to prevent deadlock.
-    // This handles cases where ATA writes consistently fail or progress animation
-    // never catches up due to target jumps.
-    if (install_step_start_tick > 500 && install_step < 4) {
-        add_log("WARN: Step watchdog expired, force-advancing to next step");
+    // Global step watchdog: if a step has been running for more than 3000 ticks
+    // (60 seconds at 50Hz), force-advance to the next step to prevent deadlock.
+    // Increased from 500 (10s) to 3000 (60s) because heavy installation writes
+    // on slow I/O can legitimately take longer than 10 seconds, and force-advancing
+    // before file sync causes missing/corrupt files on the installed system.
+    if (install_step_start_tick > 3000 && install_step < 4) {
+        // Before force-advancing, try to flush everything to minimize data loss
+        extern int pfs32_sync(void);
+        extern void disk_flush_cache(void);
+        pfs32_sync();
+        disk_flush_cache();
+        add_log("WARN: Step watchdog expired (60s), force-advancing to next step");
         install_step++; install_step_tick = 0; install_sub_step = 0;
         install_step_start_tick = 0;
         install_idle_ticks = 0;
@@ -2112,7 +2118,13 @@ void install_tick(void) {
             add_log("Step 0: Writing bootloader & partition table");
             uint8_t z[512]; memset(z, 0, 512);
             if (ata_write_sector(selected_drive_idx, 0, z) < 0) {
-                add_log("WARN: Failed to wipe MBR sector, continuing anyway");
+                add_log("ERROR: Failed to wipe MBR sector");
+                // Retry once
+                if (ata_write_sector(selected_drive_idx, 0, z) < 0) {
+                    add_log("FATAL: MBR write failed after retry — cannot boot without MBR");
+                    install_error = 1;
+                    return;
+                }
             }
             mbr_sector_t mbr; memcpy(&mbr, mbr_bin_start, 512);
             uint64_t total64 = ide_devices[selected_drive_idx].sectors;
@@ -2123,7 +2135,13 @@ void install_tick(void) {
             mbr.partitions[0].lba_start=part_start; mbr.partitions[0].lba_length=total-part_start;
             mbr.signature=0xAA55;
             if (ata_write_sector(selected_drive_idx, 0, (uint8_t*)&mbr) < 0) {
-                add_log("WARN: Failed to write MBR, continuing anyway");
+                add_log("ERROR: Failed to write MBR — retrying");
+                // Retry — system cannot boot without a valid MBR
+                if (ata_write_sector(selected_drive_idx, 0, (uint8_t*)&mbr) < 0) {
+                    add_log("FATAL: MBR write failed after retry — cannot boot without MBR");
+                    install_error = 1;
+                    return;
+                }
             } else {
                 add_log("MBR written successfully");
             }
@@ -2179,15 +2197,21 @@ void install_tick(void) {
             if (ata_write_sector(selected_drive_idx, 1+kernel_write_offset, buf) < 0) {
                 install_idle_ticks++;
                 install_total_write_failures++;
-                // Watchdog: if ATA write fails repeatedly for a single sector, skip it
-                // Threshold of 300 for QEMU compatibility (transient I/O errors
-                // are common on emulated hardware but data is usually written correctly)
+                // Watchdog: if ATA write fails repeatedly for a single sector,
+                // retry with a read-back-verify before skipping
                 if (install_idle_ticks > 300) {
-                    add_log("WARN: ATA write timeout during kernel copy, continuing anyway");
-                    // Don't set install_error - the install typically succeeds despite
-                    // QEMU reporting transient write errors. Just skip and continue.
+                    // Before skipping, try a read-back-verify: sometimes the
+                    // write actually succeeded but ATA reported an error
+                    uint8_t verify[512];
+                    if (ata_read_sector(selected_drive_idx, 1+kernel_write_offset, verify) == 0 &&
+                        memcmp(buf, verify, 512) == 0) {
+                        // Write actually succeeded despite error report
+                        add_log("INFO: ATA write reported error but sector verified OK");
+                    } else {
+                        add_log("WARN: ATA write timeout during kernel copy, sector skipped (corrupt kernel possible)");
+                    }
                     install_idle_ticks = 0;
-                    kernel_write_offset++;  // Advance past the failing sector
+                    kernel_write_offset++;
                     sectors_this++;
                     continue;
                 }
@@ -2301,15 +2325,38 @@ void install_tick(void) {
                 strcpy(install_status, "Installing: "); strcat(install_status, f->path);
                 int ifile_res = install_file(f->path, f->start, f->end);
                 if (ifile_res < 0) {
-                    // Log warning but don't abort on non-critical file install failures
-                    // QEMU may report transient errors; the install usually succeeds
+                    // Log warning — critical files like gui.cdl and syskernel.cdl
+                    // must succeed for the system to boot with a GUI
                     char warn_buf[128]; strcpy(warn_buf, "WARN: Failed to install ");
-                    strcat(warn_buf, f->path); strcat(warn_buf, " (non-critical)");
-                    add_log(warn_buf);
+                    strcat(warn_buf, f->path);
+                    // Check if this is a critical system file
+                    if (strstr(f->path, "gui.cdl") || strstr(f->path, "syskernel.cdl") ||
+                        strstr(f->path, "proc.cdl") || strstr(f->path, "timer.cdl")) {
+                        strcat(warn_buf, " (CRITICAL — retrying)");
+                        add_log(warn_buf);
+                        // Retry once
+                        ifile_res = install_file(f->path, f->start, f->end);
+                        if (ifile_res < 0) {
+                            strcpy(warn_buf, "ERROR: Critical file install failed after retry: ");
+                            strcat(warn_buf, f->path);
+                            add_log(warn_buf);
+                        }
+                    } else {
+                        strcat(warn_buf, " (non-critical)");
+                        add_log(warn_buf);
+                    }
                 } else {
                     char ok_buf[128]; strcpy(ok_buf, "Installed ");
                     strcat(ok_buf, f->path);
                     add_log(ok_buf);
+                }
+                // Sync after each file to prevent cache thrashing from losing data
+                // during heavy write phases (only 16-entry write-back cache)
+                {
+                    extern int pfs32_sync(void);
+                    extern void disk_flush_cache(void);
+                    pfs32_sync();
+                    disk_flush_cache();
                 }
             }
             install_file_idx++;

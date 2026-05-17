@@ -27,6 +27,18 @@ static void register_NSDictionary_methods(Class cls);
 static void register_NSBundle_methods(Class cls);
 
 // ============================================================================
+// Autorelease Pool Support
+// ============================================================================
+
+typedef struct {
+    id objects[64];
+    int count;
+} autorelease_pool_t;
+
+static autorelease_pool_t g_autorelease_pools[8];  // Stack of pools (nestable)
+static int g_autorelease_pool_top = -1;  // -1 = no pool active
+
+// ============================================================================
 // NSObject Implementation
 // ============================================================================
 
@@ -94,7 +106,14 @@ id NSObject_release(id self, SEL cmd) {
 
 id NSObject_autorelease(id self, SEL cmd) {
     (void)cmd;
-    return self;  // Simplified - no autorelease pool
+    // Add to the current autorelease pool
+    if (g_autorelease_pool_top >= 0 && g_autorelease_pool_top < 8) {
+        autorelease_pool_t* pool = &g_autorelease_pools[g_autorelease_pool_top];
+        if (pool->count < 64) {
+            pool->objects[pool->count++] = self;
+        }
+    }
+    return self;
 }
 
 uint32_t NSObject_retainCount(id self, SEL cmd) {
@@ -235,6 +254,158 @@ id NSString_stringByAppendingString(id self, SEL cmd, id other) {
     return result;
 }
 
+// hasPrefix: - check if string starts with a given prefix
+BOOL NSString_hasPrefix(id self, SEL cmd, id prefix) {
+    (void)cmd;
+    const char* s = NSString_UTF8String(self, 0);
+    const char* p = NSString_UTF8String(prefix, 0);
+    if (!s || !p) return NO;
+    uint32_t slen = strlen(s), plen = strlen(p);
+    if (plen > slen) return NO;
+    return strncmp(s, p, plen) == 0;
+}
+
+// hasSuffix: - check if string ends with a given suffix
+BOOL NSString_hasSuffix(id self, SEL cmd, id suffix) {
+    (void)cmd;
+    const char* s = NSString_UTF8String(self, 0);
+    const char* sf = NSString_UTF8String(suffix, 0);
+    if (!s || !sf) return NO;
+    uint32_t slen = strlen(s), sflen = strlen(sf);
+    if (sflen > slen) return NO;
+    return strcmp(s + slen - sflen, sf) == 0;
+}
+
+// stringByAppendingPathComponent: - append path component with proper separator
+id NSString_stringByAppendingPathComponent(id self, SEL cmd, id component) {
+    (void)cmd;
+    const char* path = NSString_UTF8String(self, 0);
+    const char* comp = NSString_UTF8String(component, 0);
+    if (!path || !comp) return self;
+    
+    char result[512];
+    strncpy(result, path, 511); result[511] = 0;
+    uint32_t plen = strlen(result);
+    
+    // Add "/" separator if needed
+    if (plen > 0 && result[plen-1] != '/' && comp[0] != '/') {
+        if (plen < 510) result[plen++] = '/';
+        result[plen] = 0;
+    } else if (plen > 0 && result[plen-1] == '/' && comp[0] == '/') {
+        // Both have slash — skip one
+        comp++;
+    }
+    strncat(result, comp, 511 - plen);
+    return NSString_stringWithCString(result);
+}
+
+// stringByDeletingLastPathComponent - remove last path component
+id NSString_stringByDeletingLastPathComponent(id self, SEL cmd) {
+    (void)cmd;
+    const char* path = NSString_UTF8String(self, 0);
+    if (!path) return self;
+    
+    char result[512];
+    strncpy(result, path, 511); result[511] = 0;
+    uint32_t len = strlen(result);
+    
+    // Remove trailing slashes
+    while (len > 1 && result[len-1] == '/') result[--len] = 0;
+    // Find last slash
+    char* last_slash = 0;
+    for (char* p = result; *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+    if (last_slash) {
+        *last_slash = 0;
+        // If result is empty, return "/"
+        if (result[0] == 0) { result[0] = '/'; result[1] = 0; }
+    }
+    return NSString_stringWithCString(result);
+}
+
+// intValue - parse leading integer from string
+int NSString_intValue(id self, SEL cmd) {
+    (void)cmd;
+    const char* s = NSString_UTF8String(self, 0);
+    if (!s) return 0;
+    int val = 0, sign = 1;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { sign = -1; s++; }
+    else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') {
+        val = val * 10 + (*s - '0');
+        s++;
+    }
+    return val * sign;
+}
+
+// stringValue - return the string itself (for polymorphic access)
+id NSString_stringValue(id self, SEL cmd) {
+    (void)cmd;
+    return self;
+}
+
+// componentsSeparatedByString: - split string by separator
+id NSString_componentsSeparatedByString(id self, SEL cmd, id sep) {
+    (void)cmd;
+    const char* str = NSString_UTF8String(self, 0);
+    const char* sep_str = NSString_UTF8String(sep, 0);
+    if (!str || !sep_str) return NSArray_arrayWithObject(self);
+    
+    // Create a new array
+    CamelOSArray* arr = (CamelOSArray*)class_createInstance(NSArray_class, 0);
+    if (!arr) return NSArray_arrayWithObject(self);
+    arr->count = 0;
+    uint32_t sep_len = strlen(sep_str);
+    
+    const char* start = str;
+    while (*start) {
+        const char* found = strstr(start, sep_str);
+        if (!found) {
+            // Last component
+            char buf[256];
+            uint32_t len = strlen(start);
+            if (len > 255) len = 255;
+            memcpy(buf, start, len); buf[len] = 0;
+            if (arr->count < 16) {
+                arr->objects[arr->count++] = NSString_stringWithCString(buf);
+            }
+            break;
+        }
+        char buf[256];
+        uint32_t len = found - start;
+        if (len > 255) len = 255;
+        memcpy(buf, start, len); buf[len] = 0;
+        if (arr->count < 16) {
+            arr->objects[arr->count++] = NSString_stringWithCString(buf);
+        }
+        start = found + sep_len;
+    }
+    
+    return (id)arr;
+}
+
+// substringFromIndex: - return substring starting at index
+id NSString_substringFromIndex(id self, SEL cmd, uint32_t index) {
+    (void)cmd;
+    CamelOSString* str = (CamelOSString*)self;
+    if (!str || index >= str->length) return NSString_stringWithCString("");
+    return NSString_stringWithCString(str->cstr + index);
+}
+
+// substringToIndex: - return substring up to index
+id NSString_substringToIndex(id self, SEL cmd, uint32_t index) {
+    (void)cmd;
+    CamelOSString* str = (CamelOSString*)self;
+    if (!str) return NSString_stringWithCString("");
+    if (index > str->length) index = str->length;
+    char buf[512];
+    memcpy(buf, str->cstr, index);
+    buf[index] = 0;
+    return NSString_stringWithCString(buf);
+}
+
 static void register_NSString_methods(Class cls) {
     SEL sel;
     
@@ -258,6 +429,33 @@ static void register_NSString_methods(Class cls) {
     
     sel = sel_registerName("stringByAppendingString:");
     class_addMethod(cls, sel, (void*)NSString_stringByAppendingString, "@@:@");
+    
+    sel = sel_registerName("hasPrefix:");
+    class_addMethod(cls, sel, (void*)NSString_hasPrefix, "B@:@");
+    
+    sel = sel_registerName("hasSuffix:");
+    class_addMethod(cls, sel, (void*)NSString_hasSuffix, "B@:@");
+    
+    sel = sel_registerName("stringByAppendingPathComponent:");
+    class_addMethod(cls, sel, (void*)NSString_stringByAppendingPathComponent, "@@:@");
+    
+    sel = sel_registerName("stringByDeletingLastPathComponent");
+    class_addMethod(cls, sel, (void*)NSString_stringByDeletingLastPathComponent, "@@:");
+    
+    sel = sel_registerName("intValue");
+    class_addMethod(cls, sel, (void*)NSString_intValue, "i@:");
+    
+    sel = sel_registerName("stringValue");
+    class_addMethod(cls, sel, (void*)NSString_stringValue, "@@:");
+    
+    sel = sel_registerName("componentsSeparatedByString:");
+    class_addMethod(cls, sel, (void*)NSString_componentsSeparatedByString, "@@:@");
+    
+    sel = sel_registerName("substringFromIndex:");
+    class_addMethod(cls, sel, (void*)NSString_substringFromIndex, "@@:I");
+    
+    sel = sel_registerName("substringToIndex:");
+    class_addMethod(cls, sel, (void*)NSString_substringToIndex, "@@:I");
 }
 
 // ============================================================================
@@ -507,6 +705,35 @@ void foundation_set_kernel_api(void* api) {
     g_kernel_api_ptr = api;
 }
 
+// ============================================================================
+// NSAutoreleasePool Implementation
+// ============================================================================
+
+id NSAutoreleasePool_init(id self, SEL cmd) {
+    (void)cmd;
+    // Push a new pool onto the stack
+    if (g_autorelease_pool_top < 7) {
+        g_autorelease_pool_top++;
+        g_autorelease_pools[g_autorelease_pool_top].count = 0;
+    }
+    return self;
+}
+
+void NSAutoreleasePool_drain(id self, SEL cmd) {
+    (void)self; (void)cmd;
+    // Pop the current pool and release all objects in it
+    if (g_autorelease_pool_top >= 0) {
+        autorelease_pool_t* pool = &g_autorelease_pools[g_autorelease_pool_top];
+        for (int i = 0; i < pool->count; i++) {
+            NSObject_release(pool->objects[i], 0);
+        }
+        pool->count = 0;
+        if (g_autorelease_pool_top > 0) {
+            g_autorelease_pool_top--;
+        }
+    }
+}
+
 void foundation_init(void) {
     s_printf("[Foundation] Initializing Foundation framework stubs...\n");
     
@@ -549,6 +776,20 @@ void foundation_init(void) {
         register_NSBundle_methods(NSBundle_class);
         objc_registerClassPair(NSBundle_class);
     }
+    
+    // Create NSAutoreleasePool class
+    Class NSAutoreleasePool_class = objc_allocateClassPair(objc_getClass("NSObject"), "NSAutoreleasePool", 0);
+    if (NSAutoreleasePool_class) {
+        // init pushes a new pool, drain pops and releases
+        class_addMethod(NSAutoreleasePool_class, sel_registerName("init"), (void*)NSAutoreleasePool_init, "@@:");
+        class_addMethod(NSAutoreleasePool_class, sel_registerName("drain"), (void*)NSAutoreleasePool_drain, "v@:");
+        class_addMethod(NSAutoreleasePool_class, sel_registerName("release"), (void*)NSAutoreleasePool_drain, "v@:");
+        objc_registerClassPair(NSAutoreleasePool_class);
+    }
+    
+    // Initialize the autorelease pool stack with a default pool
+    g_autorelease_pool_top = 0;
+    g_autorelease_pools[0].count = 0;
     
     // Register NSObject methods on the root class
     Class nsobj = objc_getClass("NSObject");
