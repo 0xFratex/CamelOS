@@ -482,7 +482,7 @@ int partition_tool_auto_partition(int drive_index) {
     memset(&g_ptool.mbr, 0, sizeof(MBR));
     
     uint32_t total = ide_devices[drive_index].sectors;
-    uint32_t start = 2048;  // 1MB alignment
+    uint32_t start = 16384;  // 8MB offset to avoid kernel/filesystem overlap
     uint32_t size = total - start;
     
     // Create Camel OS partition

@@ -973,6 +973,15 @@ int pfs32_write_file(const char* path, uint8_t* data, uint32_t size) {
         }
     }
     
+    // Truncate old FAT chain if new write is shorter than old allocation
+    {
+        uint32_t next = get_fat(blk);
+        if(next != PFS32_END_BLOCK && next != 0) {
+            set_fat(blk, PFS32_END_BLOCK);
+            free_chain(next);
+        }
+    }
+
     // Update size and time
     uint8_t dbuf[512];
     disk_rw(0, entry_blk, dbuf);
@@ -1145,12 +1154,15 @@ int pfs32_copy(const char* src, const char* dst) {
 
 void free_chain(uint32_t start_block) {
     uint32_t curr = start_block;
-    while(curr != PFS32_END_BLOCK && curr != 0) {
+    uint32_t max_iter = sb.total_blocks;
+    uint32_t iter = 0;
+    while(curr != PFS32_END_BLOCK && curr != 0 && iter < max_iter) {
         uint32_t next = get_fat(curr);
         set_fat(curr, PFS32_FREE_BLOCK);
         pfs32_bitmap_clear(curr);
         sb.free_blocks++;
         curr = next;
+        iter++;
     }
 }
 
@@ -1603,15 +1615,6 @@ void pfs32_bitmap_set(uint32_t block) {
         bmp[byte_idx] |= (1 << bit_idx);
         block_bitmap_dirty = 1;
     }
-
-    // Also update on-disk bitmap
-    uint32_t bitmap_block = sb.block_bitmap_start + (byte_idx / PFS32_BLOCK_SIZE);
-    uint32_t offset_in_block = byte_idx % PFS32_BLOCK_SIZE;
-    uint8_t buf[512];
-    if(disk_rw(0, bitmap_block, buf) == PFS_OK) {
-        buf[offset_in_block] |= (1 << bit_idx);
-        disk_rw(1, bitmap_block, buf);
-    }
 }
 
 // Clear bit in block bitmap (mark block as free)
@@ -1625,15 +1628,6 @@ void pfs32_bitmap_clear(uint32_t block) {
         uint8_t* bmp = (uint8_t*)block_bitmap;
         bmp[byte_idx] &= ~(1 << bit_idx);
         block_bitmap_dirty = 1;
-    }
-
-    // Also update on-disk bitmap
-    uint32_t bitmap_block = sb.block_bitmap_start + (byte_idx / PFS32_BLOCK_SIZE);
-    uint32_t offset_in_block = byte_idx % PFS32_BLOCK_SIZE;
-    uint8_t buf[512];
-    if(disk_rw(0, bitmap_block, buf) == PFS_OK) {
-        buf[offset_in_block] &= ~(1 << bit_idx);
-        disk_rw(1, bitmap_block, buf);
     }
 }
 

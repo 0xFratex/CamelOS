@@ -932,7 +932,7 @@ void action_create_schema(void) {
     uint64_t total64 = ide_devices[drv].sectors;  // Use uint64_t to avoid truncation
     // MBR partition entries use uint32_t lba_length, so clamp to 2^32-1 sectors
     uint32_t total = (total64 > 0xFFFFFFFF) ? 0xFFFFFFFF : (uint32_t)total64;
-    uint32_t start = 2048, size = total - start;
+    uint32_t start = 16384, size = total - start;
     new_mbr.partitions[0].status = 0x80;
     new_mbr.partitions[0].type   = 0x7F;
     new_mbr.partitions[0].lba_start  = start;

@@ -161,6 +161,27 @@ extern Class NSThread_class;
 extern Class NSJSONSerialization_class;
 
 // ============================================================================
+// NSMutableArray (inherits NSArray, adds mutation methods)
+// ============================================================================
+// Uses the same CamelOSArray struct - mutability is a class-level property
+
+extern Class NSMutableArray_class;
+
+// ============================================================================
+// NSMutableDictionary (inherits NSDictionary, adds mutation methods)
+// ============================================================================
+// Uses the same CamelOSDictionary struct
+
+extern Class NSMutableDictionary_class;
+
+// ============================================================================
+// NSMutableString (inherits NSString, adds mutation methods)
+// ============================================================================
+// Uses the same CamelOSString struct
+
+extern Class NSMutableString_class;
+
+// ============================================================================
 // CoreFoundation Types
 // ============================================================================
 

@@ -5,6 +5,10 @@
 static int fs_drive_id = 0;
 uint32_t disk_total_blocks = 0;
 
+int disk_get_drive(void) {
+    return fs_drive_id;
+}
+
 #define DISK_CACHE_SIZE 16
 static uint32_t disk_cache_block[DISK_CACHE_SIZE];
 static uint8_t disk_cache_data[DISK_CACHE_SIZE][512];
@@ -37,8 +41,21 @@ void disk_init(void) {
 void disk_flush_cache(void) {
     for(int i=0; i<DISK_CACHE_SIZE; i++) {
         if(disk_cache_valid[i] && disk_cache_dirty[i]) {
-            ata_write_sector(fs_drive_id, disk_cache_block[i], disk_cache_data[i]);
-            disk_cache_dirty[i] = 0;
+            int retries = 3;
+            int ok = 0;
+            while(retries > 0) {
+                if(ata_write_sector(fs_drive_id, disk_cache_block[i], disk_cache_data[i]) == 0) {
+                    ok = 1;
+                    break;
+                }
+                retries--;
+            }
+            if(ok) {
+                disk_cache_dirty[i] = 0;
+            }
+            /* If all retries failed, leave the entry dirty so it will be
+               retried on the next flush attempt.  This prevents silent
+               data loss when an ATA write fails. */
         }
     }
 }

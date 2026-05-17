@@ -300,7 +300,7 @@ int sys_fs_mount() {
             // Verify superblock was actually committed to disk
             {
                 uint8_t vbuf[512];
-                ata_read_sector(0, part_lba, vbuf);
+                ata_read_sector(disk_get_drive(), part_lba, vbuf);
                 uint32_t* vmagic = (uint32_t*)vbuf;
                 if (*vmagic != PFS32_MAGIC) {
                     sys_print("[KERNEL] WARNING: Superblock verification failed, retrying write...\n");

@@ -462,18 +462,97 @@ static void js_browser_doc_write(js_State* J) {
     js_pushundefined(J);
 }
 
-// window.setTimeout(fn, ms) stub
-static void js_browser_window_setTimeout(js_State* J) {
-    int ms = js_tointeger(J, 2);
-    (void)ms;
-    js_pushnumber(J, 0);
+// Timer callback system for setTimeout/setInterval
+#define MAX_TIMER_SLOTS 16
+static struct {
+    int active;
+    int is_interval;
+    uint32_t start_tick;
+    uint32_t delay_ticks;  // in system ticks (50Hz)
+    char registry_key[32];
+    int timer_id;
+} browser_timer_slots[MAX_TIMER_SLOTS];
+static int browser_next_timer_id = 1;
+
+// Process any pending timer callbacks (call from event loop / after script execution)
+static void js_browser_process_timers(js_State* J) {
+    if (!J) return;
+    uint32_t now = get_tick_count();
+    for (int i = 0; i < MAX_TIMER_SLOTS; i++) {
+        if (!browser_timer_slots[i].active) continue;
+        if ((now - browser_timer_slots[i].start_tick) >= browser_timer_slots[i].delay_ticks) {
+            js_getregistry(J, browser_timer_slots[i].registry_key);
+            if (js_isfunction(J, -1)) {
+                js_pcall(J, 0);
+                js_pop(J, 1);  // pop result
+            } else {
+                js_pop(J, 1);
+            }
+            if (browser_timer_slots[i].is_interval) {
+                browser_timer_slots[i].start_tick = now;
+            } else {
+                js_delregistry(J, browser_timer_slots[i].registry_key);
+                browser_timer_slots[i].active = 0;
+            }
+        }
+    }
 }
 
-// window.setInterval(fn, ms) stub
+// window.setTimeout(fn, ms) — stores callback in mujs registry, fires after delay
+static void js_browser_window_setTimeout(js_State* J) {
+    int ms = js_tointeger(J, 2);
+    if (ms < 0) ms = 0;
+    int slot = -1;
+    for (int i = 0; i < MAX_TIMER_SLOTS; i++) {
+        if (!browser_timer_slots[i].active) { slot = i; break; }
+    }
+    if (slot < 0) { js_pushnumber(J, 0); return; }
+
+    int id = browser_next_timer_id++;
+    char key[32];
+    s_sprintf(key, "timer_cb_%d", id);
+    js_copy(J, 1);           // copy callback arg to top of stack
+    js_setregistry(J, key);  // store in registry for later retrieval
+
+    browser_timer_slots[slot].active = 1;
+    browser_timer_slots[slot].is_interval = 0;
+    browser_timer_slots[slot].start_tick = get_tick_count();
+    // Convert ms to ticks (50Hz => 1 tick = 20ms); ensure at least 1 tick for any non-zero delay
+    browser_timer_slots[slot].delay_ticks = (ms + 19) / 20;
+    if (browser_timer_slots[slot].delay_ticks == 0) browser_timer_slots[slot].delay_ticks = 1;
+    strncpy(browser_timer_slots[slot].registry_key, key, 31);
+    browser_timer_slots[slot].registry_key[31] = 0;
+    browser_timer_slots[slot].timer_id = id;
+
+    js_pushnumber(J, (double)id);
+}
+
+// window.setInterval(fn, ms) — stores callback in mujs registry, fires repeatedly
 static void js_browser_window_setInterval(js_State* J) {
     int ms = js_tointeger(J, 2);
-    (void)ms;
-    js_pushnumber(J, 0);
+    if (ms < 1) ms = 1;
+    int slot = -1;
+    for (int i = 0; i < MAX_TIMER_SLOTS; i++) {
+        if (!browser_timer_slots[i].active) { slot = i; break; }
+    }
+    if (slot < 0) { js_pushnumber(J, 0); return; }
+
+    int id = browser_next_timer_id++;
+    char key[32];
+    s_sprintf(key, "interval_cb_%d", id);
+    js_copy(J, 1);
+    js_setregistry(J, key);
+
+    browser_timer_slots[slot].active = 1;
+    browser_timer_slots[slot].is_interval = 1;
+    browser_timer_slots[slot].start_tick = get_tick_count();
+    browser_timer_slots[slot].delay_ticks = (ms + 19) / 20;
+    if (browser_timer_slots[slot].delay_ticks == 0) browser_timer_slots[slot].delay_ticks = 1;
+    strncpy(browser_timer_slots[slot].registry_key, key, 31);
+    browser_timer_slots[slot].registry_key[31] = 0;
+    browser_timer_slots[slot].timer_id = id;
+
+    js_pushnumber(J, (double)id);
 }
 
 // alert(msg) implementation
@@ -769,8 +848,8 @@ static void browser_load_page(const char* url) {
         }
         else if (n == 0) break;
         else {
-            // Minimal yield — just a few cycles to avoid burning CPU
-            for (volatile int d = 0; d < 500; d++);
+            // Yield CPU properly by processing network/GUI events
+            http_process_events();
         }
         // Process GUI events less frequently to reduce overhead
         if ((retry & 0x7) == 0) http_process_events();
@@ -1188,6 +1267,28 @@ static void browser_load_page(const char* url) {
                     js_setglobal(js_state, "parseInt");
 
                     if (js_dostring(js_state, scripts)) s_printf("[Browser] JS execution error\n");
+                    // Process any setTimeout/setInterval callbacks that are due
+                    uint32_t timer_loop_start = get_tick_count();
+                    int any_active;
+                    do {
+                        any_active = 0;
+                        js_browser_process_timers(js_state);
+                        for (int ti = 0; ti < MAX_TIMER_SLOTS; ti++) {
+                            if (browser_timer_slots[ti].active) { any_active = 1; break; }
+                        }
+                        if (any_active) {
+                            http_process_events();
+                            // Safety: don't spin for more than 5 seconds processing timers
+                            if (get_tick_count() - timer_loop_start > 250) break;
+                        }
+                    } while (any_active);
+                    // Clear all timer slots before freeing state
+                    for (int ti = 0; ti < MAX_TIMER_SLOTS; ti++) {
+                        if (browser_timer_slots[ti].active) {
+                            js_delregistry(js_state, browser_timer_slots[ti].registry_key);
+                            browser_timer_slots[ti].active = 0;
+                        }
+                    }
                     js_freestate(js_state); js_state = 0;
                 }
             }

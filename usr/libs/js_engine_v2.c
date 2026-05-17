@@ -1228,51 +1228,144 @@ char* js_v2_json_stringify(js_v2_engine_t* engine, js_v2_value_t* value, int ind
 // REGISTER BUILT-INS
 // ============================================================================
 
+// ============================================================================
+// NATIVE WRAPPERS — adapt individual builtin signatures to native_fn typedef
+// ============================================================================
+
+static js_v2_value_t* native_math_random(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    (void)argc; (void)args;
+    return js_v2_math_random(engine);
+}
+static js_v2_value_t* native_math_floor(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    (void)argc;
+    return js_v2_math_floor(engine, argc > 0 ? args[0] : NULL);
+}
+static js_v2_value_t* native_math_ceil(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    (void)argc;
+    return js_v2_math_ceil(engine, argc > 0 ? args[0] : NULL);
+}
+static js_v2_value_t* native_math_round(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    (void)argc;
+    return js_v2_math_round(engine, argc > 0 ? args[0] : NULL);
+}
+static js_v2_value_t* native_math_abs(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    (void)argc;
+    return js_v2_math_abs(engine, argc > 0 ? args[0] : NULL);
+}
+static js_v2_value_t* native_math_min(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    return js_v2_math_min(engine, argc, args);
+}
+static js_v2_value_t* native_math_max(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    return js_v2_math_max(engine, argc, args);
+}
+static js_v2_value_t* native_json_parse(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    const char* s = (argc > 0 && args[0] && args[0]->type == JS_V2_TYPE_STRING) ? args[0]->data.string : "";
+    return js_v2_json_parse(engine, s);
+}
+static js_v2_value_t* native_json_stringify(js_v2_engine_t* engine, int argc, js_v2_value_t** args) {
+    js_v2_value_t* val = (argc > 0) ? args[0] : NULL;
+    char* s = js_v2_json_stringify(engine, val, 0);
+    return js_v2_new_string(engine, s);
+}
+
 void js_v2_register_builtins(js_v2_engine_t* engine) {
-    // Console methods
-    js_v2_object_set(engine, engine->console_object, "log", 
-                     js_v2_new_function(engine, "log"));
-    js_v2_object_set(engine, engine->console_object, "error", 
-                     js_v2_new_function(engine, "error"));
-    js_v2_object_set(engine, engine->console_object, "warn", 
-                     js_v2_new_function(engine, "warn"));
-    js_v2_object_set(engine, engine->console_object, "info", 
-                     js_v2_new_function(engine, "info"));
-    
-    // Math methods
-    js_v2_object_set(engine, engine->math_object, "random", 
-                     js_v2_new_function(engine, "random"));
-    js_v2_object_set(engine, engine->math_object, "floor", 
-                     js_v2_new_function(engine, "floor"));
-    js_v2_object_set(engine, engine->math_object, "ceil", 
-                     js_v2_new_function(engine, "ceil"));
-    js_v2_object_set(engine, engine->math_object, "round", 
-                     js_v2_new_function(engine, "round"));
-    js_v2_object_set(engine, engine->math_object, "abs", 
-                     js_v2_new_function(engine, "abs"));
-    js_v2_object_set(engine, engine->math_object, "min", 
-                     js_v2_new_function(engine, "min"));
-    js_v2_object_set(engine, engine->math_object, "max", 
-                     js_v2_new_function(engine, "max"));
-    js_v2_object_set(engine, engine->math_object, "PI", 
+    // Console methods — js_v2_console_log/error/warn/info already match native_fn signature
+    js_v2_value_t* fn;
+    fn = js_v2_new_function(engine, "log");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_object_set(engine, engine->console_object, "log", fn);
+
+    fn = js_v2_new_function(engine, "error");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_error;
+    js_v2_object_set(engine, engine->console_object, "error", fn);
+
+    fn = js_v2_new_function(engine, "warn");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_warn;
+    js_v2_object_set(engine, engine->console_object, "warn", fn);
+
+    fn = js_v2_new_function(engine, "info");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_info;
+    js_v2_object_set(engine, engine->console_object, "info", fn);
+
+    // Math methods — use adapter wrappers
+    fn = js_v2_new_function(engine, "random");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_math_random;
+    js_v2_object_set(engine, engine->math_object, "random", fn);
+
+    fn = js_v2_new_function(engine, "floor");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_math_floor;
+    js_v2_object_set(engine, engine->math_object, "floor", fn);
+
+    fn = js_v2_new_function(engine, "ceil");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_math_ceil;
+    js_v2_object_set(engine, engine->math_object, "ceil", fn);
+
+    fn = js_v2_new_function(engine, "round");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_math_round;
+    js_v2_object_set(engine, engine->math_object, "round", fn);
+
+    fn = js_v2_new_function(engine, "abs");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_math_abs;
+    js_v2_object_set(engine, engine->math_object, "abs", fn);
+
+    fn = js_v2_new_function(engine, "min");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_math_min;
+    js_v2_object_set(engine, engine->math_object, "min", fn);
+
+    fn = js_v2_new_function(engine, "max");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_math_max;
+    js_v2_object_set(engine, engine->math_object, "max", fn);
+
+    js_v2_object_set(engine, engine->math_object, "PI",
                      js_v2_new_number(engine, 3.14159265359));
-    
-    // JSON methods
-    js_v2_object_set(engine, engine->json_object, "parse", 
-                     js_v2_new_function(engine, "parse"));
-    js_v2_object_set(engine, engine->json_object, "stringify", 
-                     js_v2_new_function(engine, "stringify"));
-    
-    // Global functions
-    js_v2_set_global(engine, "parseInt", js_v2_new_function(engine, "parseInt"));
-    js_v2_set_global(engine, "parseFloat", js_v2_new_function(engine, "parseFloat"));
-    js_v2_set_global(engine, "String", js_v2_new_function(engine, "String"));
-    js_v2_set_global(engine, "Number", js_v2_new_function(engine, "Number"));
-    js_v2_set_global(engine, "Boolean", js_v2_new_function(engine, "Boolean"));
-    js_v2_set_global(engine, "Array", js_v2_new_function(engine, "Array"));
-    js_v2_set_global(engine, "Object", js_v2_new_function(engine, "Object"));
-    js_v2_set_global(engine, "Promise", js_v2_new_function(engine, "Promise"));
-    js_v2_set_global(engine, "Symbol", js_v2_new_function(engine, "Symbol"));
+
+    // JSON methods — use adapter wrappers
+    fn = js_v2_new_function(engine, "parse");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_json_parse;
+    js_v2_object_set(engine, engine->json_object, "parse", fn);
+
+    fn = js_v2_new_function(engine, "stringify");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = native_json_stringify;
+    js_v2_object_set(engine, engine->json_object, "stringify", fn);
+
+    // Global functions — mark as native with js_v2_console_log as a placeholder
+    // (these constructors don't have dedicated C impls yet, but marking native
+    //  prevents js_v2_call from trying to eval an empty body)
+    fn = js_v2_new_function(engine, "parseInt");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "parseInt", fn);
+
+    fn = js_v2_new_function(engine, "parseFloat");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "parseFloat", fn);
+
+    fn = js_v2_new_function(engine, "String");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "String", fn);
+
+    fn = js_v2_new_function(engine, "Number");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "Number", fn);
+
+    fn = js_v2_new_function(engine, "Boolean");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "Boolean", fn);
+
+    fn = js_v2_new_function(engine, "Array");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "Array", fn);
+
+    fn = js_v2_new_function(engine, "Object");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "Object", fn);
+
+    fn = js_v2_new_function(engine, "Promise");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "Promise", fn);
+
+    fn = js_v2_new_function(engine, "Symbol");
+    fn->data.function->is_native = 1; fn->data.function->native_fn = js_v2_console_log;
+    js_v2_set_global(engine, "Symbol", fn);
 }
 
 // ============================================================================
@@ -1290,8 +1383,10 @@ js_v2_value_t* js_v2_call(js_v2_engine_t* engine, js_v2_value_t* fn, js_v2_value
             return func->native_fn(engine, argc, args);
         }
         
-        // For interpreted functions, would execute the function body
-        // This would require a full interpreter implementation
+        // For interpreted functions that have a body string, try to eval it
+        if (func->body && func->body_len > 0) {
+            return js_v2_eval(engine, func->body);
+        }
     }
     
     return js_v2_new_undefined(engine);
@@ -1606,16 +1701,66 @@ js_v2_value_t* js_v2_fetch(js_v2_engine_t* engine, const char* url, js_v2_value_
         }
     }
     
-    // Make the HTTP request using the browser's network layer
-    // This would integrate with the browser's http_fetch function
-    // For now, simulate a successful response
-    g_fetch_response.status = 200;
-    strcpy(g_fetch_response.status_text, "OK");
-    strcpy(g_fetch_response.body, "");
-    g_fetch_response.body_len = 0;
-    g_fetch_response.ok = 1;
+    // Make the real HTTP request using the kernel's http_get()
+    extern int http_get(const char* url, char* response, int response_size, const char** headers, int header_count);
+    extern void* kmalloc(unsigned int size);
+    extern void kfree(void* ptr);
+    #define FETCH_RESPONSE_BUF_SIZE 65536
+    char* http_buf = (char*)kmalloc(FETCH_RESPONSE_BUF_SIZE);
+    if (!http_buf) {
+        // Out of memory — reject the promise
+        if (promise && promise->data.promise) {
+            promise->data.promise->state = 2; // rejected
+            promise->data.promise->result = js_v2_new_string(engine, "fetch: out of memory");
+        }
+        return promise;
+    }
+    memset(http_buf, 0, FETCH_RESPONSE_BUF_SIZE);
+    int http_result = http_get(url, http_buf, FETCH_RESPONSE_BUF_SIZE - 1, NULL, 0);
+
+    if (http_result <= 0) {
+        // HTTP request failed — reject the promise
+        kfree(http_buf);
+        if (promise && promise->data.promise) {
+            promise->data.promise->state = 2; // rejected
+            promise->data.promise->result = js_v2_new_string(engine, "fetch: network error");
+        }
+        return promise;
+    }
+
+    // Parse HTTP status code from response
+    int fetch_status = 0;
+    if (strncmp(http_buf, "HTTP/", 5) == 0) {
+        char* sp = strchr(http_buf, ' ');
+        if (sp) { sp++; while (*sp >= '0' && *sp <= '9') { fetch_status = fetch_status * 10 + (*sp - '0'); sp++; } }
+    }
+    if (fetch_status == 0) fetch_status = 200;
+
+    // Separate headers from body
+    char* body_ptr = strstr(http_buf, "\r\n\r\n");
+    int body_len = 0;
+    if (body_ptr) {
+        body_ptr += 4;
+        body_len = http_result - (body_ptr - http_buf);
+    } else {
+        body_ptr = http_buf;
+        body_len = http_result;
+    }
+
+    // Store body in g_fetch_response (up to sizeof(g_fetch_response.body)-1)
+    int copy_len = body_len;
+    if (copy_len >= (int)sizeof(g_fetch_response.body)) copy_len = sizeof(g_fetch_response.body) - 1;
+    memcpy(g_fetch_response.body, body_ptr, copy_len);
+    g_fetch_response.body[copy_len] = '\0';
+    g_fetch_response.body_len = copy_len;
+
+    g_fetch_response.status = fetch_status;
+    strcpy(g_fetch_response.status_text, (fetch_status >= 200 && fetch_status < 300) ? "OK" : "Error");
+    g_fetch_response.ok = (fetch_status >= 200 && fetch_status < 300) ? 1 : 0;
     g_fetch_response.redirected = 0;
     strncpy(g_fetch_response.url, url, sizeof(g_fetch_response.url) - 1);
+
+    kfree(http_buf);
     
     // Resolve the promise with a Response object
     if (promise && promise->data.promise) {

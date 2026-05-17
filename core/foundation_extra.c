@@ -1223,5 +1223,386 @@ void foundation_extra_init(void) {
         objc_registerClassPair(NSJSONSerialization_class);
     }
 
+    // NSMutableArray - inherits from NSArray (which is already registered)
+    Class nsarray_class = objc_getClass("NSArray");
+    NSMutableArray_class = objc_allocateClassPair(
+        nsarray_class ? nsarray_class : nsobj, "NSMutableArray",
+        sizeof(CamelOSArray) - sizeof(struct objc_object));
+    if (NSMutableArray_class) {
+        register_NSMutableArray_methods(NSMutableArray_class);
+        objc_registerClassPair(NSMutableArray_class);
+    }
+
+    // NSMutableDictionary - inherits from NSDictionary
+    Class nsdict_class = objc_getClass("NSDictionary");
+    NSMutableDictionary_class = objc_allocateClassPair(
+        nsdict_class ? nsdict_class : nsobj, "NSMutableDictionary",
+        sizeof(CamelOSDictionary) - sizeof(struct objc_object));
+    if (NSMutableDictionary_class) {
+        register_NSMutableDictionary_methods(NSMutableDictionary_class);
+        objc_registerClassPair(NSMutableDictionary_class);
+    }
+
+    // NSMutableString - inherits from NSString
+    Class nsstring_class = objc_getClass("NSString");
+    NSMutableString_class = objc_allocateClassPair(
+        nsstring_class ? nsstring_class : nsobj, "NSMutableString",
+        sizeof(CamelOSString) - sizeof(struct objc_object));
+    if (NSMutableString_class) {
+        register_NSMutableString_methods(NSMutableString_class);
+        objc_registerClassPair(NSMutableString_class);
+    }
+
     s_printf("[Foundation] Extended Foundation classes initialized\n");
+}
+
+// ============================================================================
+// NSMutableArray Implementation (inherits NSArray, adds mutation methods)
+// ============================================================================
+
+Class NSMutableArray_class = 0;
+
+id NSMutableArray_array(void) {
+    CamelOSArray* arr = (CamelOSArray*)class_createInstance(NSMutableArray_class, 0);
+    if (arr) {
+        arr->capacity = 16;
+        arr->objects = (id*)kmalloc(arr->capacity * sizeof(id));
+        arr->count = 0;
+        track_object((id)arr);
+    }
+    return (id)arr;
+}
+
+id NSMutableArray_arrayWithCapacity(uint32_t capacity) {
+    if (capacity == 0) capacity = 16;
+    CamelOSArray* arr = (CamelOSArray*)class_createInstance(NSMutableArray_class, 0);
+    if (arr) {
+        arr->capacity = capacity;
+        arr->objects = (id*)kmalloc(arr->capacity * sizeof(id));
+        arr->count = 0;
+        track_object((id)arr);
+    }
+    return (id)arr;
+}
+
+void NSMutableArray_addObject(id self, SEL cmd, id object) {
+    (void)cmd;
+    CamelOSArray* arr = (CamelOSArray*)self;
+    if (!arr || !object) return;
+
+    // Grow if needed
+    if (arr->count >= arr->capacity) {
+        arr->capacity = arr->capacity ? arr->capacity * 2 : 16;
+        id* new_objs = (id*)kmalloc(arr->capacity * sizeof(id));
+        if (new_objs) {
+            memcpy(new_objs, arr->objects, arr->count * sizeof(id));
+            kfree(arr->objects);
+            arr->objects = new_objs;
+        }
+    }
+
+    if (arr->count < arr->capacity) {
+        arr->objects[arr->count++] = object;
+    }
+}
+
+void NSMutableArray_removeObject(id self, SEL cmd, id object) {
+    (void)cmd;
+    CamelOSArray* arr = (CamelOSArray*)self;
+    if (!arr || !object) return;
+
+    for (uint32_t i = 0; i < arr->count; i++) {
+        if (arr->objects[i] == object) {
+            // Shift remaining objects down
+            for (uint32_t j = i; j < arr->count - 1; j++) {
+                arr->objects[j] = arr->objects[j + 1];
+            }
+            arr->count--;
+            return;  // Remove only first occurrence
+        }
+    }
+}
+
+void NSMutableArray_removeObjectAtIndex(id self, SEL cmd, uint32_t index) {
+    (void)cmd;
+    CamelOSArray* arr = (CamelOSArray*)self;
+    if (!arr || index >= arr->count) return;
+
+    for (uint32_t j = index; j < arr->count - 1; j++) {
+        arr->objects[j] = arr->objects[j + 1];
+    }
+    arr->count--;
+}
+
+void NSMutableArray_insertObjectAtIndex(id self, SEL cmd, id object, uint32_t index) {
+    (void)cmd;
+    CamelOSArray* arr = (CamelOSArray*)self;
+    if (!arr || !object || index > arr->count) return;
+
+    // Grow if needed
+    if (arr->count >= arr->capacity) {
+        arr->capacity = arr->capacity ? arr->capacity * 2 : 16;
+        id* new_objs = (id*)kmalloc(arr->capacity * sizeof(id));
+        if (new_objs) {
+            memcpy(new_objs, arr->objects, arr->count * sizeof(id));
+            kfree(arr->objects);
+            arr->objects = new_objs;
+        }
+    }
+
+    // Shift objects up to make room
+    for (uint32_t j = arr->count; j > index; j--) {
+        arr->objects[j] = arr->objects[j - 1];
+    }
+    arr->objects[index] = object;
+    arr->count++;
+}
+
+void NSMutableArray_removeAllObjects(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSArray* arr = (CamelOSArray*)self;
+    if (!arr) return;
+    arr->count = 0;
+}
+
+void NSMutableArray_replaceObjectAtIndexWithObject(id self, SEL cmd, uint32_t index, id object) {
+    (void)cmd;
+    CamelOSArray* arr = (CamelOSArray*)self;
+    if (!arr || !object || index >= arr->count) return;
+    arr->objects[index] = object;
+}
+
+static void register_NSMutableArray_methods(Class cls) {
+    SEL sel;
+    sel = sel_registerName("addObject:");
+    class_addMethod(cls, sel, (void*)NSMutableArray_addObject, "v@:@");
+    sel = sel_registerName("removeObject:");
+    class_addMethod(cls, sel, (void*)NSMutableArray_removeObject, "v@:@");
+    sel = sel_registerName("removeObjectAtIndex:");
+    class_addMethod(cls, sel, (void*)NSMutableArray_removeObjectAtIndex, "v@:I");
+    sel = sel_registerName("insertObject:atIndex:");
+    class_addMethod(cls, sel, (void*)NSMutableArray_insertObjectAtIndex, "v@:@I");
+    sel = sel_registerName("removeAllObjects");
+    class_addMethod(cls, sel, (void*)NSMutableArray_removeAllObjects, "v@:");
+    sel = sel_registerName("replaceObjectAtIndex:withObject:");
+    class_addMethod(cls, sel, (void*)NSMutableArray_replaceObjectAtIndexWithObject, "v@:I@");
+}
+
+// ============================================================================
+// NSMutableDictionary Implementation (inherits NSDictionary, adds mutation)
+// ============================================================================
+
+Class NSMutableDictionary_class = 0;
+
+id NSMutableDictionary_dictionary(void) {
+    CamelOSDictionary* dict = (CamelOSDictionary*)class_createInstance(NSMutableDictionary_class, 0);
+    if (dict) {
+        dict->capacity = 16;
+        dict->keys = (id*)kmalloc(dict->capacity * sizeof(id));
+        dict->values = (id*)kmalloc(dict->capacity * sizeof(id));
+        dict->count = 0;
+        track_object((id)dict);
+    }
+    return (id)dict;
+}
+
+id NSMutableDictionary_dictionaryWithCapacity(uint32_t capacity) {
+    if (capacity == 0) capacity = 16;
+    CamelOSDictionary* dict = (CamelOSDictionary*)class_createInstance(NSMutableDictionary_class, 0);
+    if (dict) {
+        dict->capacity = capacity;
+        dict->keys = (id*)kmalloc(dict->capacity * sizeof(id));
+        dict->values = (id*)kmalloc(dict->capacity * sizeof(id));
+        dict->count = 0;
+        track_object((id)dict);
+    }
+    return (id)dict;
+}
+
+void NSMutableDictionary_setObjectForKey(id self, SEL cmd, id object, id key) {
+    (void)cmd;
+    CamelOSDictionary* dict = (CamelOSDictionary*)self;
+    if (!dict || !key) return;
+
+    // Check if key already exists - update value if so
+    for (uint32_t i = 0; i < dict->count; i++) {
+        if (dict->keys[i] == key) {
+            dict->values[i] = object;
+            return;
+        }
+    }
+
+    // Key not found - add new entry
+    if (dict->count >= dict->capacity) {
+        dict->capacity = dict->capacity ? dict->capacity * 2 : 16;
+        id* new_keys = (id*)kmalloc(dict->capacity * sizeof(id));
+        id* new_values = (id*)kmalloc(dict->capacity * sizeof(id));
+        if (new_keys && new_values) {
+            memcpy(new_keys, dict->keys, dict->count * sizeof(id));
+            memcpy(new_values, dict->values, dict->count * sizeof(id));
+            kfree(dict->keys);
+            kfree(dict->values);
+            dict->keys = new_keys;
+            dict->values = new_values;
+        }
+    }
+
+    if (dict->count < dict->capacity) {
+        dict->keys[dict->count] = key;
+        dict->values[dict->count] = object;
+        dict->count++;
+    }
+}
+
+void NSMutableDictionary_removeObjectForKey(id self, SEL cmd, id key) {
+    (void)cmd;
+    CamelOSDictionary* dict = (CamelOSDictionary*)self;
+    if (!dict || !key) return;
+
+    for (uint32_t i = 0; i < dict->count; i++) {
+        if (dict->keys[i] == key) {
+            // Shift remaining entries down
+            for (uint32_t j = i; j < dict->count - 1; j++) {
+                dict->keys[j] = dict->keys[j + 1];
+                dict->values[j] = dict->values[j + 1];
+            }
+            dict->count--;
+            return;
+        }
+    }
+}
+
+void NSMutableDictionary_removeAllObjects(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSDictionary* dict = (CamelOSDictionary*)self;
+    if (!dict) return;
+    dict->count = 0;
+}
+
+static void register_NSMutableDictionary_methods(Class cls) {
+    SEL sel;
+    sel = sel_registerName("setObject:forKey:");
+    class_addMethod(cls, sel, (void*)NSMutableDictionary_setObjectForKey, "v@:@@");
+    sel = sel_registerName("removeObjectForKey:");
+    class_addMethod(cls, sel, (void*)NSMutableDictionary_removeObjectForKey, "v@:@");
+    sel = sel_registerName("removeAllObjects");
+    class_addMethod(cls, sel, (void*)NSMutableDictionary_removeAllObjects, "v@:");
+}
+
+// ============================================================================
+// NSMutableString Implementation (inherits NSString, adds mutation)
+// ============================================================================
+
+Class NSMutableString_class = 0;
+
+id NSMutableString_string(void) {
+    CamelOSString* str = (CamelOSString*)class_createInstance(NSMutableString_class, 0);
+    if (str) {
+        str->capacity = 256;
+        str->cstr = (char*)kmalloc(str->capacity);
+        if (str->cstr) {
+            str->cstr[0] = '\0';
+        }
+        str->length = 0;
+        track_object((id)str);
+    }
+    return (id)str;
+}
+
+id NSMutableString_stringWithCString(const char* cstr) {
+    CamelOSString* str = (CamelOSString*)class_createInstance(NSMutableString_class, 0);
+    if (str && cstr) {
+        uint32_t len = 0;
+        while (cstr[len]) len++;
+        str->capacity = len + 256;  // Extra room for mutations
+        str->cstr = (char*)kmalloc(str->capacity);
+        if (str->cstr) {
+            memcpy(str->cstr, cstr, len + 1);
+        }
+        str->length = len;
+        track_object((id)str);
+    }
+    return (id)str;
+}
+
+void NSMutableString_appendString(id self, SEL cmd, id other) {
+    (void)cmd;
+    CamelOSString* str = (CamelOSString*)self;
+    if (!str || !other) return;
+
+    // Get the C string from the other string
+    CamelOSString* other_str = (CamelOSString*)other;
+    if (!other_str || !other_str->cstr) return;
+
+    uint32_t other_len = other_str->length;
+    uint32_t needed = str->length + other_len + 1;
+
+    // Grow buffer if needed
+    if (needed > str->capacity) {
+        str->capacity = needed + 256;
+        char* new_cstr = (char*)kmalloc(str->capacity);
+        if (new_cstr) {
+            memcpy(new_cstr, str->cstr, str->length);
+            new_cstr[str->length] = '\0';
+            if (str->cstr) kfree(str->cstr);
+            str->cstr = new_cstr;
+        } else {
+            return;
+        }
+    }
+
+    memcpy(str->cstr + str->length, other_str->cstr, other_len);
+    str->length += other_len;
+    str->cstr[str->length] = '\0';
+}
+
+void NSMutableString_setString(id self, SEL cmd, const char* cstr) {
+    (void)cmd;
+    CamelOSString* str = (CamelOSString*)self;
+    if (!str) return;
+
+    if (!cstr) {
+        str->length = 0;
+        if (str->cstr) str->cstr[0] = '\0';
+        return;
+    }
+
+    uint32_t len = 0;
+    while (cstr[len]) len++;
+    uint32_t needed = len + 1;
+
+    if (needed > str->capacity) {
+        str->capacity = needed + 256;
+        if (str->cstr) kfree(str->cstr);
+        str->cstr = (char*)kmalloc(str->capacity);
+    }
+
+    if (str->cstr) {
+        memcpy(str->cstr, cstr, len + 1);
+    }
+    str->length = len;
+}
+
+void NSMutableString_deleteCharactersInRange(id self, SEL cmd, uint32_t loc, uint32_t len) {
+    (void)cmd;
+    CamelOSString* str = (CamelOSString*)self;
+    if (!str || !str->cstr) return;
+    if (loc + len > str->length) return;
+
+    // Shift characters after the deleted range backward
+    for (uint32_t i = loc; i + len < str->length; i++) {
+        str->cstr[i] = str->cstr[i + len];
+    }
+    str->length -= len;
+    str->cstr[str->length] = '\0';
+}
+
+static void register_NSMutableString_methods(Class cls) {
+    SEL sel;
+    sel = sel_registerName("appendString:");
+    class_addMethod(cls, sel, (void*)NSMutableString_appendString, "v@:@");
+    sel = sel_registerName("setString:");
+    class_addMethod(cls, sel, (void*)NSMutableString_setString, "v@:*");
+    sel = sel_registerName("deleteCharactersInRange:");
+    class_addMethod(cls, sel, (void*)NSMutableString_deleteCharactersInRange, "v@:II");
 }

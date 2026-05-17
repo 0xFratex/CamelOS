@@ -592,6 +592,195 @@ void appkit_extra_init(void) {
         register_NSCheckBox_methods(NSCheckBox_class);
         objc_registerClassPair(NSCheckBox_class);
     }
+
+    // NSEvent
+    NSEvent_class = objc_allocateClassPair(nsobj, "NSEvent",
+        sizeof(CamelOSEvent) - sizeof(struct objc_object));
+    if (NSEvent_class) {
+        register_NSEvent_methods(NSEvent_class);
+        objc_registerClassPair(NSEvent_class);
+    }
     
     s_printf("[AppKit] Extra controls initialized.\n");
+}
+
+// ============================================================================
+// NSEvent Implementation
+// ============================================================================
+
+Class NSEvent_class = 0;
+
+int NSEvent_type(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->type : 0;
+}
+
+void NSEvent_locationInWindow(id self, SEL cmd, int* x, int* y) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    if (event) {
+        if (x) *x = event->x;
+        if (y) *y = event->y;
+    } else {
+        if (x) *x = 0;
+        if (y) *y = 0;
+    }
+}
+
+int NSEvent_buttonNumber(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->button_number : 0;
+}
+
+int NSEvent_clickCount(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->click_count : 0;
+}
+
+int NSEvent_keyCode(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->key_code : 0;
+}
+
+const char* NSEvent_characters(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->characters : "";
+}
+
+const char* NSEvent_charactersIgnoringModifiers(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->characters_ignoring_modifiers : "";
+}
+
+uint32_t NSEvent_timestamp(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->timestamp : 0;
+}
+
+uint32_t NSEvent_modifierFlags(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->modifier_flags : 0;
+}
+
+int NSEvent_windowNumber(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->window_number : 0;
+}
+
+BOOL NSEvent_isARepeat(id self, SEL cmd) {
+    (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)self;
+    return event ? event->is_a_repeat : NO;
+}
+
+// Class method: keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:
+id NSEvent_keyEventWithType(id self, SEL cmd,
+    int type, int x, int y, uint32_t modifier_flags, uint32_t timestamp,
+    int window_number, const char* chars, const char* chars_no_mods,
+    int is_a_repeat, int key_code) {
+    (void)self; (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)class_createInstance(NSEvent_class, 0);
+    if (event) {
+        event->type = type;
+        event->x = x;
+        event->y = y;
+        event->modifier_flags = modifier_flags;
+        event->timestamp = timestamp;
+        event->window_number = window_number;
+        if (chars) {
+            strncpy(event->characters, chars, 63);
+            event->characters[63] = '\0';
+        } else {
+            event->characters[0] = '\0';
+        }
+        if (chars_no_mods) {
+            strncpy(event->characters_ignoring_modifiers, chars_no_mods, 63);
+            event->characters_ignoring_modifiers[63] = '\0';
+        } else {
+            event->characters_ignoring_modifiers[0] = '\0';
+        }
+        event->is_a_repeat = is_a_repeat;
+        event->key_code = key_code;
+        event->button_number = 0;
+        event->click_count = 0;
+        event->delta_x = 0.0f;
+        event->delta_y = 0.0f;
+        event->delta_z = 0.0f;
+        event->pressure = 0.0f;
+        track_object((id)event);
+    }
+    return (id)event;
+}
+
+// Class method: mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:
+id NSEvent_mouseEventWithType(id self, SEL cmd,
+    int type, int x, int y, uint32_t modifier_flags, uint32_t timestamp,
+    int window_number, int event_number, int click_count, float pressure) {
+    (void)self; (void)cmd;
+    CamelOSEvent* event = (CamelOSEvent*)class_createInstance(NSEvent_class, 0);
+    if (event) {
+        event->type = type;
+        event->x = x;
+        event->y = y;
+        event->modifier_flags = modifier_flags;
+        event->timestamp = timestamp;
+        event->window_number = window_number;
+        event->button_number = (type == NSRightMouseDown || type == NSRightMouseUp) ? 1 : 0;
+        event->click_count = click_count;
+        event->pressure = pressure;
+        event->characters[0] = '\0';
+        event->characters_ignoring_modifiers[0] = '\0';
+        event->key_code = 0;
+        event->is_a_repeat = 0;
+        event->delta_x = 0.0f;
+        event->delta_y = 0.0f;
+        event->delta_z = 0.0f;
+        track_object((id)event);
+    }
+    return (id)event;
+}
+
+static void register_NSEvent_methods(Class cls) {
+    SEL sel;
+
+    // Instance methods - property accessors
+    sel = sel_registerName("type");
+    class_addMethod(cls, sel, (void*)NSEvent_type, "i@:");
+    sel = sel_registerName("buttonNumber");
+    class_addMethod(cls, sel, (void*)NSEvent_buttonNumber, "i@:");
+    sel = sel_registerName("clickCount");
+    class_addMethod(cls, sel, (void*)NSEvent_clickCount, "i@:");
+    sel = sel_registerName("keyCode");
+    class_addMethod(cls, sel, (void*)NSEvent_keyCode, "i@:");
+    sel = sel_registerName("characters");
+    class_addMethod(cls, sel, (void*)NSEvent_characters, "*@:");
+    sel = sel_registerName("charactersIgnoringModifiers");
+    class_addMethod(cls, sel, (void*)NSEvent_charactersIgnoringModifiers, "*@:");
+    sel = sel_registerName("timestamp");
+    class_addMethod(cls, sel, (void*)NSEvent_timestamp, "I@:");
+    sel = sel_registerName("modifierFlags");
+    class_addMethod(cls, sel, (void*)NSEvent_modifierFlags, "I@:");
+    sel = sel_registerName("windowNumber");
+    class_addMethod(cls, sel, (void*)NSEvent_windowNumber, "i@:");
+    sel = sel_registerName("isARepeat");
+    class_addMethod(cls, sel, (void*)NSEvent_isARepeat, "B@:");
+
+    // Class method: keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:
+    sel = sel_registerName("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:");
+    class_addMethod(cls->isa, sel, (void*)NSEvent_keyEventWithType,
+        "@@:iiiiiIi**ii");
+
+    // Class method: mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:
+    sel = sel_registerName("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:");
+    class_addMethod(cls->isa, sel, (void*)NSEvent_mouseEventWithType,
+        "@@:iiiiiIiifi");
 }

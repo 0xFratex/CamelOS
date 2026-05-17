@@ -93,65 +93,358 @@ static void* macho_resolve_symbol(loaded_macho_t* image, const char* name,
     return 0;
 }
 
+// --- Relocation Processing ---
+
+// Relocation info entry (32-bit Mach-O)
+typedef struct {
+    int32_t  r_address;     // Offset in the section to what is being relocated
+    uint32_t r_symbolnum:24;// Symbol index if r_extern, else section ordinal
+    uint32_t r_pcrel:1;     // Was relocated pc-relative already
+    uint32_t r_length:2;    // 0=byte, 1=word, 2=long, 3=quad
+    uint32_t r_extern:1;    // Does not include value of symbol referenced
+    uint32_t r_type:4;      // Machine-specific relocation type
+} relocation_info_t;
+
+// i386 relocation types
+#define GENERIC_RELOC_VANILLA   0   // Generic relocation
+
+static void macho_apply_relocations(loaded_macho_t* image,
+                                     const uint8_t* raw, uint32_t raw_size,
+                                     uint32_t min_vmaddr) {
+    if (!image || !raw || !image->base_addr) return;
+
+    mach_header_t* header = (mach_header_t*)raw;
+    load_command_t* lc = (load_command_t*)(raw + sizeof(mach_header_t));
+    uint32_t offset = sizeof(mach_header_t);
+
+    symtab_command_t* symtab = 0;
+    dysymtab_command_t* dysymtab = 0;
+
+    // Find LC_SYMTAB and LC_DYSYMTAB from the full file data
+    for (uint32_t i = 0; i < header->ncmds && offset < raw_size; i++) {
+        if (lc->cmd == LC_SYMTAB) {
+            symtab = (symtab_command_t*)lc;
+        } else if (lc->cmd == LC_DYSYMTAB) {
+            dysymtab = (dysymtab_command_t*)lc;
+        }
+        offset += lc->cmdsize;
+        lc = (load_command_t*)((uint8_t*)lc + lc->cmdsize);
+    }
+
+    if (!dysymtab || !symtab) {
+        s_printf("[MachO] No dynamic symbol info - skipping relocations\n");
+        return;
+    }
+
+    // Validate symbol table access
+    if (symtab->stroff + symtab->strsize > raw_size) return;
+    if (symtab->symoff + symtab->nsyms * sizeof(nlist_t) > raw_size) return;
+
+    const char* strtab = (const char*)(raw + symtab->stroff);
+    nlist_t* symbols = (nlist_t*)(raw + symtab->symoff);
+
+    // Compute the slide (difference between actual load address and preferred VM address)
+    uint32_t image_base = (uint32_t)image->base_addr;
+    uint32_t slide = image_base - min_vmaddr;
+
+    int reloc_count = 0;
+    int reloc_resolved = 0;
+
+    // Walk all segments and sections looking for relocation entries
+    lc = (load_command_t*)(raw + sizeof(mach_header_t));
+    offset = sizeof(mach_header_t);
+
+    for (uint32_t i = 0; i < header->ncmds && offset < raw_size; i++) {
+        if (lc->cmd == LC_SEGMENT) {
+            segment_command_t* seg = (segment_command_t*)lc;
+            section_t* sect = (section_t*)(seg + 1);
+
+            for (uint32_t j = 0; j < seg->nsects; j++) {
+                if (sect[j].nreloc == 0 || sect[j].reloff == 0) continue;
+
+                // Validate relocation table access
+                if (sect[j].reloff + sect[j].nreloc * sizeof(relocation_info_t) > raw_size)
+                    continue;
+
+                relocation_info_t* relocs = (relocation_info_t*)(raw + sect[j].reloff);
+
+                // Calculate the section's base address in the loaded image
+                uint8_t* section_base = (uint8_t*)(image_base + (sect[j].addr - min_vmaddr));
+
+                // Section type from flags (lower 8 bits)
+                uint32_t section_type = sect[j].flags & 0xFF;
+
+                for (uint32_t r = 0; r < sect[j].nreloc; r++) {
+                    int32_t r_address = relocs[r].r_address;
+
+                    // Negative r_address means scattered relocation - skip
+                    if (r_address < 0) continue;
+
+                    // Bounds check: make sure target is within the loaded image
+                    if ((uint32_t)r_address >= sect[j].size) continue;
+
+                    uint32_t* target = (uint32_t*)(section_base + r_address);
+                    uint32_t r_type = relocs[r].r_type;
+                    uint32_t r_extern = relocs[r].r_extern;
+                    uint32_t r_length = relocs[r].r_length;
+                    uint32_t r_symbolnum = relocs[r].r_symbolnum;
+
+                    reloc_count++;
+
+                    // Process RELOC_VANILLA (generic absolute relocation for i386)
+                    if (r_type == GENERIC_RELOC_VANILLA) {
+                        if (r_extern) {
+                            // External symbol reference - look up in symbol table
+                            if (r_symbolnum < symtab->nsyms) {
+                                nlist_t* sym = &symbols[r_symbolnum];
+                                if (sym->n_strx < symtab->strsize) {
+                                    const char* sym_name = strtab + sym->n_strx;
+                                    // Skip leading underscore for lookup
+                                    const char* lookup_name = sym_name;
+                                    if (sym_name[0] == '_') lookup_name = sym_name + 1;
+
+                                    // Try to resolve via dyld
+                                    void* resolved = dyld_resolve_symbol(lookup_name);
+                                    if (resolved) {
+                                        // For pointer-sized (long) relocations, add base
+                                        if (r_length == 2) {
+                                            *target = (uint32_t)resolved + *target;
+                                        } else {
+                                            *target = (uint32_t)resolved;
+                                        }
+                                        reloc_resolved++;
+                                    } else if ((sym->n_type & N_TYPE) == N_SECT) {
+                                        // Defined in this image at a given section
+                                        *target = image_base + (sym->n_value - min_vmaddr) + *target;
+                                        reloc_resolved++;
+                                    } else if ((sym->n_type & N_TYPE) == N_ABS) {
+                                        // Absolute symbol - no relocation needed
+                                        reloc_resolved++;
+                                    }
+                                }
+                            }
+                        } else {
+                            // Internal relocation - apply slide for pointer-type sections
+                            // S_REGULAR and S_ABSOLUTE sections with internal relocs
+                            if (section_type == S_REGULAR || section_type == 0) {
+                                if (r_length == 2) {  // Long (pointer-sized)
+                                    *target += slide;
+                                    reloc_resolved++;
+                                }
+                            }
+                        }
+                    }
+                    // Other relocation types (RELOC_PAIR, RELOC_SECTDIFF, etc.)
+                    // are handled implicitly by skipping - they come in pairs
+                    // and the primary entry is processed above
+                }
+            }
+        }
+        offset += lc->cmdsize;
+        lc = (load_command_t*)((uint8_t*)lc + lc->cmdsize);
+    }
+
+    s_printf("[MachO] Relocations: ");
+    char buf[16];
+    int_to_str(reloc_resolved, buf);
+    s_printf(buf);
+    s_printf("/");
+    int_to_str(reloc_count, buf);
+    s_printf(buf);
+    s_printf(" resolved (slide=0x");
+    int_to_str(slide, buf);
+    s_printf(buf);
+    s_printf(")\n");
+}
+
 // --- ObjC Section Processing ---
 
 static void macho_process_objc_sections(loaded_macho_t* image,
                                          segment_command_t* seg,
                                          const uint8_t* raw, uint32_t raw_size) {
-    // Look for __objc_classlist section
+    uint32_t image_base = (uint32_t)image->base_addr;
+
+    // First pass: find all relevant sections and the __objc_methname data
+    section_t* classlist_sect = 0;
+    section_t* protolist_sect = 0;
+    section_t* methname_sect = 0;
+    section_t* methlist_sect = 0;
+    section_t* selrefs_sect = 0;
+
     section_t* sect = (section_t*)(seg + 1);
     for (uint32_t i = 0; i < seg->nsects; i++) {
-        // __objc_classlist - contains pointers to Class structures
         if (strncmp(sect[i].sectname, "__objc_classlist", 16) == 0) {
-            s_printf("[MachO] Found __objc_classlist section (");
-            char buf[16];
-            int_to_str(sect[i].size / 4, buf);
-            s_printf(buf);
-            s_printf(" classes)\n");
-            
-            // Register each class found in the list
-            if (sect[i].offset + sect[i].size <= raw_size) {
-                uint32_t* class_ptrs = (uint32_t*)(raw + sect[i].offset);
-                uint32_t class_count = sect[i].size / sizeof(uint32_t);
-                
-                for (uint32_t c = 0; c < class_count; c++) {
-                    if (image->base_addr) {
-                        Class cls = (Class)((uint32_t)image->base_addr + class_ptrs[c]);
-                        if (cls && cls->name[0]) {
-                            // Register the class with the ObjC runtime
-                            s_printf("[MachO] Registering ObjC class: ");
-                            s_printf(cls->name);
-                            s_printf("\n");
-                        }
+            classlist_sect = &sect[i];
+        } else if (strncmp(sect[i].sectname, "__objc_protolist", 16) == 0) {
+            protolist_sect = &sect[i];
+        } else if (strncmp(sect[i].sectname, "__objc_methname", 16) == 0) {
+            methname_sect = &sect[i];
+        } else if (strncmp(sect[i].sectname, "__objc_methlist", 16) == 0) {
+            methlist_sect = &sect[i];
+        } else if (strncmp(sect[i].sectname, "__objc_selrefs", 16) == 0) {
+            selrefs_sect = &sect[i];
+        }
+    }
+
+    // Register selectors from __objc_selrefs first (needed before class registration)
+    if (selrefs_sect && selrefs_sect->offset + selrefs_sect->size <= raw_size && image_base) {
+        s_printf("[MachO] Found __objc_selrefs section\n");
+        // Each selref is a pointer (4 bytes on 32-bit) to a selector name in __objc_methname
+        uint32_t* sel_ptrs = (uint32_t*)(raw + selrefs_sect->offset);
+        uint32_t sel_count = selrefs_sect->size / sizeof(uint32_t);
+
+        for (uint32_t s = 0; s < sel_count; s++) {
+            // The pointer value in the raw data is the original VM address
+            // After relocation it should point to the methname string
+            // Try to read the selector name from the relocated pointer
+            uint32_t sel_ptr_val = sel_ptrs[s];
+            if (sel_ptr_val != 0) {
+                // The relocated pointer was already fixed up by macho_apply_relocations
+                // Read from the loaded image at the adjusted address
+                uint32_t* loaded_sel_ptr = (uint32_t*)(image_base +
+                    ((uint32_t*)sel_ptrs + s - (uint32_t*)raw));
+                if (*loaded_sel_ptr != 0) {
+                    // The loaded pointer points to a C string (selector name)
+                    const char* sel_name = (const char*)(*loaded_sel_ptr);
+                    if (sel_name && sel_name[0]) {
+                        sel_registerName(sel_name);
                     }
                 }
             }
         }
-        
-        // __objc_protolist - protocol references
-        if (strncmp(sect[i].sectname, "__objc_protolist", 16) == 0) {
-            s_printf("[MachO] Found __objc_protolist section\n");
-        }
-        
-        // __objc_methname - method names for dynamic dispatch
-        if (strncmp(sect[i].sectname, "__objc_methname", 16) == 0) {
-            s_printf("[MachO] Found __objc_methname section (");
-            char buf[16];
-            int_to_str(sect[i].size, buf);
-            s_printf(buf);
-            s_printf(" bytes)\n");
-        }
-        
-        // __objc_selrefs - selector references (for messaging)
-        if (strncmp(sect[i].sectname, "__objc_selrefs", 16) == 0) {
-            s_printf("[MachO] Found __objc_selrefs section\n");
-            // Register all selectors found
-            if (sect[i].offset + sect[i].size <= raw_size && image->base_addr) {
-                uint32_t* sel_refs = (uint32_t*)((uint32_t)image->base_addr + 
-                    ((uint32_t*)(raw + sect[i].offset) - (uint32_t*)raw));
-                // Note: selrefs need relocation first - simplified here
+    }
+
+    // Also register all method names from __objc_methname as selectors
+    if (methname_sect && methname_sect->offset + methname_sect->size <= raw_size) {
+        s_printf("[MachO] Found __objc_methname section (");
+        char buf[16];
+        int_to_str(methname_sect->size, buf);
+        s_printf(buf);
+        s_printf(" bytes)\n");
+
+        // Walk the method names section - entries are null-terminated C strings
+        const char* methnames = (const char*)(raw + methname_sect->offset);
+        uint32_t pos = 0;
+        while (pos < methname_sect->size) {
+            const char* name = methnames + pos;
+            if (name[0]) {
+                sel_registerName(name);
             }
+            // Advance past the null terminator
+            while (pos < methname_sect->size && methnames[pos]) pos++;
+            pos++;  // Skip the null terminator
         }
+    }
+
+    // Process __objc_classlist - register each class with the ObjC runtime
+    if (classlist_sect && classlist_sect->offset + classlist_sect->size <= raw_size) {
+        s_printf("[MachO] Found __objc_classlist section (");
+        char buf[16];
+        int_to_str(classlist_sect->size / 4, buf);
+        s_printf(buf);
+        s_printf(" classes)\n");
+
+        uint32_t* class_ptrs = (uint32_t*)(raw + classlist_sect->offset);
+        uint32_t class_count = classlist_sect->size / sizeof(uint32_t);
+
+        for (uint32_t c = 0; c < class_count; c++) {
+            if (!image_base) continue;
+
+            // Read the class pointer from the loaded image
+            // The classlist contains offsets relative to the image base
+            uint32_t* loaded_class_ptr = (uint32_t*)(image_base +
+                ((uint32_t*)class_ptrs + c - (uint32_t*)raw));
+            uint32_t class_addr = *loaded_class_ptr;
+
+            if (class_addr == 0) continue;
+
+            // The class structure is in the loaded image
+            Class cls = (Class)class_addr;
+            if (!cls || !cls->name[0]) continue;
+
+            // Check if this class is already registered in the runtime
+            Class existing = objc_lookUpClass(cls->name);
+            if (existing) {
+                s_printf("[MachO] ObjC class already registered: ");
+                s_printf(cls->name);
+                s_printf("\n");
+                continue;
+            }
+
+            // Find the superclass - try to look it up by name
+            // If cls->superclass points to another class struct in the image,
+            // read its name to look up the registered version
+            Class superclass = objc_getClass("NSObject");  // Default superclass
+            if (cls->superclass) {
+                Class raw_super = cls->superclass;
+                if (raw_super->name[0]) {
+                    Class registered_super = objc_lookUpClass(raw_super->name);
+                    if (registered_super) {
+                        superclass = registered_super;
+                    }
+                }
+            }
+
+            // Allocate a new class pair in the runtime
+            Class new_cls = objc_allocateClassPair(superclass, cls->name,
+                cls->instance_size > sizeof(struct objc_object) ?
+                cls->instance_size - sizeof(struct objc_object) : 0);
+            if (!new_cls) {
+                s_printf("[MachO] WARNING: Failed to allocate class: ");
+                s_printf(cls->name);
+                s_printf("\n");
+                continue;
+            }
+
+            // Read the method list from the class structure and register methods
+            // The class's methods pointer should already be relocated
+            if (cls->methods) {
+                Method m = cls->methods;
+                int method_count = 0;
+                while (m && method_count < 256) {  // Safety limit
+                    if (m->selector && m->imp) {
+                        const char* sel_name = sel_getName(m->selector);
+                        if (sel_name && sel_name[0]) {
+                            SEL sel = sel_registerName(sel_name);
+                            class_addMethod(new_cls, sel, m->imp, m->types);
+                        }
+                    }
+                    m = m->next;
+                    method_count++;
+                }
+            }
+
+            // Register class methods from the metaclass
+            if (cls->class_methods) {
+                Method m = cls->class_methods;
+                int method_count = 0;
+                while (m && method_count < 256) {
+                    if (m->selector && m->imp) {
+                        const char* sel_name = sel_getName(m->selector);
+                        if (sel_name && sel_name[0]) {
+                            SEL sel = sel_registerName(sel_name);
+                            // Add to the metaclass (isa of the new class)
+                            if (new_cls->isa) {
+                                class_addMethod(new_cls->isa, sel, m->imp, m->types);
+                            }
+                        }
+                    }
+                    m = m->next;
+                    method_count++;
+                }
+            }
+
+            objc_registerClassPair(new_cls);
+
+            s_printf("[MachO] Registered ObjC class: ");
+            s_printf(cls->name);
+            s_printf("\n");
+        }
+    }
+
+    // Log __objc_protolist
+    if (protolist_sect) {
+        s_printf("[MachO] Found __objc_protolist section\n");
     }
 }
 
@@ -369,6 +662,9 @@ loaded_macho_t* macho_load(const char* path) {
     strncpy(image->name, name_start, 63);
     image->name[63] = 0;
     
+    // Apply relocations to fix up external references and base address adjustments
+    macho_apply_relocations(image, raw, fsize, min_vmaddr);
+
     // Process ObjC sections now that image struct is properly set up
     if (objc_seg) {
         macho_process_objc_sections(image, objc_seg, raw, fsize);

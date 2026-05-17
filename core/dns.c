@@ -239,6 +239,10 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
             extern void net_poll(void);
             net_poll();
 
+            // Keep GUI responsive during DNS polling
+            extern void http_process_events(void);
+            http_process_events();
+
             int r = k_recvfrom(s, resp, 4096, 0, 0);
             if (r > (int)sizeof(dns_header_t)) {
                 dns_header_t* rhdr = (dns_header_t*)resp;

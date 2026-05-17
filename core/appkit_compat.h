@@ -381,6 +381,66 @@ typedef struct {
 extern Class NSCheckBox_class;
 
 // ============================================================================
+// NSEvent - Input event (keyboard, mouse, scroll, etc.)
+// ============================================================================
+
+// NSEvent types
+#define NSLeftMouseDown         1
+#define NSLeftMouseUp           2
+#define NSRightMouseDown        3
+#define NSRightMouseUp          4
+#define NSMouseMoved            5
+#define NSLeftMouseDragged      6
+#define NSRightMouseDragged     7
+#define NSMouseEntered          8
+#define NSMouseExited           9
+#define NSKeyDown              10
+#define NSKeyUp                11
+#define NSFlagsChanged         12
+#define NSScrollWheel          22
+#define NSTabletPoint          23
+#define NSTabletProximity      24
+#define NSOtherMouseDown       25
+#define NSOtherMouseUp         26
+#define NSOtherMouseDragged    27
+#define NSEventTypeGesture     29
+#define NSEventTypeMagnify     30
+#define NSEventTypeSwipe       31
+#define NSEventTypeRotate      32
+#define NSEventTypeBeginGesture 19
+#define NSEventTypeEndGesture   20
+
+// Modifier flags
+#define NSAlphaShiftKeyMask    1 << 16
+#define NSShiftKeyMask         1 << 17
+#define NSControlKeyMask       1 << 18
+#define NSAlternateKeyMask     1 << 19
+#define NSCommandKeyMask       1 << 20
+#define NSNumericPadKeyMask    1 << 21
+#define NSHelpKeyMask          1 << 22
+#define NSFunctionKeyMask      1 << 23
+
+typedef struct {
+    struct objc_object isa;
+    int type;               // Event type (NSKeyDown, NSLeftMouseDown, etc.)
+    int x, y;               // locationInWindow (integer coords for CamelOS)
+    int button_number;       // buttonNumber (0=left, 1=right, 2=other)
+    int click_count;         // clickCount
+    int key_code;            // keyCode (hardware scan code)
+    char characters[64];     // characters (key characters)
+    char characters_ignoring_modifiers[64]; // charactersIgnoringModifiers
+    uint32_t timestamp;      // timestamp (tick count)
+    uint32_t modifier_flags; // modifierFlags
+    int window_number;       // windowNumber
+    float delta_x;           // deltaX (scroll wheel / mouse move)
+    float delta_y;           // deltaY (scroll wheel / mouse move)
+    float delta_z;           // deltaZ (scroll wheel)
+    float pressure;          // pressure (tablet/mouse)
+    int is_a_repeat;         // isARepeat (key repeat)
+} CamelOSEvent;
+extern Class NSEvent_class;
+
+// ============================================================================
 // AppKit Initialization
 // ============================================================================
 

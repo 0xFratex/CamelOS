@@ -500,23 +500,207 @@ void* dyld_resolve_symbol_in_image(loaded_macho_t* image, const char* name) {
 int dyld_bind_image(loaded_macho_t* image) {
     if (!image) return -1;
 
-    // In a full implementation, we would:
-    // 1. Walk the __DATA __la_symbol_ptr and __nl_symbol_ptr sections
-    // 2. For each entry in the indirect symbol table (pointed to by LC_DYSYMTAB)
-    // 3. Look up the symbol name in the string table
-    // 4. Resolve it via dyld_resolve_symbol
-    // 5. Patch the GOT/pointer entry with the resolved address
-
-    // For now, we do a simplified approach:
-    // The ObjC runtime handles method dispatch dynamically,
-    // and our Foundation stubs provide the common symbols.
-    // Real binding would require full relocation processing.
-
     s_printf("[dyld] Binding image: ");
     s_printf(image->name);
-    s_printf(" (simplified - ObjC dispatch handles most bindings)\n");
+    s_printf("\n");
 
-    return 0;  // 0 unresolved symbols (optimistic for ObjC-heavy apps)
+    // Find the path for this image to re-read the Mach-O
+    char path[256] = "";
+    for (int i = 0; i < g_dyld_count; i++) {
+        if (g_dyld_libs[i].image == image) {
+            strncpy(path, g_dyld_libs[i].path, 255);
+            break;
+        }
+    }
+    if (path[0] == 0) {
+        strcpy(path, "/usr/lib/");
+        strcat(path, image->name);
+    }
+
+    // Read the Mach-O header to find LC_DYSYMTAB, LC_SYMTAB, and LC_SEGMENT(__DATA)
+    char header_buf[8192];
+    int hsize = sys_fs_read(path, header_buf, sizeof(header_buf));
+    if (hsize < (int)sizeof(mach_header_t)) {
+        s_printf("[dyld] WARNING: Cannot read file for binding\n");
+        return -1;
+    }
+
+    mach_header_t* header = (mach_header_t*)header_buf;
+    if (header->magic != MH_MAGIC) {
+        s_printf("[dyld] WARNING: Invalid Mach-O for binding\n");
+        return -1;
+    }
+
+    symtab_command_t* symtab = 0;
+    dysymtab_command_t* dysymtab = 0;
+    segment_command_t* data_seg = 0;
+    uint32_t min_vmaddr = 0xFFFFFFFF;
+
+    // First pass: find commands and min_vmaddr
+    load_command_t* lc = (load_command_t*)(header_buf + sizeof(mach_header_t));
+    uint32_t offset = sizeof(mach_header_t);
+
+    for (uint32_t i = 0; i < header->ncmds && offset < (uint32_t)hsize; i++) {
+        if (lc->cmd == LC_SYMTAB) {
+            symtab = (symtab_command_t*)lc;
+        } else if (lc->cmd == LC_DYSYMTAB) {
+            dysymtab = (dysymtab_command_t*)lc;
+        } else if (lc->cmd == LC_SEGMENT) {
+            segment_command_t* seg = (segment_command_t*)lc;
+            if (seg->vmaddr < min_vmaddr) min_vmaddr = seg->vmaddr;
+            // Look for __DATA segment (contains GOT sections)
+            if (strncmp(seg->segname, "__DATA", 16) == 0) {
+                data_seg = seg;
+            }
+        }
+        offset += lc->cmdsize;
+        lc = (load_command_t*)((uint8_t*)lc + lc->cmdsize);
+    }
+
+    if (!symtab || !dysymtab || !data_seg || !image->base_addr) {
+        s_printf("[dyld] WARNING: Missing required load commands for binding\n");
+        return 0;  // Graceful: ObjC dispatch may still work
+    }
+
+    // We need the full file for symbol/string table access
+    // Re-read a larger buffer
+    uint8_t* full_data = (uint8_t*)kmalloc(65536);
+    if (!full_data) return -1;
+    int fsize = sys_fs_read(path, (char*)full_data, 65536);
+    if (fsize < (int)sizeof(mach_header_t)) {
+        kfree(full_data);
+        return -1;
+    }
+
+    // Re-parse from full data
+    header = (mach_header_t*)full_data;
+    lc = (load_command_t*)(full_data + sizeof(mach_header_t));
+    offset = sizeof(mach_header_t);
+    symtab = 0;
+    dysymtab = 0;
+    data_seg = 0;
+    min_vmaddr = 0xFFFFFFFF;
+
+    for (uint32_t i = 0; i < header->ncmds && offset < (uint32_t)fsize; i++) {
+        if (lc->cmd == LC_SYMTAB) {
+            symtab = (symtab_command_t*)lc;
+        } else if (lc->cmd == LC_DYSYMTAB) {
+            dysymtab = (dysymtab_command_t*)lc;
+        } else if (lc->cmd == LC_SEGMENT) {
+            segment_command_t* seg = (segment_command_t*)lc;
+            if (seg->vmaddr < min_vmaddr) min_vmaddr = seg->vmaddr;
+            if (strncmp(seg->segname, "__DATA", 16) == 0) {
+                data_seg = seg;
+            }
+        }
+        offset += lc->cmdsize;
+        lc = (load_command_t*)((uint8_t*)lc + lc->cmdsize);
+    }
+
+    if (!symtab || !dysymtab || !data_seg) {
+        kfree(full_data);
+        return 0;
+    }
+
+    // Validate access to symbol tables
+    if (symtab->stroff + symtab->strsize > (uint32_t)fsize ||
+        symtab->symoff + symtab->nsyms * sizeof(nlist_t) > (uint32_t)fsize ||
+        dysymtab->indirectsymoff + dysymtab->nindirectsyms * sizeof(uint32_t) > (uint32_t)fsize) {
+        kfree(full_data);
+        return 0;
+    }
+
+    const char* strtab = (const char*)(full_data + symtab->stroff);
+    nlist_t* symbols = (nlist_t*)(full_data + symtab->symoff);
+    uint32_t* indirect_syms = (uint32_t*)(full_data + dysymtab->indirectsymoff);
+
+    uint32_t image_base = (uint32_t)image->base_addr;
+
+    int bound_count = 0;
+    int unresolved_count = 0;
+
+    // Walk __DATA segment sections looking for symbol pointer sections
+    section_t* sect = (section_t*)(data_seg + 1);
+    for (uint32_t i = 0; i < data_seg->nsects; i++) {
+        uint32_t section_type = sect[i].flags & 0xFF;
+
+        // Process lazy symbol pointer sections and non-lazy symbol pointer sections
+        if (section_type == S_LAZY_SYMBOL_POINTERS ||
+            section_type == S_NON_LAZY_SYMBOL_POINTERS) {
+
+            // Each entry is a 4-byte pointer
+            uint32_t entry_count = sect[i].size / sizeof(uint32_t);
+            // sect.reserved1 is the starting index in the indirect symbol table
+            uint32_t indirect_offset = sect[i].reserved1;
+
+            // Calculate the address of this section in the loaded image
+            uint32_t* got_base = (uint32_t*)(image_base + (sect[i].addr - min_vmaddr));
+
+            const char* section_name = (section_type == S_LAZY_SYMBOL_POINTERS) ?
+                "__la_symbol_ptr" : "__nl_symbol_ptr";
+
+            for (uint32_t e = 0; e < entry_count; e++) {
+                if (indirect_offset + e >= dysymtab->nindirectsyms) break;
+
+                uint32_t sym_idx = indirect_syms[indirect_offset + e];
+
+                // Special indices
+                #define INDIRECT_SYMBOL_ABS   0x80000000
+                #define INDIRECT_SYMBOL_LOCAL  0x80000001
+
+                if (sym_idx == INDIRECT_SYMBOL_ABS || sym_idx == INDIRECT_SYMBOL_LOCAL) {
+                    // Absolute or local symbol - just apply slide
+                    got_base[e] += (image_base - min_vmaddr);
+                    bound_count++;
+                    continue;
+                }
+
+                if (sym_idx >= symtab->nsyms) continue;
+
+                // Look up the symbol name
+                nlist_t* sym = &symbols[sym_idx];
+                if (sym->n_strx >= symtab->strsize) continue;
+
+                const char* sym_name = strtab + sym->n_strx;
+                // Skip leading underscore
+                const char* lookup_name = sym_name;
+                if (sym_name[0] == '_') lookup_name = sym_name + 1;
+
+                // Resolve the symbol
+                void* resolved = dyld_resolve_symbol(lookup_name);
+                if (resolved) {
+                    got_base[e] = (uint32_t)resolved;
+                    bound_count++;
+                } else {
+                    // Check if it's defined in this image
+                    if ((sym->n_type & N_TYPE) == N_SECT) {
+                        got_base[e] = image_base + (sym->n_value - min_vmaddr);
+                        bound_count++;
+                    } else {
+                        unresolved_count++;
+                        s_printf("[dyld] WARNING: Unresolved symbol: ");
+                        s_printf(sym_name);
+                        s_printf("\n");
+                    }
+                }
+            }
+        }
+    }
+
+    kfree(full_data);
+
+    s_printf("[dyld] Binding complete for ");
+    s_printf(image->name);
+    s_printf(": ");
+    char buf[16];
+    int_to_str(bound_count, buf);
+    s_printf(buf);
+    s_printf(" bound, ");
+    int_to_str(unresolved_count, buf);
+    s_printf(buf);
+    s_printf(" unresolved\n");
+
+    return unresolved_count;
 }
 
 // --- Image Registration ---
