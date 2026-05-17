@@ -319,22 +319,36 @@ float __divsf3(float a, float b) {
     s32 result_exp = ea - eb;
     u32 result_mant;
 
-    /* Perform integer division of 24-bit mantissas with enough guard bits */
-    /* ma / mb: shift ma left by 24 to get precision for rounding */
-    u64 dividend = (u64)ma << 24;
-    if (ma < mb) {
-        dividend = (u64)ma << 25;
+    /* Bit-by-bit division of 24-bit mantissas (avoids 64-bit division)
+     * This avoids __udivmoddi4 which isn't available in freestanding.
+     * We need 24 mantissa bits + 1 guard bit = 25 bits of quotient. */
+    result_mant = 0;
+
+    /* First quotient bit: if ma >= mb, quotient bit is 1 */
+    if (ma >= mb) {
+        ma -= mb;
+        result_mant = 1;
+    } else {
         result_exp--;
     }
 
-    result_mant = (u32)(dividend / mb);
-    u32 remainder = (u32)(dividend % mb);
-
-    /* Round */
-    if (remainder > 0) {
-        if (remainder > mb / 2 || (remainder == mb / 2 && (result_mant & 1))) {
-            result_mant++;
+    /* Generate remaining 24 bits */
+    for (int i = 0; i < 24; i++) {
+        result_mant <<= 1;
+        ma <<= 1;
+        if (ma >= mb) {
+            ma -= mb;
+            result_mant |= 1;
         }
+    }
+
+    /* result_mant has 25 bits: 24 mantissa bits + 1 guard bit for rounding */
+    /* Round to nearest even using the guard bit */
+    if (result_mant & 1) {
+        result_mant >>= 1;
+        result_mant++;
+    } else {
+        result_mant >>= 1;
     }
 
     sf_u r;
@@ -994,4 +1008,58 @@ s32 __gedf2(double a, double b)   { return df_cmp(a, b); }
 s32 __unorddf2(double a, double b) {
     df_u ua = {.d = a}, ub = {.d = b};
     return (df_is_nan(ua.i) || df_is_nan(ub.i)) ? 1 : 0;
+}
+
+/* ================================================================
+ *  64-bit Integer Division Helpers
+ *  Required on 32-bit targets when code uses 64-bit arithmetic.
+ *  Normally provided by libgcc, but we're freestanding.
+ * ================================================================ */
+
+/* Combined unsigned divmod: returns quotient, stores remainder via pointer */
+u64 __udivmoddi4(u64 num, u64 den, u64 *rem) {
+    if (den == 0) {
+        if (rem) *rem = 0;
+        return 0;
+    }
+    u64 quot = 0;
+    int shift = 0;
+    while (den <= num && !(den & ((u64)1 << 63))) { den <<= 1; shift++; }
+    while (shift >= 0) {
+        if (num >= den) { num -= den; quot |= (u64)1 << shift; }
+        den >>= 1; shift--;
+    }
+    if (rem) *rem = num;
+    return quot;
+}
+
+/* 64-bit unsigned division */
+u64 __udivdi3(u64 num, u64 den) {
+    return __udivmoddi4(num, den, (u64*)0);
+}
+
+/* 64-bit unsigned modulo */
+u64 __umoddi3(u64 num, u64 den) {
+    u64 rem;
+    __udivmoddi4(num, den, &rem);
+    return rem;
+}
+
+/* 64-bit signed division */
+s64 __divdi3(s64 num, s64 den) {
+    int neg = 0;
+    if (num < 0) { num = -num; neg = !neg; }
+    if (den < 0) { den = -den; neg = !neg; }
+    u64 result = __udivmoddi4((u64)num, (u64)den, (u64*)0);
+    return neg ? -(s64)result : (s64)result;
+}
+
+/* 64-bit signed modulo */
+s64 __moddi3(s64 num, s64 den) {
+    int neg = 0;
+    if (num < 0) { num = -num; neg = 1; }
+    if (den < 0) { den = -den; }
+    u64 rem;
+    __udivmoddi4((u64)num, (u64)den, &rem);
+    return neg ? -(s64)rem : (s64)rem;
 }
