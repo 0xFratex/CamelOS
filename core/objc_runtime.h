@@ -83,6 +83,7 @@ id objc_msgSendSuper(struct objc_super* super, SEL op, ...);
 // --- Class Operations ---
 Class objc_getClass(const char* name);
 Class objc_lookUpClass(const char* name);
+Class objc_getClassByIndex(int index);  // Iterate registered classes
 Class objc_allocateClassPair(Class superclass, const char* name, size_t extraBytes);
 void objc_registerClassPair(Class cls);
 

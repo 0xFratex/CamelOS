@@ -168,8 +168,20 @@ id NSString_initWithCString(id self, SEL cmd, const char* cstr) {
 
 id NSString_initWithFormat(id self, SEL cmd, const char* fmt, ...) {
     (void)cmd;
-    // Simplified - just copy the format string
-    return NSString_initWithCString(self, 0, fmt);
+    // Format the string using vsnprintf
+    CamelOSString* str = (CamelOSString*)self;
+    if (!str || !fmt) return self;
+
+    va_list args;
+    va_start(args, fmt);
+    char buf[512];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    strncpy(str->cstr, buf, sizeof(str->cstr) - 1);
+    str->cstr[sizeof(str->cstr) - 1] = 0;
+    str->length = strlen(str->cstr);
+    return self;
 }
 
 id NSString_stringWithCString(const char* cstr) {

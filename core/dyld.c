@@ -47,6 +47,108 @@ void dyld_init(void) {
     s_printf(" search paths\n");
 }
 
+// Register all built-in framework symbols so loaded Mach-Os can resolve them
+// This is called after the ObjC runtime and Foundation/AppKit are initialized
+void dyld_register_builtin_symbols(void) {
+    // Create virtual image records for built-in frameworks
+    static dyld_image_t foundation_img;
+    memset(&foundation_img, 0, sizeof(foundation_img));
+    strncpy(foundation_img.path, "/System/Library/Frameworks/Foundation.framework/Foundation", 255);
+    strncpy(foundation_img.name, "Foundation", 63);
+    foundation_img.state = DYLD_STATE_LOADED;
+    foundation_img.ref_count = 1;
+
+    static dyld_image_t appkit_img;
+    memset(&appkit_img, 0, sizeof(appkit_img));
+    strncpy(appkit_img.path, "/System/Library/Frameworks/AppKit.framework/AppKit", 255);
+    strncpy(appkit_img.name, "AppKit", 63);
+    appkit_img.state = DYLD_STATE_LOADED;
+    appkit_img.ref_count = 1;
+
+    static dyld_image_t objc_img;
+    memset(&objc_img, 0, sizeof(objc_img));
+    strncpy(objc_img.path, "/usr/lib/libobjc.A.dylib", 255);
+    strncpy(objc_img.name, "libobjc.A.dylib", 63);
+    objc_img.state = DYLD_STATE_LOADED;
+    objc_img.ref_count = 1;
+
+    static dyld_image_t system_img;
+    memset(&system_img, 0, sizeof(system_img));
+    strncpy(system_img.path, "/usr/lib/libSystem.B.dylib", 255);
+    strncpy(system_img.name, "libSystem.B.dylib", 63);
+    system_img.state = DYLD_STATE_LOADED;
+    system_img.ref_count = 1;
+
+    // Register ObjC runtime symbols
+    dyld_register_global_symbol("objc_msgSend", (void*)objc_msgSend, &objc_img);
+    dyld_register_global_symbol("objc_msgSendSuper", (void*)objc_msgSendSuper, &objc_img);
+    dyld_register_global_symbol("objc_getClass", (void*)objc_getClass, &objc_img);
+    dyld_register_global_symbol("objc_lookUpClass", (void*)objc_lookUpClass, &objc_img);
+    dyld_register_global_symbol("objc_allocateClassPair", (void*)objc_allocateClassPair, &objc_img);
+    dyld_register_global_symbol("objc_registerClassPair", (void*)objc_registerClassPair, &objc_img);
+    dyld_register_global_symbol("sel_registerName", (void*)sel_registerName, &objc_img);
+    dyld_register_global_symbol("sel_getUid", (void*)sel_getUid, &objc_img);
+    dyld_register_global_symbol("sel_getName", (void*)sel_getName, &objc_img);
+    dyld_register_global_symbol("class_addMethod", (void*)class_addMethod, &objc_img);
+    dyld_register_global_symbol("class_addIvar", (void*)class_addIvar, &objc_img);
+    dyld_register_global_symbol("class_getInstanceMethod", (void*)class_getInstanceMethod, &objc_img);
+    dyld_register_global_symbol("class_getClassMethod", (void*)class_getClassMethod, &objc_img);
+    dyld_register_global_symbol("class_createInstance", (void*)class_createInstance, &objc_img);
+    dyld_register_global_symbol("class_conformsToProtocol", (void*)class_conformsToProtocol, &objc_img);
+    dyld_register_global_symbol("object_getClass", (void*)object_getClass, &objc_img);
+    dyld_register_global_symbol("object_dispose", (void*)object_dispose, &objc_img);
+    dyld_register_global_symbol("method_getImplementation", (void*)method_getImplementation, &objc_img);
+
+    // Register libSystem symbols (C library functions)
+    dyld_register_global_symbol("malloc", (void*)kmalloc, &system_img);
+    dyld_register_global_symbol("free", (void*)kfree, &system_img);
+    dyld_register_global_symbol("strlen", (void*)strlen, &system_img);
+    dyld_register_global_symbol("strcmp", (void*)strcmp, &system_img);
+    dyld_register_global_symbol("strncmp", (void*)strncmp, &system_img);
+    dyld_register_global_symbol("strcpy", (void*)strcpy, &system_img);
+    dyld_register_global_symbol("strncpy", (void*)strncpy, &system_img);
+    dyld_register_global_symbol("strcat", (void*)strcat, &system_img);
+    dyld_register_global_symbol("strncat", (void*)strncat, &system_img);
+    dyld_register_global_symbol("memset", (void*)memset, &system_img);
+    dyld_register_global_symbol("memcpy", (void*)memcpy, &system_img);
+    dyld_register_global_symbol("memmove", (void*)memmove, &system_img);
+    dyld_register_global_symbol("memcmp", (void*)memcmp, &system_img);
+    dyld_register_global_symbol("snprintf", (void*)snprintf, &system_img);
+    dyld_register_global_symbol("sprintf", (void*)sprintf, &system_img);
+    dyld_register_global_symbol("printf", (void*)s_printf, &system_img);
+
+    // Register all ObjC classes as symbols (so loaded code can use objc_getClass or _OBJC_CLASS_$_ClassName)
+    for (int i = 0; i < 256; i++) {
+        Class cls = objc_getClassByIndex(i);
+        if (!cls || !cls->name) break;
+        // Register as _OBJC_CLASS_$_ClassName (standard Mach-O convention)
+        char sym_name[128];
+        sym_name[0] = 0;
+        strcat(sym_name, "_OBJC_CLASS_$_");
+        strncat(sym_name, cls->name, 110);
+        dyld_register_global_symbol(sym_name, (void*)cls, &foundation_img);
+        // Also register the class name directly for objc_getClass resolution
+        dyld_register_global_symbol(cls->name, (void*)cls, &foundation_img);
+    }
+
+    // Register virtual images in the dyld table
+    int slot1 = -1, slot2 = -1, slot3 = -1, slot4 = -1;
+    for (int i = 0; i < DYLD_MAX_LIBS; i++) {
+        if (g_dyld_libs[i].state == DYLD_STATE_UNLOADED) {
+            if (slot1 < 0) { slot1 = i; }
+            else if (slot2 < 0) { slot2 = i; }
+            else if (slot3 < 0) { slot3 = i; }
+            else if (slot4 < 0) { slot4 = i; break; }
+        }
+    }
+    if (slot1 >= 0) { memcpy(&g_dyld_libs[slot1], &foundation_img, sizeof(dyld_image_t)); }
+    if (slot2 >= 0) { memcpy(&g_dyld_libs[slot2], &appkit_img, sizeof(dyld_image_t)); }
+    if (slot3 >= 0) { memcpy(&g_dyld_libs[slot3], &objc_img, sizeof(dyld_image_t)); }
+    if (slot4 >= 0) { memcpy(&g_dyld_libs[slot4], &system_img, sizeof(dyld_image_t)); }
+
+    s_printf("[dyld] Registered built-in framework symbols (libobjc, Foundation, AppKit, libSystem)\n");
+}
+
 void dyld_set_executable_path(const char* path) {
     if (!path) return;
     strncpy(g_executable_path, path, 255);

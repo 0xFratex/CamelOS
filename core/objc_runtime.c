@@ -151,6 +151,11 @@ Class objc_lookUpClass(const char* name) {
     return objc_getClass(name);
 }
 
+Class objc_getClassByIndex(int index) {
+    if (index < 0 || index >= g_class_count) return 0;
+    return g_classes[index];
+}
+
 Class objc_allocateClassPair(Class superclass, const char* name, size_t extraBytes) {
     if (!name) return 0;
     if (objc_getClass(name)) return 0;  // Already exists
