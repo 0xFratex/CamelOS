@@ -623,8 +623,15 @@ void draw_toolbar(int x, int y, int w) {
 }
 
 // ===== Toolbar Click Handling =====
+// CRITICAL: Uses rising-edge detection (click_edge) to prevent navigation
+// buttons from firing on every frame while the mouse button is held down.
+// Without this, holding the back/forward button triggers fm_nav_back() or
+// fm_nav_forward() at ~60fps, causing rapid uncontrolled navigation and
+// duplicate entries in the directory listing.
 int handle_toolbar_click(int x, int y, int btn, int win_x, int win_y) {
-    if (y >= win_y && y < win_y + TOOLBAR_H && btn == 1) {
+    // Only process on the rising edge of a button press (initial click)
+    int click_edge = (btn == 1 && fm_cur && fm_cur->btn_prev == 0);
+    if (y >= win_y && y < win_y + TOOLBAR_H && btn == 1 && click_edge) {
         int bx = win_x + 6;
         if (x >= bx && x < bx + 28) { fm_nav_back(); return 1; }
         bx += 32;

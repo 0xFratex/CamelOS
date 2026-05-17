@@ -1512,11 +1512,18 @@ static void browser_download_file(const char* url) {
 // SECTION 8: Find on Page
 // ============================================================
 
+// Debounce counter for find-on-page: only search after the user stops
+// typing for a few frames, preventing UI lag on every keystroke.
+static int find_debounce = 0;
+#define FIND_DEBOUNCE_FRAMES 5
+
 static void find_update_matches(void) {
     find_match_count = 0;
     find_current_match = -1;
     if (!find_query[0]) return;
     int qlen = strlen(find_query);
+    // Skip expensive scan for single-character queries (too many false matches)
+    if (qlen < 2) return;
     for (int i = 0; i < page_line_count && find_match_count < MAX_FIND_MATCHES; i++) {
         int llen = strlen(page_lines[i]);
         for (int j = 0; j <= llen - qlen; j++) {
@@ -2102,6 +2109,14 @@ static void render_dev_tools(int x, int y, int w, int h) {
 // ============================================================
 
 static void browser_on_paint(window_t* win, int x, int y, int w, int h) {
+    // Process find-on-page debounce timer
+    if (find_debounce > 0) {
+        find_debounce--;
+        if (find_debounce == 0 && find_active && find_query[0]) {
+            find_update_matches();
+        }
+    }
+
     // Background
     gfx_fill_rect(x, y, w, h, 0xFFFFFFFF);
 
@@ -2728,7 +2743,7 @@ static void browser_on_input(window_t* win, int key) {
             if (find_cursor > 0) {
                 find_cursor--;
                 for (int i = find_cursor; find_query[i]; i++) find_query[i] = find_query[i+1];
-                find_update_matches();
+                find_debounce = FIND_DEBOUNCE_FRAMES;  // Debounce: search after user stops typing
             }
             return;
         }
@@ -2737,7 +2752,7 @@ static void browser_on_input(window_t* win, int key) {
             for (int i = len; i > find_cursor; i--) find_query[i] = find_query[i-1];
             find_query[find_cursor++] = (char)key;
             find_query[len + 1] = 0;
-            find_update_matches();
+            find_debounce = FIND_DEBOUNCE_FRAMES;  // Debounce: search after user stops typing
             return;
         }
         return;

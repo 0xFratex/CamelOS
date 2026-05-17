@@ -124,19 +124,22 @@ static void __attribute__((unused)) draw_loading_overlay(int x, int y, int w, in
 
 // Full event processing during HTTP requests - keeps system responsive
 void http_process_events(void) {
-    rtl8139_poll();  // Poll network card for incoming packets
+    net_poll();  // Poll network card for incoming packets (abstraction layer)
 
     // Poll USB HID and PS/2 mouse so the system doesn't appear frozen
-    // while the browser is loading a page (fixes "browser freezes" bug).
+    // while the browser is loading a page.
     extern void usb_hid_poll(void);
     usb_hid_poll();
     extern void mouse_poll_fallback(void);
     mouse_poll_fallback();
 
-    // Consume any pending keyboard/mouse events so the input queue
-    // doesn't overflow during long network operations.
-    extern int sys_get_key(void);
-    while (sys_get_key() != 0) { /* drain */ }
+    // Do NOT drain keyboard events here. Previously, all pending key events
+    // were discarded, which prevented the user from pressing Escape to cancel
+    // a long-running or stuck HTTP request. Now we leave keyboard events in
+    // the queue so the browser's input handler can process them (e.g. Escape
+    // to abort navigation). The input queue is large enough that it won't
+    // overflow during a typical page load, and if it does, the oldest events
+    // are simply lost — which is acceptable for keyboard input during loading.
 
     // Minimal sleep to allow other interrupts to fire and prevent
     // the CPU from being consumed 100% by polling loops.

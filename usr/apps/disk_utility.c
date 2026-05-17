@@ -734,8 +734,13 @@ static void op_erase_disk(void) {
     g_state.operation_running = 1;
     strcpy(g_state.status_msg, "Erasing disk...");
 
-    // Use total_blocks from disk state
-    int result = pfs32_format("CamelOS", g_state.disks[g_state.selected_disk].total_blocks);
+    // Use pfs32_format_fast() instead of pfs32_format() to avoid the
+    // FULL_DISK_UTIL bad block scan, which does a write/read/verify test
+    // of EVERY data block on disk. On a large disk this takes minutes and
+    // completely freezes the UI, making it appear as if the disk has
+    // "disappeared". pfs32_format_fast() produces the same result (clean
+    // PFS32 filesystem) but skips the destructive bad block scan.
+    int result = pfs32_format_fast("CamelOS", g_state.disks[g_state.selected_disk].total_blocks);
 
     if (result == 0) {
         strcpy(g_state.status_msg, "Erase complete: Disk formatted as PFS32");

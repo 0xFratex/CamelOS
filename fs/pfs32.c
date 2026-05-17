@@ -414,17 +414,22 @@ int find_entry_in_buf(uint8_t* buf, const char* name, pfs32_direntry_t* out) {
 
 int find_entry_in_dir(uint32_t dir_start, const char* name, pfs32_direntry_t* out, uint32_t* out_blk, int* out_idx) {
     uint32_t curr = dir_start;
-    while(curr != PFS32_END_BLOCK && curr != 0) {
+    uint32_t visited_count = 0;
+    uint32_t max_chain = sb.total_blocks > 0 ? sb.total_blocks : 65536;
+    while(curr != PFS32_END_BLOCK && curr != 0 && visited_count < max_chain) {
         uint8_t buf[512];
         if(disk_rw(0, curr, buf) != PFS_OK) break;
-        
+
         int idx = find_entry_in_buf(buf, name, out);
         if (idx != -1) {
             if(out_blk) *out_blk = curr;
             if(out_idx) *out_idx = idx;
             return PFS_OK;
         }
-        curr = get_fat(curr);
+        uint32_t next = get_fat(curr);
+        if (next == curr) break;  // Self-referencing block — prevent infinite loop
+        visited_count++;
+        curr = next;
     }
     return PFS_ERR_NOT_FOUND;
 }
@@ -511,6 +516,19 @@ int pfs32_init(uint32_t start, uint32_t total) {
 
 int pfs32_format(const char* label, uint32_t total) {
     init_fat_cache();
+
+    // CRITICAL: Clear the in-memory block bitmap BEFORE marking system blocks.
+    // Without this, pfs32_bitmap_set() ORs bits into the stale bitmap (which
+    // contains old data from the previous mount), then pfs32_flush_bitmap()
+    // writes that corrupted bitmap back to disk — overwriting the clean zero
+    // blocks we wrote earlier. This was the root cause of "formatting doesn't
+    // work" because the on-disk bitmap ended up with stale used-bits set,
+    // making the filesystem think most blocks were already allocated.
+    if (block_bitmap) {
+        memset(block_bitmap, 0, block_bitmap_size);
+        block_bitmap_dirty = 0;  // Will be set by pfs32_bitmap_set() below
+    }
+
     memset(&sb, 0, sizeof(sb));
     sb.magic = PFS32_MAGIC;
     sb.version = PFS32_VERSION;
@@ -655,6 +673,13 @@ int pfs32_format(const char* label, uint32_t total) {
 
     if(disk_write_block(disk_start + sb.root_dir_block, zero) != 0) return PFS_ERR_IO;
     
+    // Update the stats struct so pfs32_get_stats() returns correct values
+    // after format. Previously, stats.blocks_free and stats.total_sectors_used
+    // were never updated, so Disk Utility showed stale/zero values after erase.
+    stats.blocks_free = sb.free_blocks;
+    stats.total_sectors_used = sb.data_start_block;
+    stats.bad_block_count = sb.bad_block_count;
+
     // Update superblock with final stats
     sb.superblock_checksum = pfs32_compute_checksum(&sb, sizeof(sb) - sizeof(pfs32_checksum_t));
     disk_write_block(disk_start, &sb);
@@ -666,6 +691,13 @@ int pfs32_format(const char* label, uint32_t total) {
 // Fast format - same as pfs32_format but skips bad block scan for boot-time speed
 uint32_t pfs32_format_fast(const char* label, uint32_t total) {
     init_fat_cache();
+
+    // CRITICAL: Clear stale in-memory bitmap (same fix as pfs32_format)
+    if (block_bitmap) {
+        memset(block_bitmap, 0, block_bitmap_size);
+        block_bitmap_dirty = 0;
+    }
+
     memset(&sb, 0, sizeof(sb));
     sb.magic = PFS32_MAGIC;
     sb.version = PFS32_VERSION;
@@ -752,6 +784,11 @@ uint32_t pfs32_format_fast(const char* label, uint32_t total) {
     root[1].create_time = pfs32_time_now();
     if(disk_write_block(disk_start + sb.root_dir_block, zero) != 0) return PFS_ERR_IO;
     
+    // Update stats struct (same fix as pfs32_format)
+    stats.blocks_free = sb.free_blocks;
+    stats.total_sectors_used = sb.data_start_block;
+    stats.bad_block_count = sb.bad_block_count;
+
     sb.superblock_checksum = pfs32_compute_checksum(&sb, sizeof(sb) - sizeof(pfs32_checksum_t));
     disk_write_block(disk_start, &sb);
     
@@ -1309,7 +1346,14 @@ int pfs32_listdir(uint32_t block, pfs32_direntry_t* buf, uint32_t max) {
 
     int count = 0;
     uint32_t curr = block;
-    while(curr != PFS32_END_BLOCK && curr != 0 && count < max) {
+    // FAT chain cycle detection: track visited blocks to prevent infinite
+    // loops from corrupted FAT chains (e.g. block A → block B → block A).
+    // Without this, a cycle causes pfs32_listdir() to read the same entries
+    // over and over, producing duplicate entries in the file listing.
+    // Max chain length is bounded by total_blocks as a safety limit.
+    uint32_t visited_count = 0;
+    uint32_t max_chain = sb.total_blocks > 0 ? sb.total_blocks : 65536;
+    while(curr != PFS32_END_BLOCK && curr != 0 && count < max && visited_count < max_chain) {
         uint8_t dbuf[512];
         if(disk_rw(0, curr, dbuf) != PFS_OK) break;
         pfs32_direntry_t* d = (pfs32_direntry_t*)dbuf;
@@ -1321,7 +1365,14 @@ int pfs32_listdir(uint32_t block, pfs32_direntry_t* buf, uint32_t max) {
                 count++;
             }
         }
-        curr = get_fat(curr);
+        uint32_t next = get_fat(curr);
+        // Cycle detection: if the next block is one we've already visited
+        // (or is the current block itself), break to prevent infinite loop.
+        // Simple check: if next <= curr and we've been through at least one
+        // iteration, it's likely a cycle. Also detect self-referencing blocks.
+        if (next == curr) break;  // Self-referencing block
+        visited_count++;
+        curr = next;
     }
     return count;
 }

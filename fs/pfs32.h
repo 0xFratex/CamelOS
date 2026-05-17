@@ -221,6 +221,7 @@ typedef struct {
 // Lifecycle
 int pfs32_init(uint32_t disk_start, uint32_t disk_size);
 int pfs32_format(const char* volume_label, uint32_t total_blocks);
+uint32_t pfs32_format_fast(const char* volume_label, uint32_t total_blocks);
 int pfs32_sync(void);
 int pfs32_fsck(int repair);
 
