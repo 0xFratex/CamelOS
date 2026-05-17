@@ -90,7 +90,7 @@ lib/setjmp.o: lib/setjmp.s
         gcc     -m32    -c      $<      -o      $@
 
 system.bin:     $(KERNEL_OBJ)
-        $(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L$(GCC_LIB32)
+        $(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L$(GCC_LIB32)  -lgcc
         objcopy -O      binary  system.elf      system.bin
 
 #       ---     APP     COMPILATION     (Hybrid: .cdl legacy + .dmg/.app macOS)       ---
@@ -156,7 +156,7 @@ installer/payload.o:    installer/payload.asm   system.bin      mbr.bin math.cdl
         $(AS)   -f      elf32   $<      -o      $@
 
 installer.elf:  $(INSTALLER_OBJ)        math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl
-        $(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L$(GCC_LIB32)
+        $(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L$(GCC_LIB32)  -lgcc
 
 camel_install.iso:      installer.elf
         mkdir   -p      iso/boot/grub
