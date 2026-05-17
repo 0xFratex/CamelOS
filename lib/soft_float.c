@@ -1010,56 +1010,5 @@ s32 __unorddf2(double a, double b) {
     return (df_is_nan(ua.i) || df_is_nan(ub.i)) ? 1 : 0;
 }
 
-/* ================================================================
- *  64-bit Integer Division Helpers
- *  Required on 32-bit targets when code uses 64-bit arithmetic.
- *  Normally provided by libgcc, but we're freestanding.
- * ================================================================ */
-
-/* Combined unsigned divmod: returns quotient, stores remainder via pointer */
-u64 __udivmoddi4(u64 num, u64 den, u64 *rem) {
-    if (den == 0) {
-        if (rem) *rem = 0;
-        return 0;
-    }
-    u64 quot = 0;
-    int shift = 0;
-    while (den <= num && !(den & ((u64)1 << 63))) { den <<= 1; shift++; }
-    while (shift >= 0) {
-        if (num >= den) { num -= den; quot |= (u64)1 << shift; }
-        den >>= 1; shift--;
-    }
-    if (rem) *rem = num;
-    return quot;
-}
-
-/* 64-bit unsigned division */
-u64 __udivdi3(u64 num, u64 den) {
-    return __udivmoddi4(num, den, (u64*)0);
-}
-
-/* 64-bit unsigned modulo */
-u64 __umoddi3(u64 num, u64 den) {
-    u64 rem;
-    __udivmoddi4(num, den, &rem);
-    return rem;
-}
-
-/* 64-bit signed division */
-s64 __divdi3(s64 num, s64 den) {
-    int neg = 0;
-    if (num < 0) { num = -num; neg = !neg; }
-    if (den < 0) { den = -den; neg = !neg; }
-    u64 result = __udivmoddi4((u64)num, (u64)den, (u64*)0);
-    return neg ? -(s64)result : (s64)result;
-}
-
-/* 64-bit signed modulo */
-s64 __moddi3(s64 num, s64 den) {
-    int neg = 0;
-    if (num < 0) { num = -num; neg = 1; }
-    if (den < 0) { den = -den; }
-    u64 rem;
-    __udivmoddi4((u64)num, (u64)den, &rem);
-    return neg ? -(s64)rem : (s64)rem;
-}
+/* 64-bit integer division helpers (__udivmoddi4, __udivdi3, __umoddi3,
+ * __divdi3, __moddi3) are already provided by lib/libc_compat.c */
