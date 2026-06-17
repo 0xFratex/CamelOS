@@ -1872,27 +1872,37 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
                            uint8_t* buffer, size_t max_len) {
     uint8_t header[5];
 
-    // Skip spurious leading null bytes.
+    // Skip spurious non-TLS bytes before the TLS record.
     //
-    // Some servers (notably Google via QEMU SLIRP) send a small TCP segment
-    // of all-zero bytes before the actual TLS response. These zeros end up
-    // in the socket recv buffer ahead of the real TLS data. When we read the
-    // 5-byte TLS record header, we get [00 00 00 00 00] which is
-    // content_type=0, length=0 — not a valid TLS record.
+    // Some servers (notably Google via QEMU SLIRP) send spurious TCP data
+    // before the real TLS response. This data arrives in the socket buffer
+    // ahead of the ServerHello and can be all-zeros or other non-TLS bytes.
     //
-    // TLS record content_type is always 20-23 (ChangeCipherSpec, Alert,
-    // Handshake, ApplicationData). A null byte is never a valid start of a
-    // TLS record, so we can safely skip leading zeros.
+    // TLS record content_type is always 20-23:
+    //   20 = ChangeCipherSpec
+    //   21 = Alert
+    //   22 = Handshake
+    //   23 = ApplicationData
+    // Any other value means we're reading spurious data, not a TLS record.
+    // Read one byte at a time until we find a valid content_type.
     int received = tls_recv_all(session->socket_fd, header, 1);
     if (received < 1) {
         return TLS_ERR_SOCKET;
     }
-    while (header[0] == 0) {
-        s_printf("[TLS] Skipping spurious null byte before TLS record\n");
+    int skip_count = 0;
+    while (header[0] < 20 || header[0] > 23) {
+        skip_count++;
+        if (skip_count <= 20) {
+            s_printf("[TLS] Skipping non-TLS byte 0x%02X before TLS record\n", header[0]);
+        }
         received = tls_recv_all(session->socket_fd, header, 1);
         if (received < 1) {
+            s_printf("[TLS] Failed to read past %d spurious bytes\n", skip_count);
             return TLS_ERR_SOCKET;
         }
+    }
+    if (skip_count > 0) {
+        s_printf("[TLS] Skipped %d spurious bytes, found content_type=%d\n", skip_count, header[0]);
     }
     // Read the remaining 4 bytes of the header
     received = tls_recv_all(session->socket_fd, header + 1, 4);
@@ -1907,8 +1917,6 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
              hdr->content_type, ntohs(hdr->version), ntohs(hdr->length));
 
     // CRITICAL FIX: TLS record length is in network byte order (big-endian)
-    // Without ntohs(), on little-endian x86 the length is byte-swapped, causing
-    // us to wait for the wrong number of bytes — classic TLS deadlock.
     uint16_t len = ntohs(hdr->length);
     if (len > max_len) {
         len = max_len;
