@@ -124,47 +124,47 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
 void rtl8139_receive_packets() {
     if (!rtl_dev.io_base || !rx_buffer_aligned) return;
 
-    // Check if there are packets to process.
+    // Check if there are packets to process by comparing the hardware write
+    // pointer (CBR) against our software read pointer.
     //
     // BUG FIX: Previously this checked bit 0 of the CMD register (0x01 = RE,
-    // Receiver Enable), which is ALWAYS 1 when the receiver is enabled. The
-    // check was therefore inverted: it returned "no packets" whenever the
-    // receiver was on, which is always. As a result, rtl8139_poll() (called
-    // from net_poll() in every k_connect / k_recvfrom / DNS loop iteration)
-    // NEVER processed any packets — the function returned immediately every
-    // time. The only way packets got processed was via the ISR handler
-    // (rtl8139_handler) firing on the ROK interrupt, which was unreliable
-    // and caused SYN-ACKs to arrive "late" (actually they were in the RX
-    // buffer the whole time, just never drained by polling).
+    // Receiver Enable), which is ALWAYS 1 when the receiver is enabled.
     //
-    // The RTL8139 has no "buffer empty" bit in the CMD register. The correct
-    // way to poll is to check the packet header at the current read position:
-    // if the ROK bit (bit 0 of the status field) is set, a valid packet is
-    // waiting. We also accept the ROK bit in the ISR as a secondary trigger.
-    uint16_t offset = current_packet_ptr % 32768;
-    uint32_t header_val = *(uint32_t*)(rx_buffer_aligned + offset);
-    uint16_t status = header_val & 0xFFFF;
-    uint16_t length = (header_val >> 16) & 0xFFFF;
+    // The RTL8139 uses a ring buffer: hardware writes packets and advances
+    // CBR (Current Buffer Address, 0x3A). Software reads packets and advances
+    // CAPR (Current Address of Packet Read, 0x38). If CAPR != CBR (mod 32768),
+    // there is at least one packet waiting to be read.
+    //
+    // Note: CAPR is typically set to (packet_offset - 16) because the hardware
+    // needs 16 bytes of margin. We account for this offset in the comparison.
+    uint16_t cbr = inw(rtl_dev.io_base + 0x3A) % 32768;
+    uint16_t capr = inw(rtl_dev.io_base + RTL_REG_CAPR);
+    // CAPR is stored as (read_offset - 16) mod 32768. Recover the actual
+    // read offset by adding 16.
+    uint16_t read_offset = (capr + 16) % 32768;
 
-    // No valid packet waiting if ROK bit is not set, or length is implausible.
-    // Note: we must also check the ISR ROK bit because the status field can
-    // be stale (leftover from a previous packet that we already processed).
-    uint16_t isr = inw(rtl_dev.io_base + RTL_REG_ISR);
-    if (!(status & 0x01) && !(isr & 0x01)) {
-        return;  // No packets
+    s_printf("[RTL8139] poll: current_packet_ptr=%d read_offset=%d cbr=%d (pkt_waiting=%d)\n",
+             current_packet_ptr % 32768, read_offset, cbr, cbr != read_offset);
+
+    if (cbr == read_offset) {
+        return;  // No packets pending
     }
-    // If ISR says ROK but status doesn't, the header may not be written yet;
-    // try anyway — the loop below will validate the header before using it.
 
     int packets_processed = 0;
 
-    // Process batch of packets. The loop condition checks both the ISR ROK
-    // bit and the status field at the current read position.
+    // Process batch of packets — keep going while CBR != read pointer.
     while (packets_processed < RX_MAX_BATCH) {
-        offset = current_packet_ptr % 32768;
-        header_val = *(uint32_t*)(rx_buffer_aligned + offset);
-        status = header_val & 0xFFFF;
-        length = (header_val >> 16) & 0xFFFF;
+        uint16_t cur_cbr = inw(rtl_dev.io_base + 0x3A) % 32768;
+        uint16_t cur_capr = inw(rtl_dev.io_base + RTL_REG_CAPR);
+        uint16_t cur_read_offset = (cur_capr + 16) % 32768;
+        if (cur_cbr == cur_read_offset) {
+            break;  // No more packets
+        }
+
+        uint16_t offset = current_packet_ptr % 32768;
+        uint32_t header_val = *(uint32_t*)(rx_buffer_aligned + offset);
+        uint16_t status = header_val & 0xFFFF;
+        uint16_t length = (header_val >> 16) & 0xFFFF;
 
         // Stop if no valid packet at this position.
         if (!(status & 0x01) || length < 60 || length > 1536) {
