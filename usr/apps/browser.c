@@ -921,9 +921,11 @@ static void browser_load_page(const char* url) {
         char* sp = strchr(response, ' ');
         if (sp) { sp++; while (*sp >= '0' && *sp <= '9') { http_status = http_status * 10 + (*sp - '0'); sp++; } }
     }
+    s_printf("[Browser] HTTP status: %d\n", http_status);
 
     // Handle redirects
     if (http_status == 301 || http_status == 302 || http_status == 303 || http_status == 307 || http_status == 308) {
+        s_printf("[Browser] Redirect detected (status=%d), searching for Location header...\n", http_status);
         char* location = NULL;
         char* h = response;
         while (*h) {
@@ -942,6 +944,7 @@ static void browser_load_page(const char* url) {
             char redirect_url[256]; int ri = 0;
             while (location[ri] && location[ri] != '\r' && location[ri] != '\n' && ri < 255) { redirect_url[ri] = location[ri]; ri++; }
             redirect_url[ri] = 0;
+            s_printf("[Browser] Redirect Location found: '%s'\n", redirect_url);
 
             if (redirect_url[0] == '/' && redirect_url[1] == '/') {
                 char resolved[256]; strcpy(resolved, use_tls ? "https:" : "http:"); strcat(resolved, redirect_url);
@@ -972,9 +975,20 @@ static void browser_load_page(const char* url) {
             strncpy(url_buf, redirect_url, 255); url_buf[255] = 0;
             url_cursor = strlen(url_buf);
             strcpy(status_text, "Redirecting...");
-            browser_load_page(redirect_url);
             kfree(response);
+            browser_load_page(redirect_url);
             return;
+        } else {
+            s_printf("[Browser] Redirect status %d but NO Location header found!\n", http_status);
+            // Dump first 200 bytes of response so we can see the headers
+            s_printf("[Browser] Response first 200 bytes:\n");
+            int dump_len = total_read > 200 ? 200 : total_read;
+            for (int i = 0; i < dump_len; i++) {
+                char c = response[i];
+                if (c < 32 && c != '\n' && c != '\r' && c != '\t') c = '.';
+                s_printf("%c", c);
+            }
+            s_printf("\n--- end response dump ---\n");
         }
     }
 
