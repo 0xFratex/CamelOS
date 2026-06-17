@@ -26,3 +26,17 @@ void tss_set_kernel_stack(uint32_t esp0) {
     (void)esp0;
     // Stub - installer runs entirely in kernel mode
 }
+
+// TCP maintenance stubs.
+// hal/cpu/timer.c now calls these from the timer IRQ to keep the browser's
+// connections alive during long fetches. The installer shares timer.o with
+// the kernel build but does NOT link core/tcp.o (it has no networking),
+// so we provide no-op stubs here. The installer's timer_callback will
+// happily call them every ~200ms with no effect.
+void tcp_retransmit_check(void) {
+    // Stub - installer has no TCP stack
+}
+
+void tcp_process_listeners(void) {
+    // Stub - installer has no TCP listeners
+}
