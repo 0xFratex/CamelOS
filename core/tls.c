@@ -2537,7 +2537,7 @@ int tls_connect(tls_session_t* session, const char* hostname, uint16_t port) {
         kfree(buffer);
         return TLS_ERR_HANDSHAKE;
     }
-    s_printf("[TLS] Step 1 OK: ClientHello sent\n");
+    s_printf("[TLS] Step 1 OK: ClientHello sent (%d bytes)\n", ret);
     session->state = TLS_STATE_HELLO_SENT;
 
     // Receive ServerHello
