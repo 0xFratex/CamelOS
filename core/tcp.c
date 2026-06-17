@@ -280,9 +280,15 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
     uint16_t dst_port = ntohs(tcp->dest_port);
     uint8_t pkt_flags = tcp->flags;
 
+    s_printf("[TCP] recv packet: %d.%d.%d.%d:%d -> %d.%d.%d.%d:%d flags=0x%02X len=%d\n",
+             (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF, (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_port,
+             (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF, (dst_ip >> 8) & 0xFF, dst_ip & 0xFF, dst_port,
+             pkt_flags, len);
+
     // Find connection
     tcp_connection_t* conn = tcp_find_connection(dst_ip, dst_port, src_ip, src_port);
     if (!conn) {
+        s_printf("[TCP] No matching connection found\n");
         /* No existing connection found. Check if there's a listener on this port. */
         if (pkt_flags & TCP_SYN) {
             /* Incoming SYN to a potentially listening port */
@@ -291,6 +297,8 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
         /* Otherwise, silently drop the packet */
         return;
     }
+
+    s_printf("[TCP] Matched conn state=%d\n", conn->state);
 
     uint32_t seq = ntohl(tcp->seq_num);
     uint32_t ack = ntohl(tcp->ack_num);

@@ -159,37 +159,57 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
 
     // For TCP sockets
     if (sock->type == SOCK_STREAM) {
+        char rip_str[16];
+        extern void ip_to_str(uint32_t ip, char* buf);
+        ip_to_str(sock->remote_ip, rip_str);
+        s_printf("[TCP] k_connect: connecting to %s:%d\n", rip_str, sock->remote_port);
+
+        // Check if network is configured
+        extern uint32_t net_get_ip(void);
+        uint32_t my_ip = net_get_ip();
+        ip_to_str(my_ip, rip_str);
+        s_printf("[TCP] Local IP: %s\n", rip_str);
+        if (my_ip == 0) {
+            s_printf("[TCP] ERROR: net_get_ip() returned 0 — network not configured\n");
+            return -1;
+        }
+
         // Establish TCP connection
         sock->tcp_conn = tcp_connect_with_ptr(sock->remote_ip, sock->remote_port);
         if (!sock->tcp_conn) {
+            s_printf("[TCP] ERROR: tcp_connect_with_ptr returned NULL\n");
             return -1;
         }
-        
+
         sock->local_port = tcp_conn_get_local_port(sock->tcp_conn);
         sock->state = SOCKET_CONNECTING;
+        s_printf("[TCP] SYN sent, local_port=%d, waiting for SYN-ACK...\n", sock->local_port);
 
         // Wait for connection (blocking) - OPTIMIZED polling
         if (sock->blocking) {
             uint32_t start = get_tick_count();
             uint32_t timeout_ticks = sock->timeout / 10; // Convert to ticks
-            
+
             while (sock->state != SOCKET_CONNECTED) {
                 // Poll NIC — small batch to avoid CPU starvation
                 for (int i = 0; i < 4; i++) {
                     net_poll();
                 }
-                
+
                 // Check if connection is established
                 if (tcp_conn_is_established(sock->tcp_conn)) {
                     sock->state = SOCKET_CONNECTED;
                     socket_setup_tcp_callbacks(fd);
+                    s_printf("[TCP] Connection ESTABLISHED after %d ticks\n", get_tick_count() - start);
                     break;
                 }
-                
+
                 // Check timeout
                 uint32_t elapsed = get_tick_count() - start;
                 if (elapsed > timeout_ticks) {
                     sock->state = SOCKET_ERROR;
+                    s_printf("[TCP] TIMEOUT after %d ticks (conn state=%d)\n", elapsed,
+                             sock->tcp_conn ? ((tcp_connection_t*)sock->tcp_conn)->state : -1);
                     return -1;
                 }
 
