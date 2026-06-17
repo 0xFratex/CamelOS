@@ -690,9 +690,11 @@ static void browser_load_page(const char* url) {
     // DNS
     char ip_str[16];
     extern int dns_resolve(const char* name, char* ip_buf, int ip_buf_len);
+    s_printf("[Browser] DNS resolve: '%s'\n", host);
     int dns_ok = dns_resolve(host, ip_str, sizeof(ip_str));
 
     if (dns_ok != 0) {
+        s_printf("[Browser] DNS FAILED for '%s' (err=%d)\n", host, dns_ok);
         error_type = ERR_DNS;
         strncpy(error_detail, host, 127); error_detail[127] = 0;
         page_line_count = 0;
@@ -700,6 +702,7 @@ static void browser_load_page(const char* url) {
         is_loading = 0; load_progress = 0;
         return;
     }
+    s_printf("[Browser] DNS OK: '%s' -> %s\n", host, ip_str);
 
     load_progress = 15;
 

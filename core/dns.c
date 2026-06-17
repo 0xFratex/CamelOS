@@ -10,7 +10,7 @@
 // ============================================================================
 // DEBUG CONFIGURATION - Set to 0 for production
 // ============================================================================
-#define DNS_DEBUG_ENABLED     0
+#define DNS_DEBUG_ENABLED     1
 
 #define DNS_CACHE_SIZE 32     // Increased cache size
 
@@ -179,9 +179,16 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
                                 int cname_depth) {
     if (cname_depth > DNS_MAX_CNAME_DEPTH) return -1;
 
+#if DNS_DEBUG_ENABLED
+    s_printf("[DNS] Resolving '%s' (cname_depth=%d)\n", domain, cname_depth);
+#endif
+
     // 1. Check cache first (with TTL expiration)
     uint32_t cached_ip;
     if (dns_cache_lookup(domain, &cached_ip)) {
+#if DNS_DEBUG_ENABLED
+        s_printf("[DNS] Cache hit for '%s'\n", domain);
+#endif
         ip_to_str(cached_ip, ip_out);
         return 0;
     }
@@ -189,11 +196,25 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
     // 2. Ensure ARP for gateway is resolved first
     extern int arp_resolve(uint32_t ip, uint8_t* mac_out);
     uint8_t gw_mac[6];
-    arp_resolve(dns_server_ip, gw_mac);
+    int arp_ok = arp_resolve(dns_server_ip, gw_mac);
+#if DNS_DEBUG_ENABLED
+    {
+        char dns_str[16];
+        ip_to_str(dns_server_ip, dns_str);
+        s_printf("[DNS] DNS server: %s, ARP resolve: %s, MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                 dns_str, arp_ok ? "OK" : "FAIL",
+                 gw_mac[0], gw_mac[1], gw_mac[2], gw_mac[3], gw_mac[4], gw_mac[5]);
+    }
+#endif
 
     // 3. Query with retry logic
     int s = k_socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) return -1;
+    if (s < 0) {
+#if DNS_DEBUG_ENABLED
+        s_printf("[DNS] ERROR: k_socket() failed\n");
+#endif
+        return -1;
+    }
 
     // Mark the DNS socket non-blocking. Previously it inherited the default
     // blocking mode, and k_recvfrom() would internally block for up to
@@ -240,11 +261,16 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
         q->qclass = htons(1);  // class IN
         len += sizeof(dns_question_t);
 
-        k_sendto(s, pkt, len, 0, &dest);
+        int send_result = k_sendto(s, pkt, len, 0, &dest);
+#if DNS_DEBUG_ENABLED
+        s_printf("[DNS] Retry %d: sent %d bytes (send_result=%d), txid=%u, waiting for response...\n",
+                 retry, len, send_result, txid);
+#endif
 
         // Receive with per-retry timeout
         uint32_t start = get_tick_count();
         int timeout = retry_timeouts[retry];
+        int poll_count = 0;
 
         while ((get_tick_count() - start) < (uint32_t)timeout) {
             extern void net_poll(void);
@@ -254,15 +280,24 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
             extern void http_process_events(void);
             http_process_events();
 
+            poll_count++;
             int r = k_recvfrom(s, resp, 4096, 0, 0);
             if (r > (int)sizeof(dns_header_t)) {
                 dns_header_t* rhdr = (dns_header_t*)resp;
+
+#if DNS_DEBUG_ENABLED
+                s_printf("[DNS] Received %d bytes after %d polls, txid=%u (expected %u)\n",
+                         r, poll_count, ntohs(rhdr->id), txid);
+#endif
 
                 // Verify this is a response to our query
                 if (ntohs(rhdr->id) != txid) continue;
                 if (!(ntohs(rhdr->flags) & 0x8000)) continue;  // not a response
 
                 uint16_t ancount = ntohs(rhdr->ancount);
+#if DNS_DEBUG_ENABLED
+                s_printf("[DNS] Response: ancount=%u, flags=0x%04X\n", ancount, ntohs(rhdr->flags));
+#endif
                 if (ancount == 0) continue;
 
                 // Skip question section
@@ -311,24 +346,39 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
                     // A record found - cache and return
                     dns_cache_store(domain, answer_ip, best_ttl);
                     ip_to_str(answer_ip, ip_out);
+#if DNS_DEBUG_ENABLED
+                    s_printf("[DNS] Resolved '%s' -> %s (after %d polls)\n", domain, ip_out, poll_count);
+#endif
                     k_close(s);
                     return 0;
                 } else if (found_cname) {
                     // No A record but CNAME found - follow the chain
+#if DNS_DEBUG_ENABLED
+                    s_printf("[DNS] CNAME chain: '%s' -> '%s'\n", domain, cname);
+#endif
                     k_close(s);
                     return dns_resolve_internal(cname, ip_out, max_len,
                                                 cname_depth + 1);
                 }
 
                 // No useful records in this response, try next retry
+#if DNS_DEBUG_ENABLED
+                s_printf("[DNS] No A/CNAME records in response, retrying\n");
+#endif
                 break;
             }
 
             // Brief pause before polling again
             for (volatile int i = 0; i < 500; i++) asm volatile("pause");
         }
+#if DNS_DEBUG_ENABLED
+        s_printf("[DNS] Retry %d timed out after %d polls (no response)\n", retry, poll_count);
+#endif
     }
 
+#if DNS_DEBUG_ENABLED
+    s_printf("[DNS] FAILED to resolve '%s' after %d retries\n", domain, max_retries);
+#endif
     k_close(s);
     return -1;
 }
