@@ -18,6 +18,14 @@
 #include "../dock.h"
 #include "../../core/window_server.h"
 #include "../libs/browser_dom.h"
+// browser_enhanced.c — external resource loader (<link rel=stylesheet>,
+// <script src=...>). Was compiled but never called before, which is why
+// external CSS/JS were silently dropped and only inline <style>/<script>
+// were parsed. We now wire it in after dom_parse_html succeeds.
+#include "../libs/browser_bridge.h"
+extern void browser_set_current_url_for_resources(const char* url);
+extern void browser_process_link_tags(const char* html);
+extern void browser_process_script_tags(const char* html, char* inline_scripts, int max_inline_len);
 #include "mujs.h"
 #include "../../common/serial.h"
 
@@ -574,7 +582,11 @@ static void js_browser_parseInt(js_State* J) {
 // SECTION 6: HTTP Fetch with HTTPS support
 // ============================================================
 
-#define BROWSER_RESPONSE_SIZE 131072  // 128KB — modern pages are 100KB+; 32KB was too small; 256KB causes fragmentation
+#define BROWSER_RESPONSE_SIZE 524288  // 512KB — bumped from 128KB. Many real pages
+                                         // (Google, YouTube, news sites) are 200-500KB
+                                         // decompressed. The 128KB cap silently truncated
+                                         // them mid-body, often losing the entire <head>
+                                         // where stylesheets and scripts are referenced.
 
 // Decode chunked transfer-encoding in-place
 static int decode_chunked(char* body, int body_len) {
@@ -832,8 +844,21 @@ static void browser_load_page(const char* url) {
 
     uint32_t browser_recv_start = get_tick_count();
     #define BROWSER_RECV_TIMEOUT 30000  // 30 seconds — allow more time for slow connections
+    extern int sys_get_key(void);  // from hal/drivers/keyboard.c
     for (int retry = 0; retry < 30000 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
         if (get_tick_count() - browser_recv_start > BROWSER_RECV_TIMEOUT) break;
+
+        // Escape cancels the in-flight request. Previously the input callback
+        // (which checks is_loading) was never dispatched during a fetch, so
+        // the user could not abort a stuck page load. Now we drain the key
+        // queue directly from the recv loop.
+        int k = sys_get_key();
+        if (k == 27) {  // ESC
+            strcpy(status_text, "Stopped");
+            s_printf("[Browser] Load cancelled by user (ESC)\n");
+            break;
+        }
+
         // Poll NIC in bursts to drain packets faster
         for (int p = 0; p < 8; p++) { extern void rtl8139_poll(); rtl8139_poll(); }
         int n;
@@ -851,12 +876,18 @@ static void browser_load_page(const char* url) {
             // Yield CPU properly by processing network/GUI events
             http_process_events();
         }
-        // Process GUI events less frequently to reduce overhead
-        if ((retry & 0x7) == 0) http_process_events();
+        // Pump GUI events every iteration. Previously this was throttled to
+        // every 8th iteration (~160ms+ between pumps when k_recvfrom blocks),
+        // which made the system feel unresponsive and starved the timer IRQ's
+        // TCP retransmit path. http_process_events() already throttles via
+        // timer_sleep(1) (~20ms), so calling it every iteration is cheap.
+        http_process_events();
 
-        // Repaint the browser window every 16 iterations to keep
-        // the progress bar and UI responsive during page loads.
-        if ((retry & 0xF) == 0 && browser_window) {
+        // Repaint the browser window every iteration so the progress bar
+        // animates smoothly and the user sees continuous feedback. The paint
+        // callback is fast (clipped to dirty regions by gfx_hal) and the
+        // cost is dominated by gfx_swap_buffers, which we already pay.
+        if (browser_window) {
             window_t* bw = (window_t*)browser_window;
             if (bw->paint_callback) {
                 typedef void (*pcb)(window_t*,int,int,int,int);
@@ -1006,6 +1037,19 @@ static void browser_load_page(const char* url) {
                 if (new_total < BROWSER_RESPONSE_SIZE) {
                     memcpy(body, decompressed, decompressed_len + 1);
                     total_read = new_total;
+                } else {
+                    // Decompressed body exceeds the buffer. Previously this path
+                    // silently dropped the decompressed data, leaving the still-
+                    // gzipped binary in `body` for the DOM parser to choke on.
+                    // Now we copy as much as fits and log a warning so the user
+                    // can see why a large page may have rendered partially.
+                    int fit = BROWSER_RESPONSE_SIZE - header_len - 1;
+                    if (fit < 0) fit = 0;
+                    memcpy(body, decompressed, fit);
+                    body[fit] = 0;
+                    total_read = header_len + fit;
+                    s_printf("[Browser] WARNING: decompressed body %u > buffer %d, truncated to %d\n",
+                             decompressed_len, BROWSER_RESPONSE_SIZE - header_len - 1, fit);
                 }
                 s_printf("[Browser] Gzip decompressed: %d -> %d bytes\n", body_len, decompressed_len);
             }
@@ -1216,11 +1260,36 @@ static void browser_load_page(const char* url) {
         dom_set_bridge_document(dom_doc);
         int dom_ok = dom_parse_html(dom_doc, body);
         if (dom_ok == 0) {
+            // Wire up the external resource loader (browser_enhanced.c).
+            // Previously this code was missing, so <link rel="stylesheet" href="...">
+            // and <script src="..."> were silently dropped — only inline <style>
+            // and inline <script> were parsed. This is why external CSS/JS were
+            // "not rendered even when present in the response".
+            //
+            // Set the base URL first so relative hrefs / srcs can be resolved,
+            // then fetch & apply external stylesheets, then collect external
+            // (fetched + cached) and inline scripts into one concatenated buffer
+            // that the mujs execution block below will run.
+            browser_set_current_url_for_resources(url_buf);
+            browser_process_link_tags(body);
+
             dom_apply_all_stylesheets(dom_doc);
             int content_h_est = browser_win_h - TAB_BAR_H - URL_BAR_H - STATUS_BAR_H;
             if (show_bookmarks) content_h_est -= BOOKMARK_BAR_H;
             dom_compute_styles(dom_doc, browser_win_w - PAD*2 - 12, content_h_est);
-            const char* scripts = dom_get_scripts(dom_doc);
+
+            // Collect ALL scripts (inline + external, in source order) into a
+            // single buffer for execution. `dom_get_scripts` only returns the
+            // inline scripts already extracted by the DOM parser; calling
+            // `browser_process_script_tags(body, ...)` re-walks the raw HTML
+            // and additionally fetches each <script src=...> via http_get,
+            // appending its body to the buffer.
+            //
+            // 128KB is enough for ~30 typical bundled scripts. If a page
+            // exceeds this, the truncation warning fires on serial.
+            static char all_scripts[131072];
+            browser_process_script_tags(body, all_scripts, sizeof(all_scripts));
+            const char* scripts = (all_scripts[0]) ? all_scripts : dom_get_scripts(dom_doc);
             if (scripts && scripts[0]) {
                 js_state = js_newstate(NULL, NULL, JS_STRICT);
                 if (js_state) {

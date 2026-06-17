@@ -115,6 +115,8 @@ int k_connect(int sockfd, const sockaddr_in_t* addr);
 int k_sendto(int sockfd, const void* buf, size_t len, int flags, const sockaddr_in_t* dest);
 int k_recvfrom(int sockfd, void* buf, size_t len, int flags, sockaddr_in_t* src);
 int k_setsockopt(int sockfd, int level, int optname, const void* optval, socklen_t optlen);
+// Flip a socket into non-blocking mode. See k_socket_set_nonblocking() in socket.c.
+int k_socket_set_nonblocking(int sockfd);
 int k_close(int sockfd);
 int k_listen(int sockfd, int backlog);
 int k_accept(int sockfd, sockaddr_in_t* addr);

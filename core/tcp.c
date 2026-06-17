@@ -22,7 +22,8 @@ extern void printk(const char* fmt, ...);
 #define TCP_MAX_CONNECTIONS 32
 #define TCP_WINDOW_SIZE 16384 // Increased to 16KB
 #define TCP_MSS 1460
-#define TCP_RETRANSMIT_TIMEOUT 2000  // ms (initial retransmit timeout in ticks)
+// TCP_RETRANSMIT_TIMEOUT is now defined in tcp.h so callers outside tcp.c
+// (e.g. k_close in socket.c) can arm FIN retransmit timers.
 #define TCP_MAX_RETRANSMIT     5     // Max retransmit attempts before giving up
 
 
@@ -54,12 +55,40 @@ static tcp_connection_t* tcp_find_connection(uint32_t local_ip_net, uint16_t loc
 }
 
 static tcp_connection_t* tcp_alloc_connection() {
+    // First pass: reuse a fully-closed slot.
     for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
         if (tcp_connections[i].state == TCP_CLOSED) {
             memset(&tcp_connections[i], 0, sizeof(tcp_connection_t));
             return &tcp_connections[i];
         }
     }
+
+    // Second pass: reclaim the oldest TIME_WAIT slot. Previously this
+    // returned NULL once all 32 slots were stuck in TIME_WAIT (which
+    // happens after ~32 navigations, since TIME_WAIT lasts 60s and the
+    // retransmit check that reaps expired entries only runs from the
+    // timer IRQ — see hal/cpu/timer.c). The browser then failed every
+    // subsequent navigation with "Connection Error" until reboot.
+    // Forcibly closing the oldest TIME_WAIT entry is safe: by spec the
+    // connection is already fully closed, TIME_WAIT only exists to catch
+    // stray delayed segments from the peer.
+    uint32_t oldest_age = 0;
+    int oldest_idx = -1;
+    uint32_t now = timer_get_ticks();
+    for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+        if (tcp_connections[i].state == TCP_TIME_WAIT) {
+            uint32_t age = now - tcp_connections[i].time_wait_start;
+            if (age > oldest_age) {
+                oldest_age = age;
+                oldest_idx = i;
+            }
+        }
+    }
+    if (oldest_idx >= 0) {
+        memset(&tcp_connections[oldest_idx], 0, sizeof(tcp_connection_t));
+        return &tcp_connections[oldest_idx];
+    }
+
     return NULL;
 }
 

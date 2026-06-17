@@ -82,6 +82,12 @@ typedef struct tcp_connection {
 #define TCP_LISTEN_BACKLOG      8
 #define TCP_MAX_PENDING_CONNS   32
 
+// Initial retransmit timeout in ticks (50Hz -> 2000 ticks = 40 seconds).
+// Also defined (identically) in tcp.c — kept here so callers like k_close()
+// in socket.c can arm the FIN retransmit timer without pulling in tcp.c's
+// private constants.
+#define TCP_RETRANSMIT_TIMEOUT  2000
+
 typedef struct {
     int in_use;
     uint16_t port;

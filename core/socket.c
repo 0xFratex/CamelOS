@@ -386,9 +386,21 @@ int k_close(int fd) {
         if (conn->state == TCP_ESTABLISHED) {
             tcp_send(conn, TCP_FIN | TCP_ACK, NULL, 0);
             conn->state = TCP_FIN_WAIT1;
+            // Arm a retransmit timeout so that if the peer never ACKs our
+            // FIN (and tcp_retransmit_check never runs - now fixed in
+            // hal/cpu/timer.c), the connection still transitions to
+            // CLOSED within a bounded time and frees its slot in the
+            // 32-entry tcp_connections[] table. Previously a lost FIN
+            // could leave the slot in FIN_WAIT1 forever, eventually
+            // causing tcp_alloc_connection() to return NULL after
+            // ~32 navigations.
+            conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
+            conn->last_ack_time = timer_get_ticks();
         } else if (conn->state == TCP_CLOSE_WAIT) {
             tcp_send(conn, TCP_FIN | TCP_ACK, NULL, 0);
             conn->state = TCP_LAST_ACK;
+            conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
+            conn->last_ack_time = timer_get_ticks();
         } else {
             // For any other state, just mark closed immediately
             conn->state = TCP_CLOSED;
@@ -428,6 +440,18 @@ int k_setsockopt(int fd, int level, int optname, const void* optval, socklen_t o
         }
     }
 
+    return 0;
+}
+
+// Convenience helper to flip a socket into non-blocking mode. In non-blocking
+// mode, k_recvfrom / k_sendto return -1 immediately when no data is available
+// or the send buffer is full, instead of busy-waiting up to sock->timeout.
+// Used by core/dns.c so the resolver's own per-retry budget is the real
+// upper bound on a DNS lookup, not the socket layer's internal 10s wait.
+int k_socket_set_nonblocking(int fd) {
+    socket_t* sock = socket_get(fd);
+    if (!sock) return -1;
+    sock->blocking = 0;
     return 0;
 }
 

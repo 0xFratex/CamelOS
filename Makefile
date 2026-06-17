@@ -1,10 +1,22 @@
 #       Makefile        -       Camel   OS      Hybrid
-CC      =       gcc
+#
+# Toolchain overrides:
+#   - Native Linux build (default):           make
+#   - WSL2 Ubuntu build (recommended on Win): make   (uses bare gcc -m32)
+#   - MSYS2 + i686-elf cross-toolchain:       make CROSS=i686-elf-
+#
+# All tool names are prefixed with $(CROSS) so a single `make CROSS=...`
+# invocation switches the entire toolchain without further edits.
+CROSS   ?=
+CC      =       $(CROSS)gcc
 AS      =       nasm
-LD      =       ld
+LD      =       $(CROSS)ld
+OBJCOPY =       $(CROSS)objcopy
 
-# Auto-detect GCC 32-bit lib path
-GCC_LIB32      :=      $(shell dirname $(shell gcc -m32 -print-libgcc-file-name 2>/dev/null || echo /usr/lib/gcc/x86_64-linux-gnu/14/32))
+# Auto-detect GCC 32-bit lib path.
+# Note: when CROSS is set (e.g. i686-elf-), we drop the -m32 flag because the
+# cross-compiler is already 32-bit and rejects -m32.
+GCC_LIB32      :=      $(shell dirname $(shell $(CC) $(if $(CROSS),,-m32) -print-libgcc-file-name 2>/dev/null || echo /usr/lib/gcc/x86_64-linux-gnu/14/32))
 
 #       Kernel  Flags
 CFLAGS  =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -Ilib   -Imujs-1.3.9    -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -msoft-float    -mno-80387      -g      -Wall   -Wno-unused-parameter   -MMD    -MP     -DKERNEL_MODE
@@ -77,21 +89,21 @@ QEMU_AUDIO      =       -audiodev       sdl,id=snd0     -machine        pcspk-au
 all:    disk.img        camel_install.iso
 
 mbr.bin:        boot/mbr.asm | check-nasm
-	$(AS)   -f      bin     $<      -o      $@
+        $(AS)   -f      bin     $<      -o      $@
 
 system/entry.o: boot/system_entry.asm | check-nasm
-	mkdir   -p      system
-	$(AS)   -f      elf32   $<      -o      $@
+        mkdir   -p      system
+        $(AS)   -f      elf32   $<      -o      $@
 
 core/objc_msgSend.o: core/objc_msgSend.S
-	gcc     -m32    -c      $<      -o      $@
+        $(CC)   $(if $(CROSS),,-m32)   -c      $<      -o      $@
 
 lib/setjmp.o: lib/setjmp.s
-	gcc     -m32    -c      $<      -o      $@
+        $(CC)   $(if $(CROSS),,-m32)   -c      $<      -o      $@
 
 system.bin:     $(KERNEL_OBJ)
-	$(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L$(GCC_LIB32)
-	objcopy -O      binary  system.elf      system.bin
+        $(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L$(GCC_LIB32)
+        $(OBJCOPY)      -O      binary  system.elf      system.bin
 
 #       ---     APP     COMPILATION     (Hybrid: .cdl legacy + .dmg/.app macOS)       ---
 #       Legacy .cdl apps use ELF shared objects (CDL format)
@@ -102,36 +114,36 @@ system.bin:     $(KERNEL_OBJ)
 
 #       Math    Lib
 math.cdl:       usr/lib/math.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/math.c  -o      math.o
-	$(LD)   $(CDL_LDFLAGS)  -o      math.cdl        math.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/math.c  -o      math.o
+        $(LD)   $(CDL_LDFLAGS)  -o      math.cdl        math.o
 
 usr32.cdl:      usr/lib/usr32.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/usr32.c -o      usr32.o
-	$(LD)   $(CDL_LDFLAGS)  -o      usr32.cdl       usr32.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/usr32.c -o      usr32.o
+        $(LD)   $(CDL_LDFLAGS)  -o      usr32.cdl       usr32.o
 
 syskernel.cdl:  usr/lib/syskernel.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/syskernel.c     -o      syskernel.o
-	$(LD)   $(CDL_LDFLAGS)  -o      syskernel.cdl   syskernel.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/syskernel.c     -o      syskernel.o
+        $(LD)   $(CDL_LDFLAGS)  -o      syskernel.cdl   syskernel.o
 
 proc.cdl:       usr/lib/proc.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/proc.c  -o      proc.o
-	$(LD)   $(CDL_LDFLAGS)  -o      proc.cdl        proc.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/proc.c  -o      proc.o
+        $(LD)   $(CDL_LDFLAGS)  -o      proc.cdl        proc.o
 
 timer.cdl:      usr/lib/timer.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/timer.c -o      timer.o
-	$(LD)   $(CDL_LDFLAGS)  -o      timer.cdl       timer.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/timer.c -o      timer.o
+        $(LD)   $(CDL_LDFLAGS)  -o      timer.cdl       timer.o
 
 gui.cdl:        usr/lib/gui.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/gui.c   -o      gui.o
-	$(LD)   $(CDL_LDFLAGS)  -o      gui.cdl gui.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/gui.c   -o      gui.o
+        $(LD)   $(CDL_LDFLAGS)  -o      gui.cdl gui.o
 
 sysmon.cdl:     usr/lib/sysmon.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/sysmon.c        -o      sysmon.o
-	$(LD)   $(CDL_LDFLAGS)  -o      sysmon.cdl      sysmon.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/sysmon.c        -o      sysmon.o
+        $(LD)   $(CDL_LDFLAGS)  -o      sysmon.cdl      sysmon.o
 
 jsengine.cdl:   usr/libs/js_engine.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/libs/js_engine.c    -o      jsengine.o
-	$(LD)   $(CDL_LDFLAGS)  -o      jsengine.cdl    jsengine.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/libs/js_engine.c    -o      jsengine.o
+        $(LD)   $(CDL_LDFLAGS)  -o      jsengine.cdl    jsengine.o
 
 #       ---     HYBRID APP TARGETS (legacy .cdl apps, now loaded via .app bundles)     ---
 #       These create .cdl binaries that the .app bundle system can discover
@@ -139,56 +151,56 @@ jsengine.cdl:   usr/libs/js_engine.c
 
 #       Network Diagnostic App
 netdiag.cdl:    usr/apps/netdiag.c      usr/lib/camel_framework.c
-	$(CC)   $(CDL_CFLAGS)   -c      usr/apps/netdiag.c      -o      netdiag.o
-	$(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
-	$(LD)   $(CDL_LDFLAGS)  -o      netdiag.cdl     netdiag.o       camel_framework.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/apps/netdiag.c      -o      netdiag.o
+        $(CC)   $(CDL_CFLAGS)   -c      usr/lib/camel_framework.c       -o      camel_framework.o
+        $(LD)   $(CDL_LDFLAGS)  -o      netdiag.cdl     netdiag.o       camel_framework.o
 
 #       ---     INSTALLER       ---
 
 installer/entry.o:      boot/multiboot.asm | check-nasm
-	$(AS)   -f      elf32   $<      -o      $@
+        $(AS)   -f      elf32   $<      -o      $@
 
 installer/panic_framework.o:    installer/panic_framework.c
-	$(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
+        $(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
 
 #       Add     ALL     CDL     files   to      payload (hybrid: legacy libs + hybrid apps)
 installer/payload.o:    installer/payload.asm   system.bin      mbr.bin math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl | check-nasm
-	$(AS)   -f      elf32   $<      -o      $@
+        $(AS)   -f      elf32   $<      -o      $@
 
 installer.elf:  $(INSTALLER_OBJ)        math.cdl        usr32.cdl       syskernel.cdl   proc.cdl        timer.cdl       gui.cdl sysmon.cdl      jsengine.cdl    netdiag.cdl
-	$(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L$(GCC_LIB32)
+        $(LD)   $(LDFLAGS)      -T      linker_installer.ld     -o      installer.elf   $(INSTALLER_OBJ)        -L$(GCC_LIB32)
 
 camel_install.iso:      installer.elf
-	mkdir   -p      iso/boot/grub
-	cp      installer.elf   iso/boot/installer.elf
-	printf  'set    timeout=0\nmenuentry    "Camel  OS      Installer"      {\n     multiboot       /boot/installer.elf\n   boot\n}'        >       iso/boot/grub/grub.cfg
-	grub-mkrescue   -o      camel_install.iso       iso
-	rm      -rf     iso
+        mkdir   -p      iso/boot/grub
+        cp      installer.elf   iso/boot/installer.elf
+        printf  'set    timeout=0\nmenuentry    "Camel  OS      Installer"      {\n     multiboot       /boot/installer.elf\n   boot\n}'        >       iso/boot/grub/grub.cfg
+        grub-mkrescue   -o      camel_install.iso       iso
+        rm      -rf     iso
 
 disk.img:
-	@if [ ! -f disk.img ]; then \
-	dd if=/dev/zero of=disk.img bs=1M count=256; \
-	echo "Created disk.img (256MB)"; \
-	else \
-	echo "disk.img already exists, skipping creation"; \
-	fi
+        @if [ ! -f disk.img ]; then \
+        dd if=/dev/zero of=disk.img bs=1M count=256; \
+        echo "Created disk.img (256MB)"; \
+        else \
+        echo "disk.img already exists, skipping creation"; \
+        fi
 
 #       ---     COMMANDS        ---
 
 clean:
-	rm      -f      *.bin   *.elf   *.o     *.iso   *.cdl   *.d
-	find    .       -name   "*.o"   -type   f       -delete
-	find    .       -name   "*.d"   -type   f       -delete
-	rm      -rf     system/
+        rm      -f      *.bin   *.elf   *.o     *.iso   *.cdl   *.d
+        find    .       -name   "*.o"   -type   f       -delete
+        find    .       -name   "*.d"   -type   f       -delete
+        rm      -rf     system/
 
 distclean:      clean
-	rm      -f      disk.img        *.iso
+        rm      -f      disk.img        *.iso
 
 #       Add     this    target  or      run     it      manually
 rebuild:        clean   all
 
 install:        camel_install.iso       disk.img
-	qemu-system-i386        -m      512     -cdrom  camel_install.iso       -drive  file=disk.img,format=raw,index=0,media=disk     -boot   d       -serial stdio   $(QEMU_AUDIO)
+        qemu-system-i386        -m      512     -cdrom  camel_install.iso       -drive  file=disk.img,format=raw,index=0,media=disk     -boot   d       -serial stdio   $(QEMU_AUDIO)
 
 #       Enhanced        QEMU    networking
 QEMU_NET        =       -netdev user,id=net0,net=10.0.2.0/24,host=10.0.2.2,dhcpstart=10.0.2.15  \
@@ -201,53 +213,53 @@ QEMU_DEBUG      =       -s      -S
 QEMU_NET_SIMPLE =       -net    nic,model=rtl8139       -net    user
 
 run:    disk.img
-	qemu-system-i386        -m      512     -drive  file=disk.img,format=raw,index=0,media=disk     \
-	-vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
+        qemu-system-i386        -m      512     -drive  file=disk.img,format=raw,index=0,media=disk     \
+        -vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
 
 #       Explicit        compilation     rules   to      handle  different       flags
 sys/api.o:      sys/api.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 sys/api_installer.o:    sys/api.c
-	$(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
+        $(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
 
 installer/%.o:  installer/%.c
-	$(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
+        $(CC)   $(CFLAGS_INSTALLER)     -c      $<      -o      $@
 
 #       For     all     other   .c      files,  use     kernel  flags   by      default
 %.o:    %.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       Soft-float library compilation rule
 #       Must be compiled with -msoft-float to match the calling convention
 #       used by the rest of the kernel. Uses integer-only operations internally.
 lib/soft_float.o:        lib/soft_float.c
-	$(CC)   $(CFLAGS)       -fno-tree-loop-distribute-patterns      -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -fno-tree-loop-distribute-patterns      -c      $<      -o      $@
 
 #       Socket  compilation     rule
 core/socket.o:  core/socket.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       RTL8169 driver  compilation     rule
 hal/drivers/net_rtl8169.o:      hal/drivers/net_rtl8169.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       E1000   driver  compilation     rule
 hal/drivers/net_e1000.o:        hal/drivers/net_e1000.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       AHCI    driver  compilation     rule
 hal/drivers/ahci.o:     hal/drivers/ahci.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       TLS     CA      store   compilation     rule
 core/tls_ca_store.o:    core/tls_ca_store.c
-	$(CC)   $(CFLAGS)       -c      $<      -o      $@
+        $(CC)   $(CFLAGS)       -c      $<      -o      $@
 
 #       ---     CHECK   TOOLS   ---
 
 check-nasm:
-	@which nasm > /dev/null 2>&1 || (echo "ERROR: nasm not found. Install: sudo apt install nasm" && exit 1)
+        @which nasm > /dev/null 2>&1 || (echo "ERROR: nasm not found. Install: sudo apt install nasm" && exit 1)
 
 #       ---     AUTO-DEPENDENCIES       ---
 

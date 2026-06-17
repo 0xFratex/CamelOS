@@ -126,6 +126,17 @@ static void __attribute__((unused)) draw_loading_overlay(int x, int y, int w, in
 void http_process_events(void) {
     net_poll();  // Poll network card for incoming packets (abstraction layer)
 
+    // Drive the TCP state machine while we are blocked inside a long-running
+    // HTTP fetch. Without these calls, retransmits / TIME_WAIT reaping / SYN
+    // promotion only happen from the timer IRQ (every ~200ms), which is fine
+    // for keep-alive but too slow for an active fetch that is waiting on a
+    // retransmit to progress. Calling them here makes the fetch loop react
+    // to recovered packets within ~20ms instead of ~200ms.
+    extern void tcp_retransmit_check(void);
+    extern void tcp_process_listeners(void);
+    tcp_retransmit_check();
+    tcp_process_listeners();
+
     // Poll USB HID and PS/2 mouse so the system doesn't appear frozen
     // while the browser is loading a page.
     extern void usb_hid_poll(void);

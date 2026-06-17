@@ -1120,6 +1120,8 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                         if (doc->stylesheet_count < DOM_MAX_STYLESHEETS) {
                             int copy_len = content_len;
                             if (copy_len >= DOM_MAX_STYLESHEET_LEN) {
+                                s_printf("[DOM] WARNING: <style> truncated %d -> %d bytes\n",
+                                         content_len, DOM_MAX_STYLESHEET_LEN - 1);
                                 copy_len = DOM_MAX_STYLESHEET_LEN - 1;
                             }
                             memcpy(doc->stylesheets[doc->stylesheet_count], p, copy_len);
@@ -1133,6 +1135,8 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                         if (doc->script_count < DOM_MAX_SCRIPTS) {
                             int copy_len = content_len;
                             if (copy_len >= DOM_MAX_SCRIPT_LEN) {
+                                s_printf("[DOM] WARNING: <script> truncated %d -> %d bytes\n",
+                                         content_len, DOM_MAX_SCRIPT_LEN - 1);
                                 copy_len = DOM_MAX_SCRIPT_LEN - 1;
                             }
                             memcpy(doc->scripts[doc->script_count], p, copy_len);
@@ -1152,6 +1156,8 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                         if (doc->stylesheet_count < DOM_MAX_STYLESHEETS) {
                             int copy_len = content_len;
                             if (copy_len >= DOM_MAX_STYLESHEET_LEN) {
+                                s_printf("[DOM] WARNING: <style> (no-close) truncated %d -> %d bytes\n",
+                                         content_len, DOM_MAX_STYLESHEET_LEN - 1);
                                 copy_len = DOM_MAX_STYLESHEET_LEN - 1;
                             }
                             memcpy(doc->stylesheets[doc->stylesheet_count], p, copy_len);
@@ -1163,6 +1169,8 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                         if (doc->script_count < DOM_MAX_SCRIPTS) {
                             int copy_len = content_len;
                             if (copy_len >= DOM_MAX_SCRIPT_LEN) {
+                                s_printf("[DOM] WARNING: <script> (no-close) truncated %d -> %d bytes\n",
+                                         content_len, DOM_MAX_SCRIPT_LEN - 1);
                                 copy_len = DOM_MAX_SCRIPT_LEN - 1;
                             }
                             memcpy(doc->scripts[doc->script_count], p, copy_len);

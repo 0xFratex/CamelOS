@@ -25,6 +25,13 @@ extern void arp_cleanup(void);
 extern void scheduler_tick(void);
 extern uint32_t scheduler_schedule(registers_t* regs);
 
+// Forward declarations for TCP maintenance (previously only called from the
+// unreachable kernel main loop after start_bubble_view() entered while(1)).
+// Running them from the timer IRQ ensures retransmits, TIME_WAIT reaping,
+// and listener promotion actually happen in GUI mode.
+extern void tcp_retransmit_check(void);
+extern void tcp_process_listeners(void);
+
 // Called from ISR handler (Vector 32)
 // Now receives registers pointer for context switching
 void timer_callback(registers_t* regs) {
@@ -40,6 +47,20 @@ void timer_callback(registers_t* regs) {
     if (arp_timer_counter >= 50) {
         arp_cleanup();
         arp_timer_counter = 0;
+    }
+
+    // TCP maintenance every ~200ms (10 ticks at 50Hz).
+    // Previously this was only called from core/kernel.c's main loop, which is
+    // unreachable once start_bubble_view() enters its own while(1). Without
+    // these calls, any single lost TCP packet (SYN / SYN-ACK / data / FIN)
+    // hangs the connection until the browser's 30s timeout, making the
+    // browser appear permanently frozen on lossy links. Running them from
+    // the timer IRQ guarantees they fire even when the GUI is busy.
+    static int tcp_timer_counter = 0;
+    if (++tcp_timer_counter >= 10) {
+        tcp_retransmit_check();
+        tcp_process_listeners();
+        tcp_timer_counter = 0;
     }
 
     // Poll Network driver occasionally (e.g. every 10ms)
@@ -116,10 +137,16 @@ void timer_wait(int ms) {
     while(ticks < eticks) asm volatile("hlt");
 }
 
+// Forward declaration: scheduler_yield forces a context switch via int $32,
+// letting other runnable tasks run. Safe to call from thread context.
+extern void scheduler_yield(void);
+
 void timer_sleep(int ms) {
-    uint32_t start = ticks;
-    uint32_t target = start + (ms * ticks_per_ms) / 1000;
-    while (ticks < target) {
-        asm volatile("pause");
+    uint32_t target = ticks + (ms * ticks_per_ms) / 1000;
+    // Use signed comparison so a wrap-around of `ticks` doesn't cause us to
+    // spin forever. Yield to the scheduler on every iteration so other tasks
+    // (and the timer IRQ that eventually advances `ticks`) actually get CPU.
+    while ((int32_t)(target - ticks) > 0) {
+        scheduler_yield();
     }
 }

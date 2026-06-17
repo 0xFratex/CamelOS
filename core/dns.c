@@ -195,6 +195,17 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
     int s = k_socket(AF_INET, SOCK_DGRAM, 0);
     if (s < 0) return -1;
 
+    // Mark the DNS socket non-blocking. Previously it inherited the default
+    // blocking mode, and k_recvfrom() would internally block for up to
+    // SOCKET_TIMEOUT/10 (~10s) per call when no response had arrived yet.
+    // That defeated the per-retry budget below (100/150/250 ticks = 2/3/5s)
+    // — a single unreachable DNS server could freeze the browser for 30s+
+    // before the resolver gave up. In non-blocking mode, k_recvfrom()
+    // returns -1 immediately when there is no data, and our own loop's
+    // timeout becomes the real upper bound.
+    extern int k_socket_set_nonblocking(int fd);
+    k_socket_set_nonblocking(s);
+
     // Retry timeouts in ticks (50Hz): 2s, 3s, 5s
     static const int retry_timeouts[3] = {100, 150, 250};
     int max_retries = 3;

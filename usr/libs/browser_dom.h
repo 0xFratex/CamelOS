@@ -14,10 +14,18 @@
 #define DOM_MAX_NODES           512
 #define DOM_MAX_CSS_RULES       64
 #define DOM_MAX_ATTRS           32
-#define DOM_MAX_SCRIPTS         8
-#define DOM_MAX_SCRIPT_LEN      4096
-#define DOM_MAX_STYLESHEETS     4
-#define DOM_MAX_STYLESHEET_LEN  8192
+// Bumped from 8 * 4096 / 4 * 8192: modern bundled JS (webpack/vite output,
+// React/Vue/jQuery runtime) routinely inlines 20-200KB of JS in a single
+// <script> block and 10-50KB of CSS in a single <style>. The old 4KB cap
+// silently truncated mid-token, causing mujs to throw a syntax error and
+// the entire script to be skipped - which is why pages with inline JS
+// rendered as if they had no JS at all.
+// Memory cost: 16*64KB + 8*32KB = ~1.3MB per dom_document_t. Acceptable
+// for now; if memory becomes tight, switch to kmalloc'd per-entry buffers.
+#define DOM_MAX_SCRIPTS         16
+#define DOM_MAX_SCRIPT_LEN      65536
+#define DOM_MAX_STYLESHEETS     8
+#define DOM_MAX_STYLESHEET_LEN  32768
 #define DOM_MAX_CSS_PROPS       16
 #define DOM_MAX_SELECTOR_LEN    64
 #define DOM_MAX_TAG_LEN         32

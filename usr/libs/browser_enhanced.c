@@ -6,6 +6,9 @@
 #include "../../core/memory.h"
 #include "../../core/string.h"
 
+// Serial debug output (defined in core/serial.c).
+extern void s_printf(const char* fmt, ...);
+
 // ============================================================================
 // MISSING STANDARD FUNCTION (not provided by CamelOS libc)
 // ============================================================================
@@ -271,36 +274,20 @@ char* browser_load_js(const char* url) {
 // CSS PROCESSING
 // ============================================================================
 
-// Apply CSS rules to DOM (placeholder - requires DOM access)
+// Apply CSS rules to the current DOM document. Previously this was a stub
+// that only skipped over the CSS without actually applying any rules,
+// which is why <link rel=stylesheet> tags had no visible effect even after
+// we wired up browser_process_link_tags. We now delegate to the DOM engine's
+// dom_apply_css(), which parses selectors (tag / .class / #id) and merges
+// the declared properties into each matching node's computed style.
+#include "browser_dom.h"
 void browser_apply_css_rules(const char* css_content) {
     if (!css_content || !css_content[0]) return;
-    
-    // Parse CSS selectors and rules
-    // This would need integration with the browser's DOM
-    // For now, just parse and validate
-    
-    const char* p = css_content;
-    while (*p) {
-        // Skip whitespace and comments
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-        
-        // Skip comments
-        if (*p == '/' && *(p+1) == '*') {
-            p += 2;
-            while (*p && !(*p == '*' && *(p+1) == '/')) p++;
-            if (*p) p += 2;
-            continue;
-        }
-        
-        // Skip until {
-        while (*p && *p != '{') p++;
-        if (*p == '{') {
-            p++;
-            // Skip until }
-            while (*p && *p != '}') p++;
-            if (*p == '}') p++;
-        }
-    }
+
+    dom_document_t* doc = dom_get_document();
+    if (!doc) return;
+
+    dom_apply_css(doc, css_content);
 }
 
 // ============================================================================
@@ -428,42 +415,54 @@ void browser_process_link_tags(const char* html) {
     }
 }
 
-// Process script tags in HTML
+// Process script tags in HTML. Concatenates inline AND fetched external
+// scripts into the caller-provided buffer so the browser can execute them
+// in source order. Previously, external scripts were fetched into the cache
+// but the content was discarded — so `<script src="app.js"></script>` had
+// no effect. Now we append the fetched JS body to the output buffer too.
 void browser_process_script_tags(const char* html, char* inline_scripts, int max_inline_len) {
     if (!html) return;
-    
+
     int inline_pos = 0;
     inline_scripts[0] = 0;
-    
+
     const char* p = html;
     while ((p = strstr(p, "<script")) != NULL) {
         p += 7;
-        
+
         // Find end of opening tag
         const char* tag_end = strstr(p, ">");
         if (!tag_end) break;
-        
+
         int tag_len = tag_end - p;
         if (tag_len > 256) tag_len = 256;
-        
+
         char tag_content[257];
         strncpy(tag_content, p, tag_len);
         tag_content[tag_len] = 0;
-        
+
         // Check for src attribute (external script)
         char src[256];
         int is_external = extract_attr_value(tag_content, "src", src, sizeof(src)) != NULL;
-        
+
         // Find the closing </script> tag
         tag_end++;
         const char* close_tag = strstr(tag_end, "</script>");
-        
+
         if (is_external && src[0]) {
-            // Load and execute external JS
+            // Fetch external JS and append it to the output buffer so the
+            // browser's JS engine will execute it in source order.
             char* js_content = browser_load_js(src);
             if (js_content) {
-                // External JS would be executed here
-                // For now, we just load it into cache
+                int js_len = strlen(js_content);
+                if (inline_pos + js_len + 1 < max_inline_len - 1) {
+                    memcpy(inline_scripts + inline_pos, js_content, js_len);
+                    inline_pos += js_len;
+                    inline_scripts[inline_pos++] = '\n';
+                } else {
+                    s_printf("[Browser] WARNING: external script %s (%d bytes) truncated — script buffer full\n",
+                             src, js_len);
+                }
             }
         } else if (close_tag) {
             // Inline script content
@@ -475,13 +474,13 @@ void browser_process_script_tags(const char* html, char* inline_scripts, int max
                 inline_pos++;
             }
         }
-        
+
         if (close_tag) {
             p = close_tag + 9;
         } else {
             p = tag_end;
         }
     }
-    
+
     inline_scripts[inline_pos] = 0;
 }
