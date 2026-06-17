@@ -25,12 +25,19 @@ extern void arp_cleanup(void);
 extern void scheduler_tick(void);
 extern uint32_t scheduler_schedule(registers_t* regs);
 
-// Forward declarations for TCP maintenance (previously only called from the
-// unreachable kernel main loop after start_bubble_view() entered while(1)).
-// Running them from the timer IRQ ensures retransmits, TIME_WAIT reaping,
-// and listener promotion actually happen in GUI mode.
-extern void tcp_retransmit_check(void);
-extern void tcp_process_listeners(void);
+// NOTE: tcp_retransmit_check() and tcp_process_listeners() are intentionally
+// NOT called from this timer IRQ. They were briefly added here to ensure TCP
+// maintenance runs in GUI mode, but the TCP code is not reentrancy-safe —
+// tcp_send() writes into a per-connection buffer (conn->send_packet) without
+// any lock, and if the timer IRQ fired mid-tcp_send() while the browser thread
+// was also inside tcp_send() on the same connection, both would corrupt the
+// packet buffer and the connection would fail. This was the root cause of the
+// "network error" regression.
+//
+// TCP maintenance is instead driven from http_process_events() in core/http.c,
+// which runs in thread context (called from k_connect / k_recvfrom / the
+// browser's recv loop). That is safe because there is only one thread doing
+// network I/O, so no reentrancy is possible.
 
 // Called from ISR handler (Vector 32)
 // Now receives registers pointer for context switching
@@ -47,20 +54,6 @@ void timer_callback(registers_t* regs) {
     if (arp_timer_counter >= 50) {
         arp_cleanup();
         arp_timer_counter = 0;
-    }
-
-    // TCP maintenance every ~200ms (10 ticks at 50Hz).
-    // Previously this was only called from core/kernel.c's main loop, which is
-    // unreachable once start_bubble_view() enters its own while(1). Without
-    // these calls, any single lost TCP packet (SYN / SYN-ACK / data / FIN)
-    // hangs the connection until the browser's 30s timeout, making the
-    // browser appear permanently frozen on lossy links. Running them from
-    // the timer IRQ guarantees they fire even when the GUI is busy.
-    static int tcp_timer_counter = 0;
-    if (++tcp_timer_counter >= 10) {
-        tcp_retransmit_check();
-        tcp_process_listeners();
-        tcp_timer_counter = 0;
     }
 
     // Poll Network driver occasionally (e.g. every 10ms)
