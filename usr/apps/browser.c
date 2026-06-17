@@ -917,11 +917,20 @@ static void browser_load_page(const char* url) {
 
     // Parse HTTP status
     int http_status = 0;
+    // Dump first 80 bytes of the raw response so we can see the status line
+    s_printf("[Browser] Response first 80 bytes:\n");
+    int dump_len = total_read > 80 ? 80 : total_read;
+    for (int i = 0; i < dump_len; i++) {
+        char c = response[i];
+        if (c < 32 && c != '\n' && c != '\r' && c != '\t') c = '.';
+        s_printf("%c", c);
+    }
+    s_printf("\n--- end ---\n");
     if (strncmp(response, "HTTP/", 5) == 0) {
         char* sp = strchr(response, ' ');
         if (sp) { sp++; while (*sp >= '0' && *sp <= '9') { http_status = http_status * 10 + (*sp - '0'); sp++; } }
     }
-    s_printf("[Browser] HTTP status: %d\n", http_status);
+    s_printf("[Browser] HTTP status: %d (strncmp HTTP/ = %d)\n", http_status, strncmp(response, "HTTP/", 5));
 
     // Handle redirects
     if (http_status == 301 || http_status == 302 || http_status == 303 || http_status == 307 || http_status == 308) {
