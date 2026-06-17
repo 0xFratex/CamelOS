@@ -13,6 +13,7 @@
 
 // External functions
 extern size_t strlen(const char* s);
+extern void s_printf(const char* fmt, ...);
 extern int atoi(const char* str);
 extern char* strchr(const char* s, int c);
 extern int strcmp(const char* s1, const char* s2);
@@ -2459,26 +2460,40 @@ int tls_connect(tls_session_t* session, const char* hostname, uint16_t port) {
     }
     
     session->state = TLS_STATE_CONNECTING;
-    
+
     // Send ClientHello
     ret = tls_send_client_hello(session);
     if (ret < 0) {
+        s_printf("[TLS] Step 1 FAILED: tls_send_client_hello returned %d\n", ret);
         kfree(buffer);
         return TLS_ERR_HANDSHAKE;
     }
+    s_printf("[TLS] Step 1 OK: ClientHello sent\n");
     session->state = TLS_STATE_HELLO_SENT;
-    
+
     // Receive ServerHello
     ret = tls_recv_record(session, &content_type, buffer, 8192);
-    if (ret < 0 || content_type != TLS_CONTENT_HANDSHAKE) {
+    if (ret < 0) {
+        s_printf("[TLS] Step 2 FAILED: tls_recv_record returned %d\n", ret);
         kfree(buffer);
         return TLS_ERR_HANDSHAKE;
     }
-    
+    s_printf("[TLS] Step 2 OK: received record, ret=%d, content_type=%d (expected %d)\n",
+             ret, content_type, TLS_CONTENT_HANDSHAKE);
+    if (content_type != TLS_CONTENT_HANDSHAKE) {
+        s_printf("[TLS] Step 2 FAILED: content_type %d != HANDSHAKE %d\n",
+                 content_type, TLS_CONTENT_HANDSHAKE);
+        kfree(buffer);
+        return TLS_ERR_HANDSHAKE;
+    }
+
     if (buffer[0] != TLS_HANDSHAKE_SERVER_HELLO) {
+        s_printf("[TLS] Step 2 FAILED: buffer[0]=%d != SERVER_HELLO %d\n",
+                 buffer[0], TLS_HANDSHAKE_SERVER_HELLO);
         kfree(buffer);
         return TLS_ERR_HANDSHAKE;
     }
+    s_printf("[TLS] Step 2 OK: ServerHello received\n");
     
     // Update handshake hash
     size_t handshake_len = tls_read_uint24(buffer + 1) + 4;
