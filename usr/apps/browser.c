@@ -933,19 +933,31 @@ static void browser_load_page(const char* url) {
     }
     s_printf("\n");
 
-    // Some servers send a small TCP segment (6-7 bytes) of spurious data
-    // before the actual HTTP response. This can be a TCP window probe, a
-    // keep-alive byte, or an artifact of TCP retransmit coalescing. The
-    // result is that the response buffer starts with garbage instead of
-    // 'HTTP/'. Search for the start of the HTTP response within the first
-    // 32 bytes of the buffer.
+    // Some servers (notably Google via QEMU SLIRP) send a small TCP segment
+    // of spurious data (often all-zero bytes) before the actual HTTP response.
+    // This gets placed at the start of the response buffer, pushing the real
+    // 'HTTP/1.1 ...' line to a later offset. The spurious bytes are NOT part
+    // of the HTTP response — they're a TCP artifact (window probe, keep-alive,
+    // or retransmit coalescing) that should be skipped.
+    //
+    // Strategy:
+    //   1. Strip leading null bytes (HTTP responses never start with \0)
+    //   2. If the result doesn't start with 'HTTP/', search the first 32 bytes
+    //      for the 'HTTP/' prefix
     char* http_start = response;
-    if (total_read >= 5 && strncmp(response, "HTTP/", 5) != 0) {
-        // Scan first 32 bytes for 'HTTP/'
-        for (int i = 0; i < 32 && i < total_read - 5; i++) {
-            if (strncmp(response + i, "HTTP/", 5) == 0) {
-                http_start = response + i;
-                s_printf("[Browser] Found HTTP/ at offset %d (skipping %d spurious bytes)\n", i, i);
+    // Strip leading null bytes
+    while (http_start < response + total_read && *http_start == 0) {
+        http_start++;
+    }
+    if (http_start != response) {
+        s_printf("[Browser] Stripped %d leading null bytes\n", (int)(http_start - response));
+    }
+    // If still doesn't start with HTTP/, search for it
+    if (total_read >= 5 && strncmp(http_start, "HTTP/", 5) != 0) {
+        for (int i = 0; i < 32 && i < total_read - (http_start - response) - 5; i++) {
+            if (strncmp(http_start + i, "HTTP/", 5) == 0) {
+                http_start += i;
+                s_printf("[Browser] Found HTTP/ at offset %d\n", i);
                 break;
             }
         }
@@ -954,6 +966,24 @@ static void browser_load_page(const char* url) {
     if (strncmp(http_start, "HTTP/", 5) == 0) {
         char* sp = strchr(http_start, ' ');
         if (sp) { sp++; while (*sp >= '0' && *sp <= '9') { http_status = http_status * 10 + (*sp - '0'); sp++; } }
+    } else {
+        // Fallback: the 'HTTP/' prefix may be missing (e.g., replaced by spurious
+        // zero bytes from a TCP retransmit artifact). Search the first 32 bytes
+        // for a 3-digit HTTP status code pattern: ' NNN ' where N is a digit.
+        // This handles cases like '.1 301 Moved' where 'HTTP/1' was lost.
+        for (int i = 0; i < 30 && i < total_read - (http_start - response) - 5; i++) {
+            if (http_start[i] == ' ' &&
+                http_start[i+1] >= '0' && http_start[i+1] <= '9' &&
+                http_start[i+2] >= '0' && http_start[i+2] <= '9' &&
+                http_start[i+3] >= '0' && http_start[i+3] <= '9' &&
+                (http_start[i+4] == ' ' || http_start[i+4] == '\r' || http_start[i+4] == '\n')) {
+                http_status = (http_start[i+1] - '0') * 100 +
+                              (http_start[i+2] - '0') * 10 +
+                              (http_start[i+3] - '0');
+                s_printf("[Browser] Fallback status detection: found %d at offset %d\n", http_status, i);
+                break;
+            }
+        }
     }
     s_printf("[Browser] HTTP status: %d\n", http_status);
 
