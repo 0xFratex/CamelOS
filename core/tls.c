@@ -2054,7 +2054,21 @@ static int tls_send_client_hello(tls_session_t* session) {
     *p++ = 8;  // Protocol length
     *p++ = 'h'; *p++ = 't'; *p++ = 't'; *p++ = 'p';
     *p++ = '/'; *p++ = '1'; *p++ = '.'; *p++ = '1';
-    
+
+    // 6. Supported Versions extension (0x002B) - CRITICAL for TLS 1.3
+    // Google and most modern servers require this extension. Without it,
+    // servers that only support TLS 1.3 will close the connection.
+    // We offer TLS 1.3 (0x0304) and TLS 1.2 (0x0303).
+    tls_write_uint16(0x002B, p);  // Extension type: supported_versions
+    p += 2;
+    tls_write_uint16(5, p);  // Extension data length (1 + 2*2 = 5)
+    p += 2;
+    *p++ = 4;  // Versions list length (2 versions * 2 bytes)
+    tls_write_uint16(0x0304, p);  // TLS 1.3
+    p += 2;
+    tls_write_uint16(0x0303, p);  // TLS 1.2
+    p += 2;
+
     // Calculate extensions total length
     uint16_t ext_total = p - ext_len_ptr - 2;
     tls_write_uint16(ext_total, ext_len_ptr);
