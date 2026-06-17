@@ -869,12 +869,16 @@ static void browser_load_page(const char* url) {
         else n = k_recvfrom(sockfd, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1, 0, NULL);
         if (n > 0) {
             total_read += n;
+            s_printf("[Browser] recv: %d bytes (total=%d)\n", n, total_read);
             browser_recv_start = get_tick_count();
             int prog = 45 + (total_read * 45) / BROWSER_RESPONSE_SIZE;
             if (prog > 90) prog = 90;
             load_progress = prog;
         }
-        else if (n == 0) break;
+        else if (n == 0) {
+            s_printf("[Browser] recv EOF (total_read=%d)\n", total_read);
+            break;
+        }
         else {
             // Yield CPU properly by processing network/GUI events
             http_process_events();
@@ -1261,6 +1265,20 @@ static void browser_load_page(const char* url) {
         // so JS bridge queries (getElementById, querySelector) operate on the
         // correct document instead of a stale singleton from a previous page
         dom_set_bridge_document(dom_doc);
+        // Log what we're about to parse. The 'body' pointer points to the
+        // start of the HTTP response body (after headers). Log the first
+        // 200 bytes so we can verify the HTML is actually there.
+        {
+            int body_len = total_read - (body - response);
+            s_printf("[Browser] DOM parse: body_len=%d, first 200 bytes:\n", body_len);
+            int dump_len = body_len > 200 ? 200 : body_len;
+            for (int i = 0; i < dump_len; i++) {
+                char c = body[i];
+                if (c < 32 && c != '\n' && c != '\r' && c != '\t') c = '.';
+                s_printf("%c", c);
+            }
+            s_printf("\n--- end dump ---\n");
+        }
         int dom_ok = dom_parse_html(dom_doc, body);
         if (dom_ok == 0) {
             // Wire up the external resource loader (browser_enhanced.c).
