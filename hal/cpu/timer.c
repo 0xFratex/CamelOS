@@ -135,7 +135,22 @@ void timer_wait(int ms) {
 extern void scheduler_yield(void);
 
 void timer_sleep(int ms) {
-    uint32_t target = ticks + (ms * ticks_per_ms) / 1000;
+    // `ticks` increments at 50Hz (init_timer(50) in kernel.c), so 1 tick = 20ms.
+    // Convert the requested milliseconds to a tick count.
+    //
+    // BUG FIX: Previously this used (ms * ticks_per_ms) / 1000, where
+    // ticks_per_ms is the raw APIC counter rate (~62500 under QEMU). That
+    // made timer_sleep(1) compute target = ticks + 62, waiting 62 ticks
+    // (1.24 seconds!) instead of ~1ms. This made every http_process_events()
+    // call take over a second, which starved the DNS polling loop — only
+    // 3-5 polls fit in a 2-second window, and DNS responses arrived too
+    // late to be matched to the correct query txid.
+    //
+    // timer_wait() above already uses the correct formula (ms / 20). We
+    // use the same approach here, with a minimum of 1 tick so that very
+    // short sleeps still yield the CPU for at least one scheduling slice.
+    uint32_t tick_wait = (ms <= 20) ? 1 : (ms / 20);
+    uint32_t target = ticks + tick_wait;
     // Use signed comparison so a wrap-around of `ticks` doesn't cause us to
     // spin forever. Yield to the scheduler on every iteration so other tasks
     // (and the timer IRQ that eventually advances `ticks`) actually get CPU.
