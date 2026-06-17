@@ -124,30 +124,57 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
 void rtl8139_receive_packets() {
     if (!rtl_dev.io_base || !rx_buffer_aligned) return;
 
-    // Check if RX buffer is empty (Bit 0 of CMD)
-    uint8_t cmd = inb(rtl_dev.io_base + RTL_REG_CMD);
-    if (cmd & 0x01) {
+    // Check if there are packets to process.
+    //
+    // BUG FIX: Previously this checked bit 0 of the CMD register (0x01 = RE,
+    // Receiver Enable), which is ALWAYS 1 when the receiver is enabled. The
+    // check was therefore inverted: it returned "no packets" whenever the
+    // receiver was on, which is always. As a result, rtl8139_poll() (called
+    // from net_poll() in every k_connect / k_recvfrom / DNS loop iteration)
+    // NEVER processed any packets — the function returned immediately every
+    // time. The only way packets got processed was via the ISR handler
+    // (rtl8139_handler) firing on the ROK interrupt, which was unreliable
+    // and caused SYN-ACKs to arrive "late" (actually they were in the RX
+    // buffer the whole time, just never drained by polling).
+    //
+    // The RTL8139 has no "buffer empty" bit in the CMD register. The correct
+    // way to poll is to check the packet header at the current read position:
+    // if the ROK bit (bit 0 of the status field) is set, a valid packet is
+    // waiting. We also accept the ROK bit in the ISR as a secondary trigger.
+    uint16_t offset = current_packet_ptr % 32768;
+    uint32_t header_val = *(uint32_t*)(rx_buffer_aligned + offset);
+    uint16_t status = header_val & 0xFFFF;
+    uint16_t length = (header_val >> 16) & 0xFFFF;
+
+    // No valid packet waiting if ROK bit is not set, or length is implausible.
+    // Note: we must also check the ISR ROK bit because the status field can
+    // be stale (leftover from a previous packet that we already processed).
+    uint16_t isr = inw(rtl_dev.io_base + RTL_REG_ISR);
+    if (!(status & 0x01) && !(isr & 0x01)) {
         return;  // No packets
     }
+    // If ISR says ROK but status doesn't, the header may not be written yet;
+    // try anyway — the loop below will validate the header before using it.
 
     int packets_processed = 0;
-    
-    // Process batch of packets
-    while ((inb(rtl_dev.io_base + RTL_REG_CMD) & 0x01) == 0 && 
-           packets_processed < RX_MAX_BATCH) {
-        
-        uint16_t offset = current_packet_ptr % 32768;
-        
-        // Header: [Status 16b] [Length 16b]
-        // Read as 32-bit to ensure atomicity
-        uint32_t header_val = *(uint32_t*)(rx_buffer_aligned + offset);
-        uint16_t status = header_val & 0xFFFF;
-        uint16_t length = (header_val >> 16) & 0xFFFF;
+
+    // Process batch of packets. The loop condition checks both the ISR ROK
+    // bit and the status field at the current read position.
+    while (packets_processed < RX_MAX_BATCH) {
+        offset = current_packet_ptr % 32768;
+        header_val = *(uint32_t*)(rx_buffer_aligned + offset);
+        status = header_val & 0xFFFF;
+        length = (header_val >> 16) & 0xFFFF;
+
+        // Stop if no valid packet at this position.
+        if (!(status & 0x01) || length < 60 || length > 1536) {
+            break;
+        }
 
         // Check for runt or error packets by status
         int is_error = (status & 0x3E);  // Check error bits (1-5)
-        
-        if (length < 60 || length > 1536 || is_error || (status & 0x01) == 0) {
+
+        if (is_error) {
 #if RTL_DEBUG_ERRORS
             s_printf("[RTL8139] RX: Bad packet, skipping\n");
 #endif
