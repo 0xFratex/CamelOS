@@ -926,6 +926,12 @@ static void browser_load_page(const char* url) {
         s_printf("%c", c);
     }
     s_printf("\n--- end ---\n");
+    // Also dump first 16 bytes as hex so we can see the exact garbage bytes
+    s_printf("[Browser] First 16 bytes hex:\n");
+    for (int i = 0; i < 16 && i < total_read; i++) {
+        s_printf("%02X ", (uint8_t)response[i]);
+    }
+    s_printf("\n");
 
     // Some servers send a small TCP segment (6-7 bytes) of spurious data
     // before the actual HTTP response. This can be a TCP window probe, a
