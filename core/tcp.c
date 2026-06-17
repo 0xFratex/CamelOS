@@ -379,9 +379,21 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             }
 
             // Handle data
-            if (len > (tcp->data_offset >> 2) * 4) {
-                uint16_t data_len = len - (tcp->data_offset >> 2) * 4;
-                uint8_t* data = packet + (tcp->data_offset >> 2) * 4;
+            // TCP data_offset is a 4-bit field in the HIGH nibble of the byte,
+            // representing the header length in 32-bit words. To get bytes:
+            //   (data_offset >> 4) * 4
+            //
+            // BUG FIX: Previously used (data_offset >> 2) * 4, which for a
+            // standard 20-byte header (data_offset byte = 0x50) computed
+            // (0x50 >> 2) * 4 = 0x14 * 4 = 80 instead of 20. This caused
+            // tcp_handle_packet to skip 80 bytes of packet data (eating 60
+            // bytes of actual HTTP response data) before passing it to the
+            // callback. The response buffer then started mid-URL, breaking
+            // HTTP status parsing and redirect detection.
+            uint16_t hdr_len = (tcp->data_offset >> 4) * 4;
+            if (len > hdr_len) {
+                uint16_t data_len = len - hdr_len;
+                uint8_t* data = packet + hdr_len;
 
                 s_printf("[TCP] data packet: seq=%u rcv_nxt=%u data_len=%u on_data=%s\n",
                          seq, conn->rcv_nxt, data_len, conn->on_data ? "SET" : "NULL");
