@@ -350,17 +350,32 @@ int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr
                 net_poll();
             }
 
-            // Check if the TCP connection was closed by the remote side.
-            // When the server sends FIN, the connection enters TCP_CLOSE_WAIT
-            // (or TCP_CLOSED if we also sent our FIN). In either case, no
-            // more data will arrive — return 0 (end of stream) so the caller
-            // (browser's recv loop) knows the response is complete.
+            // Recalculate available data AFTER polling, so we pick up any
+            // data that was just delivered via the TCP on_data callback.
+            // This MUST happen before the EOF check below — otherwise, if
+            // the data packet and the FIN packet arrive in the same poll
+            // batch, the EOF check fires and returns 0, silently discarding
+            // the data that was just added to the recv buffer.
+            if (sock->recv_tail >= sock->recv_head) {
+                available = sock->recv_tail - sock->recv_head;
+            } else {
+                available = sock->recv_buffer_size - sock->recv_head + sock->recv_tail;
+            }
+
+            // If we got data, break out and return it to the caller.
+            if (available > 0) {
+                break;
+            }
+
+            // No data yet. Check if the TCP connection was closed by the
+            // remote side. When the server sends FIN, the connection enters
+            // TCP_CLOSE_WAIT (or TCP_CLOSED if we also sent our FIN). In
+            // either case, no more data will arrive — return 0 (end of
+            // stream) so the caller (browser's recv loop) knows the response
+            // is complete.
             //
-            // BUG FIX: Previously k_recvfrom never checked the TCP connection
-            // state. When the server sent FIN after the HTTP response,
-            // k_recvfrom kept polling forever waiting for more data that would
-            // never arrive — the browser hung in "infinite loading" until the
-            // 30-second timeout.
+            // This check runs ONLY when available == 0, so we never discard
+            // buffered data by returning EOF prematurely.
             if (sock->type == SOCK_STREAM && sock->tcp_conn) {
                 tcp_connection_t* conn = (tcp_connection_t*)sock->tcp_conn;
                 if (conn->state == TCP_CLOSE_WAIT ||
@@ -379,19 +394,9 @@ int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr
                 return -1;  // Timeout
             }
 
-            // Recalculate available data
-            if (sock->recv_tail >= sock->recv_head) {
-                available = sock->recv_tail - sock->recv_head;
-            } else {
-                available = sock->recv_buffer_size - sock->recv_head + sock->recv_tail;
-            }
-
-            // Process GUI events to prevent system freeze — but only
-            // every few iterations to avoid excessive latency
-            if (available == 0) {
-                extern void http_process_events(void);
-                http_process_events();
-            }
+            // Process GUI events to prevent system freeze
+            extern void http_process_events(void);
+            http_process_events();
         }
     }
 
