@@ -326,12 +326,35 @@ int k_recvfrom(int fd, void* buf, size_t len, int flags, sockaddr_in_t* src_addr
         // Wait for data with optimized polling
         uint32_t start = get_tick_count();
         uint32_t timeout_ticks = sock->timeout / 10;
-        
+
         while (available == 0) {
             // Poll NIC a small number of times — just enough to process
             // any pending packets without excessive CPU usage
             for (int i = 0; i < 4; i++) {
                 net_poll();
+            }
+
+            // Check if the TCP connection was closed by the remote side.
+            // When the server sends FIN, the connection enters TCP_CLOSE_WAIT
+            // (or TCP_CLOSED if we also sent our FIN). In either case, no
+            // more data will arrive — return 0 (end of stream) so the caller
+            // (browser's recv loop) knows the response is complete.
+            //
+            // BUG FIX: Previously k_recvfrom never checked the TCP connection
+            // state. When the server sent FIN after the HTTP response,
+            // k_recvfrom kept polling forever waiting for more data that would
+            // never arrive — the browser hung in "infinite loading" until the
+            // 30-second timeout.
+            if (sock->type == SOCK_STREAM && sock->tcp_conn) {
+                tcp_connection_t* conn = (tcp_connection_t*)sock->tcp_conn;
+                if (conn->state == TCP_CLOSE_WAIT ||
+                    conn->state == TCP_CLOSED     ||
+                    conn->state == TCP_TIME_WAIT  ||
+                    conn->state == TCP_LAST_ACK) {
+                    s_printf("[TCP] k_recvfrom: connection closed by remote (state=%d), returning EOF\n",
+                             conn->state);
+                    return 0;  // End of stream
+                }
             }
 
             // Check timeout

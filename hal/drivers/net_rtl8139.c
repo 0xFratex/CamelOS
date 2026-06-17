@@ -143,8 +143,12 @@ void rtl8139_receive_packets() {
     // read offset by adding 16.
     uint16_t read_offset = (capr + 16) % 32768;
 
-    s_printf("[RTL8139] poll: current_packet_ptr=%d read_offset=%d cbr=%d (pkt_waiting=%d)\n",
-             current_packet_ptr % 32768, read_offset, cbr, cbr != read_offset);
+    // Only log when a packet is actually waiting — avoids flooding the serial
+    // output with "pkt_waiting=0" lines during idle polling.
+    if (cbr != read_offset) {
+        s_printf("[RTL8139] poll: current_packet_ptr=%d read_offset=%d cbr=%d (pkt_waiting=1)\n",
+                 current_packet_ptr % 32768, read_offset, cbr);
+    }
 
     if (cbr == read_offset) {
         return;  // No packets pending
