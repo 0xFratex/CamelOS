@@ -542,6 +542,15 @@ int k_socket_set_nonblocking(int fd) {
     return 0;
 }
 
+// Restore a socket to blocking mode. Used by the TLS layer after draining
+// spurious data with non-blocking reads.
+int k_socket_set_blocking(int fd) {
+    socket_t* sock = socket_get(fd);
+    if (!sock) return -1;
+    sock->blocking = 1;
+    return 0;
+}
+
 // Process incoming UDP packet - called from net.c
 int socket_process_packet(uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port,
                           uint32_t dst_ip, uint16_t dst_port, int protocol) {

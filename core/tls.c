@@ -2487,6 +2487,27 @@ int tls_connect(tls_session_t* session, const char* hostname, uint16_t port) {
     
     session->state = TLS_STATE_CONNECTING;
 
+    // Drain any spurious data that arrived in the socket buffer during
+    // k_connect's wait. Google's server (via QEMU SLIRP) sends a 6-byte
+    // segment of all-zero bytes before the real TLS response. If we don't
+    // drain it, tls_recv_record will read those zeros as the TLS record
+    // header, get content_type=0, and fail.
+    {
+        extern int k_socket_set_nonblocking(int fd);
+        extern int k_socket_set_blocking(int fd);
+        k_socket_set_nonblocking(session->socket_fd);
+        uint8_t drain_buf[256];
+        int drained = 0;
+        int r;
+        while ((r = k_recvfrom(session->socket_fd, drain_buf, sizeof(drain_buf), 0, NULL)) > 0) {
+            drained += r;
+        }
+        k_socket_set_blocking(session->socket_fd);
+        if (drained > 0) {
+            s_printf("[TLS] Drained %d spurious bytes from socket before ClientHello\n", drained);
+        }
+    }
+
     // Send ClientHello
     ret = tls_send_client_hello(session);
     if (ret < 0) {
