@@ -222,18 +222,27 @@ int net_send_raw_ip(uint32_t dest_ip, uint8_t proto, const uint8_t* data, uint32
     } else {
         if (default_if->ip_addr == 0 || default_if->gateway == 0) {
 #if NET_DEBUG_ERRORS
-            s_printf("[NET] Interface not configured\n");
+            s_printf("[NET] Interface not configured (ip=%d.%d.%d.%d gw=%d.%d.%d.%d)\n",
+                     (default_if->ip_addr >> 24) & 0xFF, (default_if->ip_addr >> 16) & 0xFF,
+                     (default_if->ip_addr >> 8) & 0xFF, default_if->ip_addr & 0xFF,
+                     (default_if->gateway >> 24) & 0xFF, (default_if->gateway >> 16) & 0xFF,
+                     (default_if->gateway >> 8) & 0xFF, default_if->gateway & 0xFF);
 #endif
             return -1;
         }
-        
+
         // Determine if destination is local
         uint32_t dest_net = dest_ip & default_if->netmask;
         uint32_t my_net = default_if->ip_addr & default_if->netmask;
         int is_local = (dest_net == my_net);
-        
+
         uint32_t route_ip = is_local ? dest_ip : default_if->gateway;
-        
+
+        s_printf("[NET] send_raw_ip: dest=%d.%d.%d.%d local=%d route_ip=%d.%d.%d.%d\n",
+                 (dest_ip >> 24) & 0xFF, (dest_ip >> 16) & 0xFF, (dest_ip >> 8) & 0xFF, dest_ip & 0xFF,
+                 is_local,
+                 (route_ip >> 24) & 0xFF, (route_ip >> 16) & 0xFF, (route_ip >> 8) & 0xFF, route_ip & 0xFF);
+
         if (route_ip == 0) {
 #if NET_DEBUG_ERRORS
             s_printf("[NET] Routing error\n");
@@ -243,7 +252,9 @@ int net_send_raw_ip(uint32_t dest_ip, uint8_t proto, const uint8_t* data, uint32
 
         if(net_resolve_arp(route_ip, final_dest_mac.addr) != 0) {
 #if NET_DEBUG_ERRORS
-            s_printf("[NET] ARP Failed\n");
+            s_printf("[NET] ARP Failed for %d.%d.%d.%d\n",
+                     (route_ip >> 24) & 0xFF, (route_ip >> 16) & 0xFF,
+                     (route_ip >> 8) & 0xFF, route_ip & 0xFF);
 #endif
             return -1;
         }

@@ -166,9 +166,14 @@ int tcp_send(tcp_connection_t* conn, uint8_t flags, uint8_t* data, uint16_t len)
     uint16_t tcp_len = header_len + len;
     tcp->checksum = 0;
     tcp->checksum = tcp_checksum(packet, tcp_len, conn->local_ip, conn->remote_ip);
-    
+
     // Send via IP layer
-    return net_send_raw_ip(conn->remote_ip, IPPROTO_TCP, packet, tcp_len);
+    int result = net_send_raw_ip(conn->remote_ip, IPPROTO_TCP, packet, tcp_len);
+    s_printf("[TCP] send: %d.%d.%d.%d:%d -> %d.%d.%d.%d:%d flags=0x%02X len=%d result=%d\n",
+             (conn->local_ip >> 24) & 0xFF, (conn->local_ip >> 16) & 0xFF, (conn->local_ip >> 8) & 0xFF, conn->local_ip & 0xFF, conn->local_port,
+             (conn->remote_ip >> 24) & 0xFF, (conn->remote_ip >> 16) & 0xFF, (conn->remote_ip >> 8) & 0xFF, conn->remote_ip & 0xFF, conn->remote_port,
+             flags, tcp_len, result);
+    return result;
 }
 
 // TCP connection establishment
