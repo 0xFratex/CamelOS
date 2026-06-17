@@ -7,7 +7,7 @@
 #include "../core/scheduler.h"
 
 // External Handlers
-extern void timer_callback();
+extern void timer_callback(registers_t* regs);
 extern void keyboard_callback();
 extern void mouse_handler();
 extern void rtl8139_handler();
