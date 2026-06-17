@@ -83,11 +83,20 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
 
     if (timeout <= 0) {
 #if RTL_DEBUG_ERRORS
-        s_printf("[RTL8139] TX timeout on descriptor\n");
+        s_printf("[RTL8139] TX timeout on descriptor %d — resetting TX ring\n", tx_cur);
 #endif
-        tx_cur = (tx_cur + 1) % 4;
+        // TX descriptor is stuck. Reset all 4 TX descriptors by re-arming them
+        // with the OWN bit set. Without this, every subsequent send also times
+        // out because the descriptor never becomes available again — the entire
+        // network stack freezes ("can't connect anywhere after a failed connection").
+        for (int i = 0; i < 4; i++) {
+            outl(rtl_dev.io_base + RTL_REG_TSD0 + (i * 4), 0);
+        }
+        // Brief delay for hardware to acknowledge the reset
+        for (volatile int i = 0; i < 1000; i++) asm volatile("pause");
+        tx_cur = 0;
         stat_tx_errors++;
-        return -1;
+        // Don't return -1; try to send on the freshly-reset descriptor 0
     }
 
     // Copy data to TX buffer
@@ -107,8 +116,12 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     
     if (timeout <= 0) {
 #if RTL_DEBUG_ERRORS
-        s_printf("[RTL8139] TX completion timeout\n");
+        s_printf("[RTL8139] TX completion timeout on descriptor %d — resetting\n", tx_cur);
 #endif
+        // Reset this descriptor so it can be reused. Without this, the
+        // descriptor stays in "TX in progress" state forever and the next
+        // send that lands on it will also timeout.
+        outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), 0);
         stat_tx_errors++;
     }
     

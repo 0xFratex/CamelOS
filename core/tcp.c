@@ -398,7 +398,35 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                 s_printf("[TCP] data packet: seq=%u rcv_nxt=%u data_len=%u on_data=%s\n",
                          seq, conn->rcv_nxt, data_len, conn->on_data ? "SET" : "NULL");
 
-                // Check sequence number
+                // Handle partially-overlapping segments.
+                //
+                // When the server retransmits a segment that starts at or before
+                // our rcv_nxt but extends beyond it, the segment contains both
+                // already-received data AND new data. We must trim the already-
+                // received portion and accept only the new data.
+                //
+                // Without this, a retransmitted segment that partially overlaps
+                // with previously-received data is dropped entirely — even though
+                // it contains new bytes we haven't seen. This causes data loss,
+                // retransmit storms, and eventual TX descriptor exhaustion.
+                if (seq < conn->rcv_nxt) {
+                    uint32_t overlap = conn->rcv_nxt - seq;
+                    if (overlap >= data_len) {
+                        // Entire segment is old data (already received). Just ACK.
+                        s_printf("[TCP] dup segment: seq=%u rcv_nxt=%u (all %u bytes already received)\n",
+                                 seq, conn->rcv_nxt, data_len);
+                        tcp_send(conn, TCP_ACK, NULL, 0);
+                        goto after_data;
+                    }
+                    // Trim the already-received portion
+                    s_printf("[TCP] partial overlap: trimming %u old bytes from segment (seq=%u, rcv_nxt=%u)\n",
+                             overlap, seq, conn->rcv_nxt);
+                    data += overlap;
+                    data_len -= overlap;
+                    seq += overlap;
+                }
+
+                // Check sequence number (now seq should == rcv_nxt after trimming)
                 if (seq == conn->rcv_nxt) {
                     // FIXED: The on_data callback (socket_tcp_data_callback) copies data
                     // directly into the socket's ring buffer. The TCP recv_buffer was
@@ -430,12 +458,15 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                     // Send ACK for in-order received data
                     tcp_send(conn, TCP_ACK, NULL, 0);
                 } else {
-                    // Out-of-order packet: send duplicate ACK to trigger fast retransmit
+                    // Out-of-order packet (seq > rcv_nxt): send duplicate ACK to
+                    // trigger fast retransmit on the sender side.
                     s_printf("[TCP] OUT-OF-ORDER: seq=%u but expected rcv_nxt=%u (dropping %u bytes)\n",
                              seq, conn->rcv_nxt, data_len);
                     tcp_send(conn, TCP_ACK, NULL, 0);
                 }
             }
+
+        after_data:;
 
             // Handle FIN
             if (flags & TCP_FIN) {
