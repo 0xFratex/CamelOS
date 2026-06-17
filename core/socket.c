@@ -208,6 +208,22 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
                     break;
                 }
 
+                // Check if the connection was closed by the remote side (RST or
+                // other error). If the TCP state is CLOSED, SYN_SENT failed.
+                // Return an error immediately instead of waiting for the full
+                // 20-second timeout — this makes "connection refused" (RST) and
+                // other SYN failures fail fast so the browser can show an error
+                // page quickly.
+                if (sock->tcp_conn) {
+                    tcp_connection_t* conn = (tcp_connection_t*)sock->tcp_conn;
+                    if (conn->state == TCP_CLOSED) {
+                        sock->state = SOCKET_ERROR;
+                        s_printf("[TCP] Connection CLOSED by remote (RST?) after %d ticks (loop=%d)\n",
+                                 get_tick_count() - start, loop_count);
+                        return -1;
+                    }
+                }
+
                 // Every 50 iterations (~1 second), log the CBR register to see
                 // if the NIC is receiving any packets during the wait.
                 if ((loop_count % 50) == 0) {
