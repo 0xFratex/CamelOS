@@ -1871,15 +1871,41 @@ static int tls_recv_all(int fd, uint8_t* buffer, size_t len) {
 static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
                            uint8_t* buffer, size_t max_len) {
     uint8_t header[5];
-    
-    int received = tls_recv_all(session->socket_fd, header, 5);
-    if (received < 5) {
+
+    // Skip spurious leading null bytes.
+    //
+    // Some servers (notably Google via QEMU SLIRP) send a small TCP segment
+    // of all-zero bytes before the actual TLS response. These zeros end up
+    // in the socket recv buffer ahead of the real TLS data. When we read the
+    // 5-byte TLS record header, we get [00 00 00 00 00] which is
+    // content_type=0, length=0 — not a valid TLS record.
+    //
+    // TLS record content_type is always 20-23 (ChangeCipherSpec, Alert,
+    // Handshake, ApplicationData). A null byte is never a valid start of a
+    // TLS record, so we can safely skip leading zeros.
+    int received = tls_recv_all(session->socket_fd, header, 1);
+    if (received < 1) {
         return TLS_ERR_SOCKET;
     }
-    
+    while (header[0] == 0) {
+        s_printf("[TLS] Skipping spurious null byte before TLS record\n");
+        received = tls_recv_all(session->socket_fd, header, 1);
+        if (received < 1) {
+            return TLS_ERR_SOCKET;
+        }
+    }
+    // Read the remaining 4 bytes of the header
+    received = tls_recv_all(session->socket_fd, header + 1, 4);
+    if (received < 4) {
+        return TLS_ERR_SOCKET;
+    }
+
     tls_record_header_t* hdr = (tls_record_header_t*)header;
     *content_type = hdr->content_type;
-    
+
+    s_printf("[TLS] recv_record: content_type=%d, version=0x%04X, length=%d\n",
+             hdr->content_type, ntohs(hdr->version), ntohs(hdr->length));
+
     // CRITICAL FIX: TLS record length is in network byte order (big-endian)
     // Without ntohs(), on little-endian x86 the length is byte-swapped, causing
     // us to wait for the wrong number of bytes — classic TLS deadlock.
@@ -1887,7 +1913,7 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
     if (len > max_len) {
         len = max_len;
     }
-    
+
     received = tls_recv_all(session->socket_fd, buffer, len);
     return received;
 }
