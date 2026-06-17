@@ -173,6 +173,19 @@ int tcp_send(tcp_connection_t* conn, uint8_t flags, uint8_t* data, uint16_t len)
              (conn->local_ip >> 24) & 0xFF, (conn->local_ip >> 16) & 0xFF, (conn->local_ip >> 8) & 0xFF, conn->local_ip & 0xFF, conn->local_port,
              (conn->remote_ip >> 24) & 0xFF, (conn->remote_ip >> 16) & 0xFF, (conn->remote_ip >> 8) & 0xFF, conn->remote_ip & 0xFF, conn->remote_port,
              flags, tcp_len, result);
+
+    // For SYN packets, dump the full packet hex so we can verify the
+    // checksum, sequence number, MSS option, etc. are correct.
+    if (flags & TCP_SYN) {
+        s_printf("[TCP] SYN packet hex (%d bytes):\n", tcp_len);
+        for (int i = 0; i < tcp_len; i++) {
+            s_printf("%02X ", packet[i]);
+            if ((i + 1) % 16 == 0) s_printf("\n");
+        }
+        s_printf("\n");
+        s_printf("[TCP] SYN: seq=%u ack=%u wnd=%u checksum=0x%04X\n",
+                 conn->snd_nxt, conn->rcv_nxt, TCP_WINDOW_SIZE, tcp->checksum);
+    }
     return result;
 }
 

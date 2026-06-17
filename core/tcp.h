@@ -82,11 +82,14 @@ typedef struct tcp_connection {
 #define TCP_LISTEN_BACKLOG      8
 #define TCP_MAX_PENDING_CONNS   32
 
-// Initial retransmit timeout in ticks (50Hz -> 2000 ticks = 40 seconds).
-// Also defined (identically) in tcp.c — kept here so callers like k_close()
-// in socket.c can arm the FIN retransmit timer without pulling in tcp.c's
-// private constants.
-#define TCP_RETRANSMIT_TIMEOUT  2000
+// Initial retransmit timeout in ticks. At 50Hz (20ms/tick), 50 ticks = 1 second.
+// The standard initial RTO per RFC 6298 is 1 second. Previously this was 2000
+// ticks (40 seconds!) which meant the first SYN retransmit didn't fire until
+// 40 seconds — long after k_connect's 20-second timeout had already expired.
+// With 50 ticks, the SYN is retransmitted after 1 second, then 2s, 4s, 8s
+// (exponential backoff) — giving the connection multiple chances within the
+// k_connect timeout window.
+#define TCP_RETRANSMIT_TIMEOUT  50
 
 typedef struct {
     int in_use;
