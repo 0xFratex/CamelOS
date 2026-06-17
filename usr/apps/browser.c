@@ -926,17 +926,36 @@ static void browser_load_page(const char* url) {
         s_printf("%c", c);
     }
     s_printf("\n--- end ---\n");
-    if (strncmp(response, "HTTP/", 5) == 0) {
-        char* sp = strchr(response, ' ');
+
+    // Some servers send a small TCP segment (6-7 bytes) of spurious data
+    // before the actual HTTP response. This can be a TCP window probe, a
+    // keep-alive byte, or an artifact of TCP retransmit coalescing. The
+    // result is that the response buffer starts with garbage instead of
+    // 'HTTP/'. Search for the start of the HTTP response within the first
+    // 32 bytes of the buffer.
+    char* http_start = response;
+    if (total_read >= 5 && strncmp(response, "HTTP/", 5) != 0) {
+        // Scan first 32 bytes for 'HTTP/'
+        for (int i = 0; i < 32 && i < total_read - 5; i++) {
+            if (strncmp(response + i, "HTTP/", 5) == 0) {
+                http_start = response + i;
+                s_printf("[Browser] Found HTTP/ at offset %d (skipping %d spurious bytes)\n", i, i);
+                break;
+            }
+        }
+    }
+
+    if (strncmp(http_start, "HTTP/", 5) == 0) {
+        char* sp = strchr(http_start, ' ');
         if (sp) { sp++; while (*sp >= '0' && *sp <= '9') { http_status = http_status * 10 + (*sp - '0'); sp++; } }
     }
-    s_printf("[Browser] HTTP status: %d (strncmp HTTP/ = %d)\n", http_status, strncmp(response, "HTTP/", 5));
+    s_printf("[Browser] HTTP status: %d\n", http_status);
 
     // Handle redirects
     if (http_status == 301 || http_status == 302 || http_status == 303 || http_status == 307 || http_status == 308) {
         s_printf("[Browser] Redirect detected (status=%d), searching for Location header...\n", http_status);
         char* location = NULL;
-        char* h = response;
+        char* h = http_start;
         while (*h) {
             if (h == response || *(h-1) == '\n') {
                 if ((h[0]=='L'||h[0]=='l')&&(h[1]=='o'||h[1]=='O')&&(h[2]=='c'||h[2]=='C')&&
@@ -1003,9 +1022,12 @@ static void browser_load_page(const char* url) {
 
     redirect_depth = 0;
 
-    char* body = strstr(response, "\r\n\r\n");
+    // Search for the body starting from http_start (which may be offset from
+    // response if there were spurious leading bytes). The body starts after
+    // the blank line (\r\n\r\n) that terminates the HTTP headers.
+    char* body = strstr(http_start, "\r\n\r\n");
     if (body) body += 4;
-    else { body = strstr(response, "\n\n"); if (body) body += 2; else body = response; }
+    else { body = strstr(http_start, "\n\n"); if (body) body += 2; else body = http_start; }
 
     if (body == response && strncmp(body, "HTTP/", 5) == 0) {
         char* scan = body;
@@ -1035,7 +1057,7 @@ static void browser_load_page(const char* url) {
     int is_chunked = 0;
     {
         // Scan headers for Transfer-Encoding: chunked
-        char* h = response;
+        char* h = http_start;
         while (h < body) {
             if ((h[0]=='T'||h[0]=='t') && (h[1]=='r'||h[1]=='R') && (h[2]=='a'||h[2]=='A') &&
                 (h[3]=='n'||h[3]=='N') && (h[4]=='s'||h[4]=='S') && (h[5]=='f'||h[5]=='F') &&
@@ -1090,7 +1112,7 @@ static void browser_load_page(const char* url) {
     int is_gzip = 0;
     {
         // Scan headers for Content-Encoding: gzip
-        char* h = response;
+        char* h = http_start;
         while (h < body) {
             if ((h[0]=='C'||h[0]=='c') && (h[1]=='o'||h[1]=='O') && (h[2]=='n'||h[2]=='N') &&
                 (h[3]=='t'||h[3]=='T') && (h[4]=='e'||h[4]=='E') && (h[5]=='n'||h[5]=='N') &&
