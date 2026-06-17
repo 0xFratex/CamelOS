@@ -383,6 +383,9 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                 uint16_t data_len = len - (tcp->data_offset >> 2) * 4;
                 uint8_t* data = packet + (tcp->data_offset >> 2) * 4;
 
+                s_printf("[TCP] data packet: seq=%u rcv_nxt=%u data_len=%u on_data=%s\n",
+                         seq, conn->rcv_nxt, data_len, conn->on_data ? "SET" : "NULL");
+
                 // Check sequence number
                 if (seq == conn->rcv_nxt) {
                     // FIXED: The on_data callback (socket_tcp_data_callback) copies data
@@ -408,13 +411,16 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                     }
 
                     conn->rcv_nxt += data_len;
-                    
+
+                    s_printf("[TCP] data delivered: %u bytes via %s, new rcv_nxt=%u\n",
+                             data_len, conn->on_data ? "callback" : "flat_buffer", conn->rcv_nxt);
+
                     // Send ACK for in-order received data
                     tcp_send(conn, TCP_ACK, NULL, 0);
                 } else {
                     // Out-of-order packet: send duplicate ACK to trigger fast retransmit
-                    // on the sender side. Without this, the sender won't know we missed
-                    // a packet and will wait for a timeout before retransmitting.
+                    s_printf("[TCP] OUT-OF-ORDER: seq=%u but expected rcv_nxt=%u (dropping %u bytes)\n",
+                             seq, conn->rcv_nxt, data_len);
                     tcp_send(conn, TCP_ACK, NULL, 0);
                 }
             }
