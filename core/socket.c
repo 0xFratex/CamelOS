@@ -189,8 +189,12 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
         if (sock->blocking) {
             uint32_t start = get_tick_count();
             uint32_t timeout_ticks = sock->timeout / 10; // Convert to ticks
+            int loop_count = 0;
+            uint16_t last_cbr = 0;
 
             while (sock->state != SOCKET_CONNECTED) {
+                loop_count++;
+
                 // Poll NIC — small batch to avoid CPU starvation
                 for (int i = 0; i < 4; i++) {
                     net_poll();
@@ -200,16 +204,28 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
                 if (tcp_conn_is_established(sock->tcp_conn)) {
                     sock->state = SOCKET_CONNECTED;
                     socket_setup_tcp_callbacks(fd);
-                    s_printf("[TCP] Connection ESTABLISHED after %d ticks\n", get_tick_count() - start);
+                    s_printf("[TCP] Connection ESTABLISHED after %d ticks (loop=%d)\n", get_tick_count() - start, loop_count);
                     break;
+                }
+
+                // Every 50 iterations (~1 second), log the CBR register to see
+                // if the NIC is receiving any packets during the wait.
+                if ((loop_count % 50) == 0) {
+                    extern uint16_t inw(uint16_t port);
+                    uint16_t cbr = inw(0xc000 + 0x3A) % 32768;
+                    uint16_t capr = inw(0xc000 + 0x38);
+                    uint16_t read_off = (capr + 16) % 32768;
+                    s_printf("[TCP] waiting... loop=%d elapsed=%d ticks cbr=%d read_off=%d (delta=%d)\n",
+                             loop_count, get_tick_count() - start, cbr, read_off, (int)cbr - (int)read_off);
+                    last_cbr = cbr;
                 }
 
                 // Check timeout
                 uint32_t elapsed = get_tick_count() - start;
                 if (elapsed > timeout_ticks) {
                     sock->state = SOCKET_ERROR;
-                    s_printf("[TCP] TIMEOUT after %d ticks (conn state=%d)\n", elapsed,
-                             sock->tcp_conn ? ((tcp_connection_t*)sock->tcp_conn)->state : -1);
+                    s_printf("[TCP] TIMEOUT after %d ticks (conn state=%d, loop=%d)\n", elapsed,
+                             sock->tcp_conn ? ((tcp_connection_t*)sock->tcp_conn)->state : -1, loop_count);
                     return -1;
                 }
 
