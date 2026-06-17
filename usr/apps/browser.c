@@ -1039,9 +1039,26 @@ static void browser_load_page(const char* url) {
 
     if (is_chunked) {
         int body_len = total_read - (body - response);
+        // Dump the first 40 bytes of the body BEFORE chunked decoding, in hex,
+        // so we can see whether the data is actually chunked (starts with hex
+        // chunk size + CRLF) or already raw gzip (starts with 0x1F 0x8B).
+        s_printf("[Browser] BEFORE chunked: body_len=%d, first 40 bytes hex:\n", body_len);
+        for (int i = 0; i < 40 && i < body_len; i++) {
+            s_printf("%02X ", (uint8_t)body[i]);
+            if ((i + 1) % 20 == 0) s_printf("\n");
+        }
+        s_printf("\n");
         int new_len = decode_chunked(body, body_len);
         total_read = (body - response) + new_len;
+        s_printf("[Browser] AFTER chunked: new_len=%d, first 40 bytes hex:\n", new_len);
+        for (int i = 0; i < 40 && i < new_len; i++) {
+            s_printf("%02X ", (uint8_t)body[i]);
+            if ((i + 1) % 20 == 0) s_printf("\n");
+        }
+        s_printf("\n");
         s_printf("[Browser] Chunked encoding decoded: %d -> %d bytes\n", body_len, new_len);
+    } else {
+        s_printf("[Browser] Not chunked. is_gzip check will run on raw body.\n");
     }
 
     // Step 2: Check for gzip Content-Encoding and decompress if needed.
