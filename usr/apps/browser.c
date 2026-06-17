@@ -993,8 +993,60 @@ static void browser_load_page(const char* url) {
         }
     }
 
-    // Check for gzip Content-Encoding and decompress if needed
+    // Per HTTP spec, Transfer-Encoding (chunked) is about the transfer framing,
+    // while Content-Encoding (gzip) is about the content itself. The correct
+    // processing order is:
+    //   1. Decode chunked transfer encoding (removes the chunk framing)
+    //   2. Decompress gzip content encoding (decodes the actual content)
+    //
+    // BUG FIX: Previously gzip decompression ran BEFORE chunked decoding.
+    // When a response was BOTH chunked AND gzipped (very common — most
+    // real servers do both), the gzip check failed because body[0] was
+    // the first hex digit of the chunk size, not the gzip magic 0x1F.
+    // The chunked decoder then ran on the raw gzip stream, corrupting it
+    // and producing binary garbage that the DOM parser couldn't handle.
+    // Now we decode chunked first, then decompress gzip.
     int header_len = body - response;
+
+    // Step 1: Check for chunked Transfer-Encoding and decode if needed.
+    int is_chunked = 0;
+    {
+        // Scan headers for Transfer-Encoding: chunked
+        char* h = response;
+        while (h < body) {
+            if ((h[0]=='T'||h[0]=='t') && (h[1]=='r'||h[1]=='R') && (h[2]=='a'||h[2]=='A') &&
+                (h[3]=='n'||h[3]=='N') && (h[4]=='s'||h[4]=='S') && (h[5]=='f'||h[5]=='F') &&
+                (h[6]=='e'||h[6]=='E') && (h[7]=='r'||h[7]=='R') && (h[8]=='-'||h[8]=='-') &&
+                (h[9]=='E'||h[9]=='e') && (h[10]=='n'||h[10]=='N') && (h[11]=='c'||h[11]=='C') &&
+                (h[12]=='o'||h[12]=='O') && (h[13]=='d'||h[13]=='D') && (h[14]=='i'||h[14]=='I') &&
+                (h[15]=='n'||h[15]=='N') && (h[16]=='g'||h[16]=='G') && h[17]==':') {
+                // Found Transfer-Encoding header — check value
+                char* val = h + 18;
+                while (*val == ' ') val++;
+                if ((val[0]=='c'||val[0]=='C') && (val[1]=='h'||val[1]=='H') &&
+                    (val[2]=='u'||val[2]=='U') && (val[3]=='n'||val[3]=='N') &&
+                    (val[4]=='k'||val[4]=='K') && (val[5]=='e'||val[5]=='E') &&
+                    (val[6]=='d'||val[6]=='D')) {
+                    is_chunked = 1;
+                }
+                break;
+            }
+            // Advance to next header line
+            while (h < body && *h != '\n') h++;
+            if (h < body) h++;
+        }
+    }
+
+    if (is_chunked) {
+        int body_len = total_read - (body - response);
+        int new_len = decode_chunked(body, body_len);
+        total_read = (body - response) + new_len;
+        s_printf("[Browser] Chunked encoding decoded: %d -> %d bytes\n", body_len, new_len);
+    }
+
+    // Step 2: Check for gzip Content-Encoding and decompress if needed.
+    // This must run AFTER chunked decoding so the body starts with the
+    // gzip magic bytes (0x1F 0x8B) rather than a chunk size header.
     int is_gzip = 0;
     {
         // Scan headers for Content-Encoding: gzip
@@ -1059,46 +1111,17 @@ static void browser_load_page(const char* url) {
                              decompressed_len, BROWSER_RESPONSE_SIZE - header_len - 1, fit);
                 }
                 s_printf("[Browser] Gzip decompressed: %d -> %d bytes\n", body_len, decompressed_len);
+            } else {
+                s_printf("[Browser] Gzip decompress FAILED (result=%d, decompressed_len=%u)\n",
+                         result, decompressed_len);
             }
             kfree(decompressed);
             // Re-find body pointer (it hasn't moved since we copied in place)
         }
-    }
-
-    // Check for chunked Transfer-Encoding and decode if needed
-    int is_chunked = 0;
-    {
-        // Scan headers for Transfer-Encoding: chunked
-        char* h = response;
-        while (h < body) {
-            if ((h[0]=='T'||h[0]=='t') && (h[1]=='r'||h[1]=='R') && (h[2]=='a'||h[2]=='A') &&
-                (h[3]=='n'||h[3]=='N') && (h[4]=='s'||h[4]=='S') && (h[5]=='f'||h[5]=='F') &&
-                (h[6]=='e'||h[6]=='E') && (h[7]=='r'||h[7]=='R') && (h[8]=='-'||h[8]=='-') &&
-                (h[9]=='E'||h[9]=='e') && (h[10]=='n'||h[10]=='N') && (h[11]=='c'||h[11]=='C') &&
-                (h[12]=='o'||h[12]=='O') && (h[13]=='d'||h[13]=='D') && (h[14]=='i'||h[14]=='I') &&
-                (h[15]=='n'||h[15]=='N') && (h[16]=='g'||h[16]=='G') && h[17]==':') {
-                // Found Transfer-Encoding header — check value
-                char* val = h + 18;
-                while (*val == ' ') val++;
-                if ((val[0]=='c'||val[0]=='C') && (val[1]=='h'||val[1]=='H') &&
-                    (val[2]=='u'||val[2]=='U') && (val[3]=='n'||val[3]=='N') &&
-                    (val[4]=='k'||val[4]=='K') && (val[5]=='e'||val[5]=='E') &&
-                    (val[6]=='d'||val[6]=='D')) {
-                    is_chunked = 1;
-                }
-                break;
-            }
-            // Advance to next header line
-            while (h < body && *h != '\n') h++;
-            if (h < body) h++;
-        }
-    }
-
-    if (is_chunked) {
-        int body_len = total_read - (body - response);
-        int new_len = decode_chunked(body, body_len);
-        total_read = (body - response) + new_len;
-        s_printf("[Browser] Chunked encoding decoded: %d -> %d bytes\n", body_len, new_len);
+    } else if (is_gzip) {
+        s_printf("[Browser] Gzip header detected but body doesn't start with magic bytes "
+                 "(0x%02X 0x%02X, expected 0x1F 0x8B)\n",
+                 (uint8_t)body[0], (uint8_t)body[1]);
     }
 
     // Save source HTML for view source (limit 32KB — was 8KB, too small for modern pages)
