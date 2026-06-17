@@ -1090,7 +1090,11 @@ static void browser_load_page(const char* url) {
         }
     }
 
-    if (is_gzip && body[0] == 0x1F && body[1] == 0x8B) {
+    // Cast body[n] to uint8_t before comparison. `char` is signed on x86,
+    // so body[1] == 0x8B sign-extends to 0xFFFFFF8B (-117), which is NOT
+    // equal to 0x8B (139). This was causing the gzip magic byte check to
+    // fail even when the body correctly started with 0x1F 0x8B.
+    if (is_gzip && (uint8_t)body[0] == 0x1F && (uint8_t)body[1] == 0x8B) {
         // Decompress gzip body
         int body_len = total_read - (body - response);
         uint32_t decompressed_len = 0;
