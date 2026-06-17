@@ -188,7 +188,14 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
         // Wait for connection (blocking) - OPTIMIZED polling
         if (sock->blocking) {
             uint32_t start = get_tick_count();
-            uint32_t timeout_ticks = sock->timeout / 10; // Convert to ticks
+            // k_connect timeout: 40 seconds (2000 ticks at 50Hz).
+            // Previously was sock->timeout / 10 = 1000 ticks = 20 seconds,
+            // but QEMU SLIRP networking can have high latency for the first
+            // TCP connection to a new external host (Google HTTPS in particular
+            // needs ~25-30s for the SYN-ACK to arrive after 4 retransmits).
+            // 40 seconds gives enough room for 5 SYN retransmits (at 1s, 3s,
+            // 7s, 15s, 31s) and the response latency.
+            uint32_t timeout_ticks = 2000;
             int loop_count = 0;
             uint16_t last_cbr = 0;
 
