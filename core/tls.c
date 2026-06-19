@@ -1892,9 +1892,15 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
     int skip_count = 0;
     while (header[0] < 20 || header[0] > 23) {
         skip_count++;
-        if (skip_count <= 20) {
-            s_printf("[TLS] Skipping non-TLS byte 0x%02X before TLS record\n", header[0]);
+        if (skip_count > 16) {
+            // Too many spurious bytes — likely reading corrupted data or
+            // the ServerHello itself (32 bytes of random server_random can
+            // produce false matches in the 20-23 range). Fail rather than
+            // consuming the entire ServerHello.
+            s_printf("[TLS] Too many spurious bytes (%d), aborting\n", skip_count);
+            return TLS_ERR_HANDSHAKE;
         }
+        s_printf("[TLS] Skipping non-TLS byte 0x%02X before TLS record\n", header[0]);
         received = tls_recv_all(session->socket_fd, header, 1);
         if (received < 1) {
             s_printf("[TLS] Failed to read past %d spurious bytes\n", skip_count);
@@ -2043,9 +2049,13 @@ static int tls_send_client_hello(tls_session_t* session) {
     // Required by many servers (Cloudflare, Google, etc.)
     tls_write_uint16(0x0010, p);  // Extension type: alpn
     p += 2;
-    tls_write_uint16(13, p);  // Extension data length (2 + 2+1 + 2+8 = 13)
+    // FIX: Extension data length = 2 (list_len) + 3 (h2) + 9 (http/1.1) = 14
+    // Previously was 13 (off-by-one), which corrupted all subsequent extensions
+    // and caused servers to reject the ClientHello with decode_error.
+    tls_write_uint16(14, p);  // Extension data length
     p += 2;
-    tls_write_uint16(11, p);  // ALPN protocol list length
+    // FIX: Protocol list length = 3 (h2) + 9 (http/1.1) = 12
+    tls_write_uint16(12, p);  // ALPN protocol list length
     p += 2;
     // "h2" (HTTP/2)
     *p++ = 2;  // Protocol length
@@ -2055,18 +2065,18 @@ static int tls_send_client_hello(tls_session_t* session) {
     *p++ = 'h'; *p++ = 't'; *p++ = 't'; *p++ = 'p';
     *p++ = '/'; *p++ = '1'; *p++ = '.'; *p++ = '1';
 
-    // 6. Supported Versions extension (0x002B) - CRITICAL for TLS 1.3
-    // Google and most modern servers require this extension. Without it,
-    // servers that only support TLS 1.3 will close the connection.
-    // We offer TLS 1.3 (0x0304) and TLS 1.2 (0x0303).
+    // 6. Supported Versions extension (0x002B)
+    // We only offer TLS 1.2 (0x0303) because our TLS 1.3 implementation is
+    // incomplete (tls13_connect is a stub). If we offer TLS 1.3, servers will
+    // pick it and the handshake will fail when we can't process the TLS 1.3
+    // ServerHello (cipher suite 0x1301 not recognized by our TLS 1.2 parser).
+    // Most servers still accept TLS 1.2 fallback.
     tls_write_uint16(0x002B, p);  // Extension type: supported_versions
     p += 2;
-    tls_write_uint16(5, p);  // Extension data length (1 + 2*2 = 5)
+    tls_write_uint16(3, p);  // Extension data length (1 + 1*2 = 3)
     p += 2;
-    *p++ = 4;  // Versions list length (2 versions * 2 bytes)
-    tls_write_uint16(0x0304, p);  // TLS 1.3
-    p += 2;
-    tls_write_uint16(0x0303, p);  // TLS 1.2
+    *p++ = 2;  // Versions list length (1 version * 2 bytes)
+    tls_write_uint16(0x0303, p);  // TLS 1.2 only
     p += 2;
 
     // Calculate extensions total length
@@ -2509,26 +2519,11 @@ int tls_connect(tls_session_t* session, const char* hostname, uint16_t port) {
     
     session->state = TLS_STATE_CONNECTING;
 
-    // Drain any spurious data that arrived in the socket buffer during
-    // k_connect's wait. Google's server (via QEMU SLIRP) sends a 6-byte
-    // segment of all-zero bytes before the real TLS response. If we don't
-    // drain it, tls_recv_record will read those zeros as the TLS record
-    // header, get content_type=0, and fail.
-    {
-        extern int k_socket_set_nonblocking(int fd);
-        extern int k_socket_set_blocking(int fd);
-        k_socket_set_nonblocking(session->socket_fd);
-        uint8_t drain_buf[256];
-        int drained = 0;
-        int r;
-        while ((r = k_recvfrom(session->socket_fd, drain_buf, sizeof(drain_buf), 0, NULL)) > 0) {
-            drained += r;
-        }
-        k_socket_set_blocking(session->socket_fd);
-        if (drained > 0) {
-            s_printf("[TLS] Drained %d spurious bytes from socket before ClientHello\n", drained);
-        }
-    }
+    // NOTE: The drain logic that was here has been removed. It was causing
+    // more harm than good — if the server responded quickly, the drain would
+    // eat the real ServerHello before tls_recv_record could read it. The
+    // byte-skip loop in tls_recv_record (which skips non-TLS bytes before
+    // the record header) is sufficient to handle spurious leading data.
 
     // Send ClientHello
     ret = tls_send_client_hello(session);

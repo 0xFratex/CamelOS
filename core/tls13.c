@@ -876,9 +876,11 @@ int tls13_send_client_hello(tls13_session_t* session) {
     
     // ALPN extension (Application-Layer Protocol Negotiation)
     // Required for HTTP/2 - advertise "h2" and "http/1.1"
+    // FIX: Extension length = 2 (list_len) + 3 (h2) + 9 (http/1.1) = 14
+    // Previously was 13 (off-by-one), same bug as tls.c.
     *p++ = 0x00; *p++ = 0x10;  // Extension type: alpn (16)
-    *p++ = 0x00; *p++ = 0x0D;  // Extension length (13 bytes)
-    *p++ = 0x00; *p++ = 0x0B;  // ALPN protocol list length (11 bytes)
+    *p++ = 0x00; *p++ = 0x0E;  // Extension length (14 bytes)
+    *p++ = 0x00; *p++ = 0x0C;  // ALPN protocol list length (12 bytes)
     // "h2" (HTTP/2)
     *p++ = 0x02;  // Protocol length
     *p++ = 'h'; *p++ = '2';

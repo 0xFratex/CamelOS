@@ -192,7 +192,7 @@ void rtl8139_receive_packets() {
 #endif
                 outb(rtl_dev.io_base + RTL_REG_CMD, 0x04);  // Disable RX
                 for(volatile int i = 0; i < 100000; i++) asm volatile("pause");
-                outw(rtl_dev.io_base + RTL_REG_CAPR, 0);
+                outw(rtl_dev.io_base + RTL_REG_CAPR, 32768 - 16);
                 current_packet_ptr = 0;
                 memset(rx_buffer_aligned, 0, RX_BUF_SIZE);
                 outb(rtl_dev.io_base + RTL_REG_CMD, 0x0C);  // Re-enable RX+TX
@@ -271,13 +271,10 @@ void rtl8139_flush_rx(void) {
     // Reset the read pointer to match the hardware write pointer
     uint16_t cbr = inw(rtl_dev.io_base + 0x3A) % 32768;
     current_packet_ptr = cbr;
-    // Set CAPR to (cbr - 16) so the hardware sees all packets as read
-    if (cbr >= 16) {
-        outw(rtl_dev.io_base + RTL_REG_CAPR, cbr - 16);
-    } else {
-        outw(rtl_dev.io_base + RTL_REG_CAPR, 32768 - 16 + cbr);
-    }
-    s_printf("[RTL8139] RX flushed: cbr=%d, current_packet_ptr=%d\n", cbr, current_packet_ptr);
+    // Set CAPR to (cbr - 16) mod 32768 so read_offset = (CAPR + 16) % 32768 = cbr
+    uint16_t capr_val = (cbr >= 16) ? (cbr - 16) : (32768 - 16 + cbr);
+    outw(rtl_dev.io_base + RTL_REG_CAPR, capr_val);
+    s_printf("[RTL8139] RX flushed: cbr=%d, capr=%d, current_packet_ptr=%d\n", cbr, capr_val, current_packet_ptr);
 }
 
 // Configure IP address (minimal logging)
@@ -383,6 +380,18 @@ void rtl8139_init(pci_device_t* dev) {
     outb(rtl_dev.io_base + RTL_REG_CMD, 0x00);
     for(volatile int i=0; i<10000; i++) asm volatile("pause");
     outb(rtl_dev.io_base + RTL_REG_CMD, 0x0C);  // RX+TX enable
+    
+    // 8a. Initialize CAPR (Current Address of Packet Read)
+    // After reset, CAPR=0 which means read_offset=(0+16)%32768=16, but
+    // current_packet_ptr=0. This desync causes spurious "packet waiting"
+    // detection and reads of stale/zeroed buffer memory — the "6 zero bytes"
+    // corruption that plagued HTTP and TLS.
+    //
+    // Fix: Set CAPR to (RX_BUF_SIZE - 16) = 32752 so that
+    // read_offset = (32752 + 16) % 32768 = 0, matching current_packet_ptr=0.
+    // Also reset current_packet_ptr to be safe.
+    current_packet_ptr = 0;
+    outw(rtl_dev.io_base + RTL_REG_CAPR, 32768 - 16);
     
     // 9. Read MAC address
     for(int i=0; i<6; i++) {
