@@ -71,38 +71,24 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     if (len > 1792) len = 1792;
     if (len < 60) len = 60; // Min Ethernet size
 
-    // The RTL8139 has 4 TX descriptors. We rotate through them.
-    // The OWN bit (bit 13 of TSD) is 1 when the hardware is done transmitting
-    // and the descriptor is available for software use.
-    //
-    // Previously, we did TWO blocking waits per send:
-    //   1. Pre-send: wait for OWN=1 (previous TX done)
-    //   2. Post-send: wait for OWN=1 (this TX done)
-    //
-    // The post-send wait was the bottleneck — QEMU's RTL8139 emulation doesn't
-    // always set OWN promptly, causing multi-second delays on every packet.
-    // This delayed the TLS ClientHello so much that servers closed the
-    // connection before it arrived.
-    //
-    // FIX: Removed the post-send wait entirely. With 4 TX descriptors and
-    // rotation, the pre-send wait will catch any case where we're sending
-    // faster than the hardware can transmit. The pre-send wait is also
-    // shortened to a small poll — if the descriptor isn't ready, we just
-    // advance to the next one rather than blocking.
+    // Read current Status
+    uint32_t tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
 
-    // Brief check if current descriptor is available (OWN=1).
-    // Don't block — if it's not ready, try the next descriptor.
-    int desc = tx_cur;
-    for (int i = 0; i < 4; i++) {
-        uint32_t tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (desc * 4));
-        if (tsd & (1 << 13)) break;  // OWN=1, descriptor available
-        desc = (desc + 1) % 4;
+    // Wait for OWN bit (Bit 13) to be 1 (Driver owns buffer)
+    int timeout = TX_TIMEOUT_CYCLES;
+    while (!(tsd & (1 << 13)) && timeout--) {
+        tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
+        asm volatile("pause");
     }
 
-    // Use the descriptor we found (or the current one if all are busy).
-    // Even if all descriptors are busy, we proceed — the hardware will
-    // handle the overwrite. This is better than blocking for seconds.
-    tx_cur = desc;
+    if (timeout <= 0) {
+#if RTL_DEBUG_ERRORS
+        s_printf("[RTL8139] TX timeout on descriptor\n");
+#endif
+        tx_cur = (tx_cur + 1) % 4;
+        stat_tx_errors++;
+        return -1;
+    }
 
     // Copy data to TX buffer
     memcpy(tx_buffers[tx_cur], data, len);
@@ -110,8 +96,22 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     // Set Physical Address and start transmission
     outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4), (uint32_t)tx_buffers[tx_cur]);
     outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), len);
-
-    // Advance to next descriptor for next call
+    
+    // Wait for transmission to complete
+    timeout = TX_TIMEOUT_CYCLES;
+    while (timeout--) {
+        uint32_t tsd_status = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
+        if (tsd_status & (1 << 13)) break;
+        asm volatile("pause");
+    }
+    
+    if (timeout <= 0) {
+#if RTL_DEBUG_ERRORS
+        s_printf("[RTL8139] TX completion timeout\n");
+#endif
+        stat_tx_errors++;
+    }
+    
     tx_cur = (tx_cur + 1) % 4;
     net_if->tx_packets++;
     net_if->tx_bytes += len;
@@ -124,17 +124,47 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
 void rtl8139_receive_packets() {
     if (!rtl_dev.io_base || !rx_buffer_aligned) return;
 
-    // Check for pending packets by reading the packet header at the current
-    // read position. If the ROK bit (bit 0 of status) is set, there is a
-    // valid packet to process. This is the simplest and most reliable method
-    // for QEMU's RTL8139 emulation.
+    // Check if there are packets to process.
+    //
+    // BUG FIX: Previously this checked bit 0 of the CMD register (0x01 = RE,
+    // Receiver Enable), which is ALWAYS 1 when the receiver is enabled. The
+    // check was therefore inverted: it returned "no packets" whenever the
+    // receiver was on, which is always. As a result, rtl8139_poll() (called
+    // from net_poll() in every k_connect / k_recvfrom / DNS loop iteration)
+    // NEVER processed any packets — the function returned immediately every
+    // time. The only way packets got processed was via the ISR handler
+    // (rtl8139_handler) firing on the ROK interrupt, which was unreliable
+    // and caused SYN-ACKs to arrive "late" (actually they were in the RX
+    // buffer the whole time, just never drained by polling).
+    //
+    // The RTL8139 has no "buffer empty" bit in the CMD register. The correct
+    // way to poll is to check the packet header at the current read position:
+    // if the ROK bit (bit 0 of the status field) is set, a valid packet is
+    // waiting. We also accept the ROK bit in the ISR as a secondary trigger.
+    uint16_t offset = current_packet_ptr % 32768;
+    uint32_t header_val = *(uint32_t*)(rx_buffer_aligned + offset);
+    uint16_t status = header_val & 0xFFFF;
+    uint16_t length = (header_val >> 16) & 0xFFFF;
+
+    // No valid packet waiting if ROK bit is not set, or length is implausible.
+    // Note: we must also check the ISR ROK bit because the status field can
+    // be stale (leftover from a previous packet that we already processed).
+    uint16_t isr = inw(rtl_dev.io_base + RTL_REG_ISR);
+    if (!(status & 0x01) && !(isr & 0x01)) {
+        return;  // No packets
+    }
+    // If ISR says ROK but status doesn't, the header may not be written yet;
+    // try anyway — the loop below will validate the header before using it.
+
     int packets_processed = 0;
 
+    // Process batch of packets. The loop condition checks both the ISR ROK
+    // bit and the status field at the current read position.
     while (packets_processed < RX_MAX_BATCH) {
-        uint16_t offset = current_packet_ptr % 32768;
-        uint32_t header_val = *(uint32_t*)(rx_buffer_aligned + offset);
-        uint16_t status = header_val & 0xFFFF;
-        uint16_t length = (header_val >> 16) & 0xFFFF;
+        offset = current_packet_ptr % 32768;
+        header_val = *(uint32_t*)(rx_buffer_aligned + offset);
+        status = header_val & 0xFFFF;
+        length = (header_val >> 16) & 0xFFFF;
 
         // Stop if no valid packet at this position.
         if (!(status & 0x01) || length < 60 || length > 1536) {
@@ -226,21 +256,6 @@ void rtl8139_handler() {
 
 void rtl8139_poll() {
     rtl8139_receive_packets();
-}
-
-// Flush all pending packets from the RX buffer by resetting the read/write
-// pointers. This is called after a connection failure (e.g. TLS handshake
-// failure) to clear stale packets that would otherwise pollute future
-// network operations.
-void rtl8139_flush_rx(void) {
-    if (!rtl_dev.io_base || !rx_buffer_aligned) return;
-    // Reset the read pointer to match the hardware write pointer
-    uint16_t cbr = inw(rtl_dev.io_base + 0x3A) % 32768;
-    current_packet_ptr = cbr;
-    // Set CAPR to (cbr - 16) mod 32768 so read_offset = (CAPR + 16) % 32768 = cbr
-    uint16_t capr_val = (cbr >= 16) ? (cbr - 16) : (32768 - 16 + cbr);
-    outw(rtl_dev.io_base + RTL_REG_CAPR, capr_val);
-    s_printf("[RTL8139] RX flushed: cbr=%d, capr=%d, current_packet_ptr=%d\n", cbr, capr_val, current_packet_ptr);
 }
 
 // Configure IP address (minimal logging)
@@ -346,12 +361,6 @@ void rtl8139_init(pci_device_t* dev) {
     outb(rtl_dev.io_base + RTL_REG_CMD, 0x00);
     for(volatile int i=0; i<10000; i++) asm volatile("pause");
     outb(rtl_dev.io_base + RTL_REG_CMD, 0x0C);  // RX+TX enable
-    
-    // NOTE: CAPR initialization to (32768-16) was reverted because it caused
-    // QEMU's RTL8139 emulation to stop receiving packets entirely. The
-    // 6-zero-byte corruption is handled by application-level workarounds
-    // (HTTP null-byte stripping, TLS record header reconstruction).
-    current_packet_ptr = 0;
     
     // 9. Read MAC address
     for(int i=0; i<6; i++) {
