@@ -757,6 +757,9 @@ static void browser_load_page(const char* url) {
 
     if (k_connect(sockfd, &server_addr) < 0) {
         k_close(sockfd);
+        // Flush stale packets from the NIC RX buffer
+        extern void rtl8139_flush_rx(void);
+        rtl8139_flush_rx();
         error_type = ERR_CONNECT;
         strncpy(error_detail, host, 127); error_detail[127] = 0;
         page_line_count = 0;
@@ -775,6 +778,11 @@ static void browser_load_page(const char* url) {
 
         if (!tls_session) {
             k_close(sockfd);
+            // Flush stale packets from the NIC RX buffer. The failed TLS
+            // connection leaves packets in the RX ring that would pollute
+            // future DNS queries and TCP connections.
+            extern void rtl8139_flush_rx(void);
+            rtl8139_flush_rx();
             // TLS handshake failed - warn but do NOT silently fall back to HTTP
             s_printf("[BROWSER] WARNING: TLS handshake failed for %s. Connection not secure.\n", url);
             // Don't automatically fall back to HTTP - return error instead

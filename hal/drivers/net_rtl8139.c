@@ -262,6 +262,24 @@ void rtl8139_poll() {
     rtl8139_receive_packets();
 }
 
+// Flush all pending packets from the RX buffer by resetting the read/write
+// pointers. This is called after a connection failure (e.g. TLS handshake
+// failure) to clear stale packets that would otherwise pollute future
+// network operations.
+void rtl8139_flush_rx(void) {
+    if (!rtl_dev.io_base || !rx_buffer_aligned) return;
+    // Reset the read pointer to match the hardware write pointer
+    uint16_t cbr = inw(rtl_dev.io_base + 0x3A) % 32768;
+    current_packet_ptr = cbr;
+    // Set CAPR to (cbr - 16) so the hardware sees all packets as read
+    if (cbr >= 16) {
+        outw(rtl_dev.io_base + RTL_REG_CAPR, cbr - 16);
+    } else {
+        outw(rtl_dev.io_base + RTL_REG_CAPR, 32768 - 16 + cbr);
+    }
+    s_printf("[RTL8139] RX flushed: cbr=%d, current_packet_ptr=%d\n", cbr, current_packet_ptr);
+}
+
 // Configure IP address (minimal logging)
 void rtl8139_configure_ip(uint32_t ip, uint32_t gw, uint32_t mask) {
 #if RTL_DEBUG_INIT
