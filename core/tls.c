@@ -1846,8 +1846,11 @@ static int tls_send_record(tls_session_t* session, uint8_t content_type,
 static int tls_recv_all(int fd, uint8_t* buffer, size_t len) {
     size_t total = 0;
     uint32_t start = get_tick_count();
-    // TLS per-read timeout: 10 seconds (in tick units, ~50 ticks/sec)
-    uint32_t tls_timeout = 500;
+    // TLS per-read timeout: 40 seconds (2000 ticks at 50Hz).
+    // QEMU SLIRP can delay server responses by 10-30 seconds. The previous
+    // 10-second timeout was too short — after skipping 6 spurious zero bytes,
+    // tls_recv_all would time out before the real ServerHello arrived.
+    uint32_t tls_timeout = 2000;
     
     while (total < len) {
         int r = k_recvfrom(fd, buffer + total, len - total, 0, NULL);
