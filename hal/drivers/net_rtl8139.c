@@ -192,7 +192,7 @@ void rtl8139_receive_packets() {
 #endif
                 outb(rtl_dev.io_base + RTL_REG_CMD, 0x04);  // Disable RX
                 for(volatile int i = 0; i < 100000; i++) asm volatile("pause");
-                outw(rtl_dev.io_base + RTL_REG_CAPR, 32768 - 16);
+                outw(rtl_dev.io_base + RTL_REG_CAPR, 0);
                 current_packet_ptr = 0;
                 memset(rx_buffer_aligned, 0, RX_BUF_SIZE);
                 outb(rtl_dev.io_base + RTL_REG_CMD, 0x0C);  // Re-enable RX+TX
