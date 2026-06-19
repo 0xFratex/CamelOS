@@ -227,8 +227,11 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
     extern int k_socket_set_nonblocking(int fd);
     k_socket_set_nonblocking(s);
 
-    // Retry timeouts in ticks (50Hz): 2s, 3s, 5s
-    static const int retry_timeouts[3] = {100, 150, 250};
+    // Retry timeouts in ticks (50Hz): 10s, 10s, 10s = 30s total.
+    // Previously 2s + 3s + 5s = 10s, but QEMU SLIRP can delay DNS responses
+    // by 10-30 seconds. With 30s total, late responses from retry 0 will
+    // arrive during retry 2's window and be accepted (txid check removed).
+    static const int retry_timeouts[3] = {500, 500, 500};
     int max_retries = 3;
 
     uint8_t pkt[512];
