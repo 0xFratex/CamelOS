@@ -1846,26 +1846,34 @@ static int tls_send_record(tls_session_t* session, uint8_t content_type,
 static int tls_recv_all(int fd, uint8_t* buffer, size_t len) {
     size_t total = 0;
     uint32_t start = get_tick_count();
-    // TLS per-read timeout: 40 seconds (2000 ticks at 50Hz).
-    // QEMU SLIRP can delay server responses by 10-30 seconds. The previous
-    // 10-second timeout was too short — after skipping 6 spurious zero bytes,
-    // tls_recv_all would time out before the real ServerHello arrived.
-    uint32_t tls_timeout = 2000;
-    
+    // TLS per-read timeout: 60 seconds (3000 ticks at 50Hz).
+    // QEMU SLIRP can delay server responses by 10-30 seconds. We use 60s
+    // to be safe. The timer does NOT reset on partial reads — the total
+    // time from the first call to this function must not exceed 60s.
+    uint32_t tls_timeout = 3000;
+
     while (total < len) {
         int r = k_recvfrom(fd, buffer + total, len - total, 0, NULL);
         if (r > 0) {
             total += r;
-            start = get_tick_count(); // Reset timeout on successful data
+            // NOTE: Do NOT reset 'start' here. The total timeout is measured
+            // from the beginning of this tls_recv_all call, not from the last
+            // successful read. This prevents spurious zero bytes from resetting
+            // the timer and making us wait another 60s per byte.
         } else if (r == 0) {
             // Connection closed by peer
+            s_printf("[TLS] tls_recv_all: connection closed (EOF) after %d/%d bytes\n", (int)total, (int)len);
             return (total > 0) ? (int)total : -1;
         } else {
-            // r < 0: no data available or error
-            // Check overall timeout — k_recvfrom already polls internally
-            if (get_tick_count() - start > tls_timeout) {
-                return (total > 0) ? (int)total : -1; // Timeout
+            // r < 0: no data available or k_recvfrom internal timeout
+            // Check overall timeout
+            uint32_t elapsed = get_tick_count() - start;
+            if (elapsed > tls_timeout) {
+                s_printf("[TLS] tls_recv_all: timeout after %d ticks (%d/%d bytes received)\n",
+                         elapsed, (int)total, (int)len);
+                return (total > 0) ? (int)total : -1;
             }
+            // Keep waiting — k_recvfrom already polled the NIC internally
         }
     }
     return (int)total;
