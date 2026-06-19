@@ -381,17 +381,11 @@ void rtl8139_init(pci_device_t* dev) {
     for(volatile int i=0; i<10000; i++) asm volatile("pause");
     outb(rtl_dev.io_base + RTL_REG_CMD, 0x0C);  // RX+TX enable
     
-    // 8a. Initialize CAPR (Current Address of Packet Read)
-    // After reset, CAPR=0 which means read_offset=(0+16)%32768=16, but
-    // current_packet_ptr=0. This desync causes spurious "packet waiting"
-    // detection and reads of stale/zeroed buffer memory — the "6 zero bytes"
-    // corruption that plagued HTTP and TLS.
-    //
-    // Fix: Set CAPR to (RX_BUF_SIZE - 16) = 32752 so that
-    // read_offset = (32752 + 16) % 32768 = 0, matching current_packet_ptr=0.
-    // Also reset current_packet_ptr to be safe.
+    // NOTE: CAPR initialization to (32768-16) was reverted because it caused
+    // QEMU's RTL8139 emulation to stop receiving packets entirely. The
+    // 6-zero-byte corruption is handled by application-level workarounds
+    // (HTTP null-byte stripping, TLS record header reconstruction).
     current_packet_ptr = 0;
-    outw(rtl_dev.io_base + RTL_REG_CAPR, 32768 - 16);
     
     // 9. Read MAC address
     for(int i=0; i<6; i++) {
