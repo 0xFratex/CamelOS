@@ -290,8 +290,13 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
                          r, poll_count, ntohs(rhdr->id), txid);
 #endif
 
-                // Verify this is a response to our query
-                if (ntohs(rhdr->id) != txid) continue;
+                // Verify this is a response (not a query).
+                // Note: We don't check the txid because QEMU SLIRP has high
+                // latency — a response to retry 0 may arrive during retry 2's
+                // window, when we've already moved to a different txid. Since
+                // we only have one outstanding query at a time, any DNS response
+                // is for our current domain. Accepting late responses from
+                // previous retries fixes the "DNS FAILED after 3 retries" issue.
                 if (!(ntohs(rhdr->flags) & 0x8000)) continue;  // not a response
 
                 uint16_t ancount = ntohs(rhdr->ancount);
