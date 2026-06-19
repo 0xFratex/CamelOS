@@ -124,47 +124,13 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
 void rtl8139_receive_packets() {
     if (!rtl_dev.io_base || !rx_buffer_aligned) return;
 
-    // Check if there are packets to process by comparing the hardware write
-    // pointer (CBR) against our software read pointer.
-    //
-    // BUG FIX: Previously this checked bit 0 of the CMD register (0x01 = RE,
-    // Receiver Enable), which is ALWAYS 1 when the receiver is enabled.
-    //
-    // The RTL8139 uses a ring buffer: hardware writes packets and advances
-    // CBR (Current Buffer Address, 0x3A). Software reads packets and advances
-    // CAPR (Current Address of Packet Read, 0x38). If CAPR != CBR (mod 32768),
-    // there is at least one packet waiting to be read.
-    //
-    // Note: CAPR is typically set to (packet_offset - 16) because the hardware
-    // needs 16 bytes of margin. We account for this offset in the comparison.
-    uint16_t cbr = inw(rtl_dev.io_base + 0x3A) % 32768;
-    uint16_t capr = inw(rtl_dev.io_base + RTL_REG_CAPR);
-    // CAPR is stored as (read_offset - 16) mod 32768. Recover the actual
-    // read offset by adding 16.
-    uint16_t read_offset = (capr + 16) % 32768;
-
-    // Only log when a packet is actually waiting — avoids flooding the serial
-    // output with "pkt_waiting=0" lines during idle polling.
-    if (cbr != read_offset) {
-        s_printf("[RTL8139] poll: current_packet_ptr=%d read_offset=%d cbr=%d (pkt_waiting=1)\n",
-                 current_packet_ptr % 32768, read_offset, cbr);
-    }
-
-    if (cbr == read_offset) {
-        return;  // No packets pending
-    }
-
+    // Check for pending packets by reading the packet header at the current
+    // read position. If the ROK bit (bit 0 of status) is set, there is a
+    // valid packet to process. This is the simplest and most reliable method
+    // for QEMU's RTL8139 emulation.
     int packets_processed = 0;
 
-    // Process batch of packets — keep going while CBR != read pointer.
     while (packets_processed < RX_MAX_BATCH) {
-        uint16_t cur_cbr = inw(rtl_dev.io_base + 0x3A) % 32768;
-        uint16_t cur_capr = inw(rtl_dev.io_base + RTL_REG_CAPR);
-        uint16_t cur_read_offset = (cur_capr + 16) % 32768;
-        if (cur_cbr == cur_read_offset) {
-            break;  // No more packets
-        }
-
         uint16_t offset = current_packet_ptr % 32768;
         uint32_t header_val = *(uint32_t*)(rx_buffer_aligned + offset);
         uint16_t status = header_val & 0xFFFF;
