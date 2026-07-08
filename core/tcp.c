@@ -380,6 +380,42 @@ tcp_connection_t* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port)
         return NULL;
     }
 
+    // CRITICAL: Reap stale connections to the same remote host:port before
+    // creating a new one. Without this, old connections in CLOSE_WAIT,
+    // LAST_ACK, FIN_WAIT, or TIME_WAIT states linger in the connection
+    // table. When the new SYN-ACK arrives, tcp_find_connection() can match
+    // the stale connection instead of the new SYN_SENT one — the SYN-ACK
+    // is delivered to the stale connection (which ignores it), and the
+    // new connection times out.
+    //
+    // The log showed this exactly:
+    //   [TCP] SYN sent, local_port=49152, waiting for SYN-ACK...
+    //   [TCP] Matched conn state=7   ← CLOSE_WAIT! Stale connection!
+    //   [TCP] TIMEOUT after 2001 ticks
+    for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
+        tcp_connection_t* old = &tcp_connections[i];
+        if (old->state == TCP_CLOSED) continue;
+        if (old->remote_ip == remote_ip && old->remote_port == remote_port) {
+            s_printf("[TCP] Reaping stale connection (state=%d) to %d.%d.%d.%d:%d\n",
+                     old->state,
+                     (remote_ip >> 24) & 0xFF, (remote_ip >> 16) & 0xFF,
+                     (remote_ip >> 8) & 0xFF, remote_ip & 0xFF,
+                     remote_port);
+            // Force-close the stale connection and free its slot
+            old->state = TCP_CLOSED;
+            tcp_ofo_flush(old);
+            old->remote_ip = 0;
+            old->remote_port = 0;
+            old->local_port = 0;
+            old->retransmit_timeout = 0;
+            old->retransmit_count = 0;
+            old->on_data = NULL;
+            old->on_state_change = NULL;
+            old->callback_user_data = NULL;
+            old->user_closing = 0;
+        }
+    }
+
     // Find unused local port with collision check
     uint16_t start_port = tcp_next_port;
     do {
@@ -1079,6 +1115,26 @@ void tcp_retransmit_check(void)
             }
             continue;
         }
+
+        // Reap stale CLOSE_WAIT / LAST_ACK / FIN_WAIT connections.
+        // These states mean the connection is closing but hasn't fully closed.
+        // If no progress is made for 30 seconds (1500 ticks), force-close.
+        // This prevents the connection table from filling up with zombie
+        // connections that block new connections to the same host:port.
+        if (conn->state == TCP_CLOSE_WAIT || conn->state == TCP_LAST_ACK ||
+            conn->state == TCP_FIN_WAIT1 || conn->state == TCP_FIN_WAIT2 ||
+            conn->state == TCP_CLOSING) {
+            uint32_t idle = now - conn->last_ack_time;
+            if (idle > 1500) {  // 30 seconds
+                s_printf("[TCP] Reaping idle connection in state %d (idle %d ticks)\n",
+                         conn->state, idle);
+                conn->state = TCP_CLOSED;
+                tcp_ofo_flush(conn);
+                conn->retransmit_timeout = 0;
+            }
+            continue;
+        }
+
         if (conn->retransmit_timeout == 0) continue;
 
         /* Check if the retransmit timer has expired */

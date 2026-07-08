@@ -327,6 +327,7 @@ int welcome_setup_save_config(void) {
     // Do NOT delete+create separately as that can cause race conditions and
     // duplicate directory entries. Just write directly.
     int wres = sys_fs_write("/Library/Preferences/system.conf", buffer, pos);
+    s_printf("[SETUP] save_config: sys_fs_write returned %d (wrote %d bytes)\n", wres, pos);
     
     // Flush immediately after writing the config to ensure persistence
     pfs32_sync();
