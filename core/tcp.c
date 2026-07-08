@@ -353,6 +353,13 @@ int tcp_connect(uint32_t remote_ip, uint16_t remote_port) {
     conn->local_port = local_port;
     conn->remote_port = remote_port;
     conn->snd_nxt = 1;
+    // CRITICAL: snd_una must track the ISN (Initial Sequence Number)
+    // so that SYN retransmits send seq=ISN, not seq=ISN+1. Without
+    // this, each retransmit sends a "new" SYN with an incremented seq,
+    // which the server interprets as a duplicate SYN on an established
+    // connection → RST. (Previously snd_una stayed 0 from memset, so
+    // retransmits using snd_nxt sent seq=2, 3, 4... instead of seq=1.)
+    conn->snd_una = conn->snd_nxt;  // = 1 (the ISN)
     conn->connect_time = timer_get_ticks();
     conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
     conn->retransmit_count = 0;
@@ -360,7 +367,7 @@ int tcp_connect(uint32_t remote_ip, uint16_t remote_port) {
 
     // Send SYN
     tcp_send(conn, TCP_SYN, NULL, 0);
-    conn->snd_nxt++;
+    conn->snd_nxt++;  // SYN consumes one seq number; data starts at ISN+1
 
     return local_port;
 }
@@ -394,6 +401,13 @@ tcp_connection_t* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port)
     conn->local_port = local_port;
     conn->remote_port = remote_port;
     conn->snd_nxt = 1;
+    // CRITICAL: snd_una must track the ISN (Initial Sequence Number)
+    // so that SYN retransmits send seq=ISN, not seq=ISN+1. Without
+    // this, each retransmit sends a "new" SYN with an incremented seq,
+    // which the server interprets as a duplicate SYN on an established
+    // connection → RST. (Previously snd_una stayed 0 from memset, so
+    // retransmits using snd_nxt sent seq=2, 3, 4... instead of seq=1.)
+    conn->snd_una = conn->snd_nxt;  // = 1 (the ISN)
     conn->connect_time = timer_get_ticks();
     conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
     conn->retransmit_count = 0;
@@ -401,7 +415,7 @@ tcp_connection_t* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port)
 
     // Send SYN
     tcp_send(conn, TCP_SYN, NULL, 0);
-    conn->snd_nxt++;
+    conn->snd_nxt++;  // SYN consumes one seq number; data starts at ISN+1
 
     return conn;
 }
@@ -490,6 +504,13 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                     conn->snd_una = ack;
                     conn->state = TCP_ESTABLISHED;
                     conn->retransmit_count = 0;  /* Reset on successful handshake */
+                    // Cancel the SYN retransmit timer. Without this, a
+                    // retransmit that was already "in flight" (timer
+                    // armed, about to fire) could send a SYN on the
+                    // now-established connection, causing the server
+                    // to RST. The ESTABLISHED state's own retransmit
+                    // timer will be armed when we send data.
+                    conn->retransmit_timeout = 0;
 
                     // Send ACK
                     tcp_send(conn, TCP_ACK, NULL, 0);
@@ -720,6 +741,18 @@ int tcp_send_data(tcp_connection_t* conn, uint8_t* data, uint16_t len) {
         conn->snd_nxt += chunk;
         sent += chunk;
     }
+
+    // Arm the retransmit timer so unacked data gets retransmitted.
+    // Without this, a lost ClientHello (e.g. dropped by SLIRP) would
+    // never be retransmitted and the TLS handshake would time out.
+    // This is especially important now that we clear retransmit_timeout
+    // when transitioning from SYN_SENT to ESTABLISHED (to prevent stale
+    // SYN retransmits). We must re-arm it here when actual data is sent.
+    if (conn->retransmit_timeout == 0) {
+        conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
+    }
+    conn->last_ack_time = timer_get_ticks();
+    conn->retransmit_count = 0;
 
     return sent;
 }
@@ -1052,17 +1085,40 @@ void tcp_retransmit_check(void)
 
         switch (conn->state) {
             case TCP_SYN_SENT:
-                /* Retransmit SYN */
+                /* Retransmit SYN.
+                 *
+                 * CRITICAL FIX: SYN retransmits MUST use the same sequence
+                 * number as the original SYN (the ISN). tcp_send() uses
+                 * conn->snd_nxt as the seq, but snd_nxt was incremented
+                 * to ISN+1 after the first SYN send. Without saving and
+                 * restoring snd_nxt, each retransmit sends seq=ISN+1,
+                 * ISN+2, etc. — which the server interprets as duplicate
+                 * SYNs on an established connection, causing it to RST.
+                 *
+                 * The save/restore pattern mirrors the ESTABLISHED case
+                 * below: temporarily set snd_nxt = snd_una (= ISN), send
+                 * the SYN, then restore snd_nxt. */
                 s_printf("[TCP] Retransmitting SYN to port %d (attempt %d)\n",
                          conn->remote_port, conn->retransmit_count);
-                tcp_send(conn, TCP_SYN, NULL, 0);
+                {
+                    uint32_t saved_nxt = conn->snd_nxt;
+                    conn->snd_nxt = conn->snd_una;  /* = ISN */
+                    tcp_send(conn, TCP_SYN, NULL, 0);
+                    conn->snd_nxt = saved_nxt;      /* restore to ISN+1 */
+                }
                 break;
 
             case TCP_SYN_RECEIVED:
-                /* Retransmit SYN-ACK */
+                /* Retransmit SYN-ACK (server side). Same save/restore
+                 * pattern as SYN_SENT above. */
                 s_printf("[TCP] Retransmitting SYN-ACK to port %d (attempt %d)\n",
                          conn->remote_port, conn->retransmit_count);
-                tcp_send(conn, TCP_SYN | TCP_ACK, NULL, 0);
+                {
+                    uint32_t saved_nxt = conn->snd_nxt;
+                    conn->snd_nxt = conn->snd_una;  /* = ISN */
+                    tcp_send(conn, TCP_SYN | TCP_ACK, NULL, 0);
+                    conn->snd_nxt = saved_nxt;      /* restore */
+                }
                 break;
 
             case TCP_ESTABLISHED:
