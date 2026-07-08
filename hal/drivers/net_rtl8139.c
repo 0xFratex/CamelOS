@@ -66,80 +66,76 @@ static uint32_t stat_rx_errors = 0;
 static uint32_t consecutive_rx_errors = 0;
 
 // Optimized TX function - minimal logging
+//
+// The RTL8139 has 4 TX descriptors. We round-robin through them.
+// If the current descriptor is still busy (OWN=0), we try the next
+// one. This avoids blocking and avoids the need for resets.
+//
+// Key insight: in QEMU, the NIC processes packets near-instantly.
+// If OWN is 0, it means the NIC is currently transmitting a packet
+// on that descriptor — not that it's "stuck". We just use a
+// different descriptor. With 4 descriptors, we can always find a
+// free one unless we're sending 4+ packets in a burst (rare).
+//
+// If ALL 4 descriptors are busy, we do a short spin-wait on the
+// current one. This should complete quickly in QEMU.
 int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     if (rtl_dev.io_base == 0) return -1;
     if (len > 1792) len = 1792;
     if (len < 60) len = 60; // Min Ethernet size
 
-    // We need to wait for the OWN bit (Bit 13) to be 1 before writing
-    // to the descriptor. If we write while the NIC still owns it
-    // (OWN=0, still transmitting the previous packet), the write is
-    // silently ignored and the packet is LOST.
-    //
-    // However, we must NOT drop the packet on timeout — that caused
-    // the TLS handshake to fail (ClientKeyExchange dropped). Instead,
-    // on timeout we RESET the descriptor (force OWN=1) and retry.
-    // This guarantees every packet is transmitted.
+    // Try to find a free descriptor (OWN bit = 1).
+    // Round-robin through all 4 descriptors.
+    int desc = -1;
+    for (int i = 0; i < 4; i++) {
+        int try_desc = (tx_cur + i) % 4;
+        uint32_t tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (try_desc * 4));
+        if (tsd & (1 << 13)) {
+            // OWN=1, driver owns this descriptor — use it
+            desc = try_desc;
+            break;
+        }
+    }
 
-    int retry_count = 0;
-retry:
-    {
-        uint32_t tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
-
-        // Wait for OWN bit (Bit 13) = 1 (driver owns buffer)
+    if (desc < 0) {
+        // All 4 descriptors busy. Short spin-wait on the current one.
+        // In QEMU this should complete in a few iterations.
         int timeout = TX_TIMEOUT_CYCLES;
-        while (!(tsd & (1 << 13)) && timeout--) {
+        uint32_t tsd;
+        while (timeout--) {
             tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
+            if (tsd & (1 << 13)) break;
             asm volatile("pause");
         }
-
         if (timeout <= 0) {
-            // Descriptor is stuck (OWN=0 for too long). Reset it and retry.
-            // This should rarely happen, but when it does, we MUST NOT
-            // drop the packet — just force the descriptor back to a
-            // usable state and try again.
+            // Genuinely stuck. Force-reset all descriptors to OWN=1.
+            // This is safe in QEMU — the NIC will accept the next write.
             #if RTL_DEBUG_ERRORS
-            s_printf("[RTL8139] TX descriptor %d stuck, resetting (retry %d)\n",
-                     tx_cur, retry_count);
+            s_printf("[RTL8139] TX all descriptors busy, force-resetting\n");
             #endif
-            outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4),
-                 (uint32_t)tx_buffers[tx_cur]);
-            outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), 0x2000);  // OWN=1
-
-            if (retry_count < 3) {
-                retry_count++;
-                goto retry;
+            for (int i = 0; i < 4; i++) {
+                outl(rtl_dev.io_base + RTL_REG_TSAD0 + (i * 4),
+                     (uint32_t)tx_buffers[i]);
+                outl(rtl_dev.io_base + RTL_REG_TSD0 + (i * 4), 0x2000);
             }
-            // After 3 retries, give up and advance to the next descriptor.
-            // This is better than dropping the packet entirely because
-            // the next descriptor might be free.
-            tx_cur = (tx_cur + 1) % 4;
             stat_tx_errors++;
-            // Fall through and try the next descriptor
-            tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
-            timeout = TX_TIMEOUT_CYCLES;
-            while (!(tsd & (1 << 13)) && timeout--) {
-                tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
-                asm volatile("pause");
-            }
-            if (timeout <= 0) {
-                #if RTL_DEBUG_ERRORS
-                s_printf("[RTL8139] TX all descriptors stuck, dropping packet\n");
-                #endif
-                stat_tx_errors++;
-                return -1;
-            }
+            // Don't drop the packet — use the current descriptor
+            desc = tx_cur;
+        } else {
+            desc = tx_cur;
         }
     }
 
     // Copy data to TX buffer
-    memcpy(tx_buffers[tx_cur], data, len);
+    memcpy(tx_buffers[desc], data, len);
 
-    // Set Physical Address and start transmission
-    outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4), (uint32_t)tx_buffers[tx_cur]);
-    outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), len);
+    // Set Physical Address and start transmission.
+    // Writing the length to TSD clears the OWN bit and starts TX.
+    outl(rtl_dev.io_base + RTL_REG_TSAD0 + (desc * 4), (uint32_t)tx_buffers[desc]);
+    outl(rtl_dev.io_base + RTL_REG_TSD0 + (desc * 4), len);
 
-    tx_cur = (tx_cur + 1) % 4;
+    // Advance to next descriptor for next time
+    tx_cur = (desc + 1) % 4;
     net_if->tx_packets++;
     net_if->tx_bytes += len;
     stat_tx_packets++;
@@ -215,7 +211,16 @@ void rtl8139_receive_packets() {
 #endif
                 outb(rtl_dev.io_base + RTL_REG_CMD, 0x04);  // Disable RX
                 for(volatile int i = 0; i < 100000; i++) asm volatile("pause");
-                outw(rtl_dev.io_base + RTL_REG_CAPR, 0);
+                // CRITICAL: CAPR must be (offset - 16) due to the RTL8139
+                // hardware quirk. Writing 0 instead of (0 - 16) = 0xFFF0
+                // leaves the read pointer misaligned, causing the driver
+                // to re-read stale packets. This was Bug 2 in the user's
+                // analysis: the reset cleared hardware CAPR to 0 but the
+                // software current_packet_ptr was also 0, so they were
+                // "in sync" — but the hardware expects CAPR=offset-16,
+                // not CAPR=offset. With CAPR=0, hardware reads from
+                // offset 0+16=16, but software reads from offset 0.
+                outw(rtl_dev.io_base + RTL_REG_CAPR, (uint16_t)(0 - 16));
                 current_packet_ptr = 0;
                 memset(rx_buffer_aligned, 0, RX_BUF_SIZE);
                 outb(rtl_dev.io_base + RTL_REG_CMD, 0x0C);  // Re-enable RX+TX
@@ -441,6 +446,12 @@ void rtl8139_init(pci_device_t* dev) {
 #endif
     
     outl(rtl_dev.io_base + RTL_REG_RBSTART, (uint32_t)rx_buffer_aligned);
+    
+    // Initialize CAPR to (0 - 16) to match current_packet_ptr=0.
+    // The RTL8139 hardware quirk: the actual read position is CAPR+16.
+    // So to read from offset 0, we write CAPR = 0 - 16 = 0xFFF0.
+    current_packet_ptr = 0;
+    outw(rtl_dev.io_base + RTL_REG_CAPR, (uint16_t)(0 - 16));
     
     // 4. Interrupts (ROK + TOK + RXOVW)
     outw(rtl_dev.io_base + RTL_REG_IMR, 0x0015); 
