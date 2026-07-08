@@ -105,22 +105,24 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     // Set Physical Address and start transmission
     outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4), (uint32_t)tx_buffers[tx_cur]);
     outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), len);
-    
-    // Wait for transmission to complete
-    timeout = TX_TIMEOUT_CYCLES;
-    while (timeout--) {
-        uint32_t tsd_status = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
-        if (tsd_status & (1 << 13)) break;
-        asm volatile("pause");
-    }
-    
-    if (timeout <= 0) {
-#if RTL_DEBUG_ERRORS
-        s_printf("[RTL8139] TX completion timeout\n");
-#endif
-        stat_tx_errors++;
-    }
-    
+
+    // DON'T wait for transmission to complete.
+    //
+    // Previously this function had a busy-wait loop checking the OWN
+    // bit for TX completion (TX_TIMEOUT_CYCLES iterations). Under
+    // QEMU SLIRP with high latency, this loop would often time out
+    // ('TX completion timeout') — and worse, it blocked the CPU for
+    // the entire timeout duration, preventing the RX path from
+    // draining incoming packets.
+    //
+    // The RTL8139 doesn't require waiting for completion: once we
+    // write the length to TSD, the NIC transmits asynchronously. We
+    // just advance tx_cur and let the next send check the OWN bit
+    // (which will be 1 again by then, since the NIC is fast).
+    //
+    // This dramatically reduces TX latency and prevents the TX storm
+    // that was wedging descriptors during TLS handshakes.
+
     tx_cur = (tx_cur + 1) % 4;
     net_if->tx_packets++;
     net_if->tx_bytes += len;

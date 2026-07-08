@@ -82,6 +82,7 @@ typedef struct tcp_connection {
     uint32_t last_ack_time;
     uint32_t retransmit_timeout;
     uint8_t retransmit_count;
+    uint32_t last_recv_time;  // Tick of last received segment (for retransmit suppression)
 
     // Connection info
     uint32_t connect_time;

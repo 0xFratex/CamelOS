@@ -517,6 +517,13 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
     // Update window
     conn->window = ntohs(tcp->window);
 
+    // Track when we last received ANY segment from the peer. The
+    // retransmit logic uses this to suppress premature retransmits
+    // when the peer is actively sending us data (e.g. the server is
+    // sending the TLS Certificate in multiple segments and hasn't
+    // ACKed our ClientHello yet — the connection is clearly alive).
+    conn->last_recv_time = timer_get_ticks();
+
     // Process based on current state
     switch (conn->state) {
         case TCP_SYN_RECEIVED:
@@ -1140,6 +1147,30 @@ void tcp_retransmit_check(void)
         /* Check if the retransmit timer has expired */
         uint32_t elapsed = now - conn->last_ack_time;
         if (elapsed < conn->retransmit_timeout) continue;
+
+        /* DON'T retransmit if we're actively receiving data from the peer.
+         *
+         * If the peer is sending us data (rcv_nxt is advancing), the
+         * connection is clearly alive — our data just hasn't been ACKed
+         * yet because the peer is busy sending. Retransmitting would
+         * create a TX storm that wedges the NIC, as seen in the log:
+         *   [TLS] Step 1 OK: ClientHello sent
+         *   [TCP] Retransmitting data (attempt 1)   ← premature!
+         *   [RTL8139] TX timeout on descriptor       ← TX wedged
+         *
+         * We track the last time we RECEIVED a segment in
+         * last_recv_time. If we received something recently (within
+         * the retransmit timeout window), reset the retransmit timer
+         * instead of retransmitting.
+         */
+        if (conn->last_recv_time > 0) {
+            uint32_t since_recv = now - conn->last_recv_time;
+            if (since_recv < conn->retransmit_timeout) {
+                /* Peer is still sending to us — reset timer and wait. */
+                conn->last_ack_time = now;
+                continue;
+            }
+        }
 
         /* Too many retransmits — give up and close the connection */
         if (conn->retransmit_count >= TCP_MAX_RETRANSMIT) {
