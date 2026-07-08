@@ -17,6 +17,7 @@ void rtl8139_init(pci_device_t* pci);
 void rtl8139_send_packet(void* data, uint32_t len);
 void rtl8139_handler();
 void rtl8139_poll(); // <--- ADDED: Polling hook
+void rtl8139_flush_rx(void);  // Drain stale packets from the RX ring without delivering them
 void rtl8139_configure_ip(uint32_t ip, uint32_t gw, uint32_t mask);
 
 #endif

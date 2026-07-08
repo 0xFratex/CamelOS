@@ -258,6 +258,78 @@ void rtl8139_poll() {
     rtl8139_receive_packets();
 }
 
+// ---------------------------------------------------------------------------
+// rtl8139_flush_rx
+//
+// Drains any packets sitting in the NIC's RX ring buffer without delivering
+// them to the network stack. Used by the Browser app (and any other network
+// client) after a failed connection attempt, where stale packets from the
+// previous connection might still be sitting in the ring and would otherwise
+// be delivered to the next connection — confusing the TCP state machine and
+// the TLS parser (the "6 zero bytes" bug in the original tls_recv_record
+// was almost certainly caused by stale bytes from a previous connection
+// arriving before the new connection's ClientHello was even sent).
+//
+// Strategy: poll up to 256 packets in a tight loop, discarding each one
+// by advancing CAPR past it. We don't call net_handle_packet — the goal
+// is to DROP, not deliver. We also reset the software-side
+// current_packet_ptr to match the new CAPR so the next real poll starts
+// at the right place.
+//
+// If the hardware reports no packets for 4 consecutive polls, we declare
+// the buffer flushed and return.
+// ---------------------------------------------------------------------------
+void rtl8139_flush_rx(void) {
+    if (rtl_dev.io_base == 0) return;
+
+    int flushed = 0;
+    int empty_polls = 0;
+
+    while (empty_polls < 4 && flushed < 256) {
+        uint16_t cbr = inw(rtl_dev.io_base + RTL_REG_CBR) % 32768;
+        // current_packet_ptr is where the software last left off reading.
+        // If CBR == current_packet_ptr (modulo 32768), there's nothing to read.
+        if (cbr == current_packet_ptr) {
+            empty_polls++;
+            // Tiny pause to let the NIC catch up if a packet is mid-receive.
+            for (volatile int i = 0; i < 100; i++) {}
+            continue;
+        }
+        empty_polls = 0;
+
+        // Read the packet header at current_packet_ptr.
+        uint16_t offset = current_packet_ptr % 32768;
+        uint16_t header = inw(rtl_dev.io_base + 0 + 0);  // unused; we read from rx_buffer_aligned
+        (void)header;
+
+        // Read the 4-byte packet header from the RX buffer.
+        // Layout: [status_lo, status_hi, len_lo, len_hi]
+        uint8_t* hdr_ptr = rx_buffer_aligned + offset;
+        uint16_t status = hdr_ptr[0] | (hdr_ptr[1] << 8);
+        uint16_t length = hdr_ptr[2] | (hdr_ptr[3] << 8);
+
+        // Validate. If invalid, we can't safely advance — bail out and
+        // let the regular RX path deal with it on the next poll.
+        if (!(status & 0x01) || length < 60 || length > 1536) {
+            // Bogus header — just advance one packet's worth to avoid
+            // an infinite loop. The regular receive path will handle
+            // error recovery on the next real poll.
+            break;
+        }
+
+        // Advance past this packet. Same formula as rtl8139_receive_packets:
+        //   new_ptr = (old + length + 4 + 3) & ~3, mod 32768
+        current_packet_ptr = (uint16_t)(((current_packet_ptr + length + 4 + 3) & ~3) % 32768);
+        outw(rtl_dev.io_base + RTL_REG_CAPR, current_packet_ptr - 16);
+
+        flushed++;
+    }
+
+    if (flushed > 0) {
+        s_printf("[RTL8139] RX flushed: %d packets discarded\n", flushed);
+    }
+}
+
 // Configure IP address (minimal logging)
 void rtl8139_configure_ip(uint32_t ip, uint32_t gw, uint32_t mask) {
 #if RTL_DEBUG_INIT

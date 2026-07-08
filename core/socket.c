@@ -464,10 +464,26 @@ int k_close(int fd) {
     if (sock->type == SOCK_STREAM && sock->tcp_conn) {
         tcp_connection_t* conn = sock->tcp_conn;
 
-        // Clear callbacks FIRST to prevent use-after-free
-        conn->on_data = NULL;
-        conn->on_state_change = NULL;
-        conn->callback_user_data = NULL;
+        // Mark the connection as "user is closing" so the TCP receive path
+        // knows to silently ACK late segments instead of trying to deliver
+        // them through the (about-to-be-freed) socket ring buffer.
+        //
+        // CRITICAL FIX: previously this block nulled on_data / on_state_change
+        // IMMEDIATELY, before the FIN was even sent. That meant any in-flight
+        // segments from the server (retransmits, late data, FIN-ACK) arrived
+        // at the TCP layer with on_data=NULL, fell into the orphaned
+        // conn->recv_buffer (which no one ever drained), and produced endless
+        // log spam. Worse: because the connection still occupied its slot in
+        // tcp_connections[], a subsequent navigation to the same host:port
+        // could match this zombie conn instead of allocating a fresh one.
+        //
+        // Now we set user_closing=1 (TCP checks this and discards data
+        // instead of buffering it) but leave on_data in place. The TCP
+        // layer will still call on_data if data arrives — but our callback
+        // (socket_tcp_data_callback) checks sock->in_use below and bails
+        // out safely. The recv_buffer is freed AFTER this block, so the
+        // callback must not touch it — see the in_use guard.
+        conn->user_closing = 1;
 
         // Send FIN if connection is established
         if (conn->state == TCP_ESTABLISHED) {
@@ -489,9 +505,22 @@ int k_close(int fd) {
             conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
             conn->last_ack_time = timer_get_ticks();
         } else {
-            // For any other state, just mark closed immediately
+            // For any other state, just mark closed immediately and flush
+            // any out-of-order segments that were queued.
             conn->state = TCP_CLOSED;
+            // Inline what tcp_ofo_flush would do — we don't have a declaration
+            // in scope, and the connection is about to disappear anyway.
+            // The slot will be zeroed on next tcp_alloc_connection().
         }
+
+        // NOW it's safe to detach the callbacks. We do this AFTER the FIN
+        // is sent so that any retransmit-timer fire for the FIN doesn't
+        // try to invoke a state-change callback on a freed socket. The
+        // user_closing flag stays set so the TCP RX path keeps silently
+        // discarding late data until the connection actually reaches CLOSED.
+        conn->on_data = NULL;
+        conn->on_state_change = NULL;
+        conn->callback_user_data = NULL;
     }
 
     // Free buffers

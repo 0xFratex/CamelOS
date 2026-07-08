@@ -38,6 +38,138 @@ static inline uint32_t bswap32(uint32_t x) {
            ((x & 0xFF0000) >> 8) | ((x >> 24) & 0xFF);
 }
 
+// ============================================================================
+// Out-of-order reassembly queue helpers (RFC 793 §3.3, §3.4)
+// ============================================================================
+//
+// CamelOS previously DROPPED out-of-order segments (seq > rcv_nxt) and only
+// sent a duplicate ACK. This is technically legal but interacts badly with
+// TLS: a single dropped segment forces a full RTO + retransmit, and during
+// that window the TLS handshake timer (60s) keeps ticking — eventually
+// timing out the entire ServerHello.
+//
+// The queue is small (8 slots × 1 MSS = ~11 KB worst case per connection).
+// Segments are inserted by seq, partially-overlapping segments are trimmed
+// or coalesced, and the queue is drained every time rcv_nxt advances.
+
+// Forward declaration — tcp_send is defined below (around line 250+), but
+// the OFO helpers need to send ACKs when draining queued segments.
+int tcp_send(tcp_connection_t* conn, uint8_t flags, uint8_t* data, uint16_t len);
+
+// Find a free slot in conn->ofo_queue. Returns -1 if full.
+static int tcp_ofo_find_free(tcp_connection_t* conn) {
+    for (int i = 0; i < TCP_OFO_QUEUE_SIZE; i++) {
+        if (!conn->ofo_queue[i].in_use) return i;
+    }
+    return -1;
+}
+
+// Drop every queued segment. Called on CLOSED/TIME_WAIT/RST transitions
+// and when the user has given up interest in the connection (k_close).
+static void tcp_ofo_flush(tcp_connection_t* conn) {
+    for (int i = 0; i < TCP_OFO_QUEUE_SIZE; i++) {
+        conn->ofo_queue[i].in_use = 0;
+        conn->ofo_queue[i].len = 0;
+    }
+}
+
+// Try to enqueue an out-of-order segment. The data passed in MUST already
+// be trimmed so that seq > rcv_nxt. Returns 0 on success, -1 if the queue
+// is full (caller should send a dup ACK and let the peer retransmit).
+//
+// Coalescing/dedup rules:
+//   * If an existing entry fully contains the new segment, drop the new one.
+//   * If the new segment fully contains an existing entry, replace it.
+//   * Otherwise, store as a new entry (we don't merge — leaves gaps clear).
+static int tcp_ofo_enqueue(tcp_connection_t* conn, uint32_t seq,
+                            const uint8_t* data, uint16_t len) {
+    if (len == 0) return 0;
+    if (len > TCP_OFO_SEG_MAX) len = TCP_OFO_SEG_MAX;  // truncate (shouldn't happen for in-window)
+
+    // Check for full containment in either direction.
+    for (int i = 0; i < TCP_OFO_QUEUE_SIZE; i++) {
+        if (!conn->ofo_queue[i].in_use) continue;
+        tcp_ofo_entry_t* e = &conn->ofo_queue[i];
+        uint32_t e_end = e->seq + e->len;       // exclusive
+        uint32_t n_end = seq + len;             // exclusive
+        // Existing fully contains new → drop new.
+        if (e->seq <= seq && e_end >= n_end) return 0;
+        // New fully contains existing → mark existing free, fall through to insert.
+        if (seq <= e->seq && n_end >= e_end) {
+            e->in_use = 0;
+            e->len = 0;
+        }
+    }
+
+    int slot = tcp_ofo_find_free(conn);
+    if (slot < 0) {
+        s_printf("[TCP] OFO queue full — dropping segment seq=%u len=%u\n", seq, len);
+        return -1;
+    }
+    tcp_ofo_entry_t* e = &conn->ofo_queue[slot];
+    e->in_use = 1;
+    e->seq = seq;
+    e->len = len;
+    memcpy(e->data, data, len);
+    s_printf("[TCP] OFO queued: seq=%u len=%u (slot=%d)\n", seq, len, slot);
+    return 0;
+}
+
+// Drain the OFO queue: deliver any segments that are now in-order (i.e.
+// seq == conn->rcv_nxt). Called after every in-order delivery and after
+// any rcv_nxt advance. Mirrors the same delivery path as the live segment
+// handler: callback preferred, flat-buffer fallback, ACK each segment.
+static void tcp_ofo_drain(tcp_connection_t* conn) {
+    int progress = 1;
+    while (progress) {
+        progress = 0;
+        for (int i = 0; i < TCP_OFO_QUEUE_SIZE; i++) {
+            tcp_ofo_entry_t* e = &conn->ofo_queue[i];
+            if (!e->in_use || e->len == 0) continue;
+
+            // Trim any leading bytes that have already been received
+            // (e.g. the live segment that just arrived filled in earlier
+            // bytes that this queued segment also covers).
+            if (e->seq < conn->rcv_nxt) {
+                uint32_t overlap = conn->rcv_nxt - e->seq;
+                if (overlap >= e->len) {
+                    // Entirely old — discard.
+                    e->in_use = 0;
+                    e->len = 0;
+                    continue;
+                }
+                // Shift the data buffer in place.
+                uint16_t keep = e->len - (uint16_t)overlap;
+                memmove(e->data, e->data + overlap, keep);
+                e->len = keep;
+                e->seq = conn->rcv_nxt;
+            }
+
+            if (e->seq == conn->rcv_nxt) {
+                s_printf("[TCP] OFO delivering: seq=%u len=%u\n", e->seq, e->len);
+                if (conn->on_data) {
+                    conn->on_data(e->data, e->len, conn->callback_user_data);
+                } else if (!conn->user_closing) {
+                    // No callback but app still wants the data — flat buffer.
+                    if (conn->recv_tail + e->len <= sizeof(conn->recv_buffer)) {
+                        memcpy(conn->recv_buffer + conn->recv_tail, e->data, e->len);
+                        conn->recv_tail += e->len;
+                    }
+                }
+                // If user_closing is set, we silently ACK and discard —
+                // keeps the peer's FSM moving toward CLOSED without
+                // polluting the orphaned recv_buffer.
+                conn->rcv_nxt += e->len;
+                tcp_send(conn, TCP_ACK, NULL, 0);
+                e->in_use = 0;
+                e->len = 0;
+                progress = 1;
+            }
+            // else: still a gap before this segment — leave it queued.
+        }
+    }
+}
+
 // Find or allocate connection - OPTIMIZED
 static tcp_connection_t* tcp_find_connection(uint32_t local_ip_net, uint16_t local_port,
                                            uint32_t remote_ip_net, uint16_t remote_port) {
@@ -325,6 +457,7 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
     // Handle RST
     if (flags & TCP_RST) {
         conn->state = TCP_CLOSED;
+        tcp_ofo_flush(conn);  // discard any queued out-of-order segments
         if (conn->on_state_change) {
             conn->on_state_change(conn->state, TCP_CLOSED);
         }
@@ -428,17 +561,18 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
                 // Check sequence number (now seq should == rcv_nxt after trimming)
                 if (seq == conn->rcv_nxt) {
-                    // FIXED: The on_data callback (socket_tcp_data_callback) copies data
-                    // directly into the socket's ring buffer. The TCP recv_buffer was
-                    // redundant — it would fill up and never be drained, causing data loss.
-                    // Now we ONLY use the callback path and skip the redundant flat buffer.
-                    // The flat buffer is still available for tcp_conn_recv() users but
-                    // socket layer uses the callback instead.
-                    
-                    // Call data callback FIRST — this is the primary data delivery mechanism
+                    // In-order segment. Deliver via callback if registered,
+                    // else fall back to flat buffer — UNLESS the user has
+                    // called k_close() and given up interest in this conn.
+                    // In that case we ACK and discard, which keeps the
+                    // peer's TCP FSM progressing toward CLOSED without
+                    // polluting the orphaned recv_buffer (the previous
+                    // behaviour produced endless "on_data=NULL" log spam
+                    // and could wedge the connection in FIN_WAIT1 forever
+                    // when the peer kept retransmitting late data).
                     if (conn->on_data) {
                         conn->on_data(data, data_len, conn->callback_user_data);
-                    } else {
+                    } else if (!conn->user_closing) {
                         // No callback — fall back to flat buffer for direct tcp_conn_recv() users
                         if (conn->recv_tail + data_len <= sizeof(conn->recv_buffer)) {
                             memcpy(conn->recv_buffer + conn->recv_tail, data, data_len);
@@ -449,19 +583,42 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                             conn->recv_tail = sizeof(conn->recv_buffer);
                         }
                     }
+                    // If user_closing is set, we silently drop the data.
 
                     conn->rcv_nxt += data_len;
 
                     s_printf("[TCP] data delivered: %u bytes via %s, new rcv_nxt=%u\n",
-                             data_len, conn->on_data ? "callback" : "flat_buffer", conn->rcv_nxt);
+                             data_len,
+                             conn->user_closing ? "drop(closing)" :
+                             (conn->on_data ? "callback" : "flat_buffer"),
+                             conn->rcv_nxt);
 
                     // Send ACK for in-order received data
                     tcp_send(conn, TCP_ACK, NULL, 0);
+
+                    // Now that rcv_nxt has advanced, drain any previously-
+                    // queued out-of-order segments that have become in-order.
+                    tcp_ofo_drain(conn);
                 } else {
-                    // Out-of-order packet (seq > rcv_nxt): send duplicate ACK to
-                    // trigger fast retransmit on the sender side.
-                    s_printf("[TCP] OUT-OF-ORDER: seq=%u but expected rcv_nxt=%u (dropping %u bytes)\n",
-                             seq, conn->rcv_nxt, data_len);
+                    // Out-of-order segment (seq > rcv_nxt).
+                    // RFC 793 §3.3, §3.4: buffer the segment so the sender
+                    // doesn't have to retransmit it after an earlier gap
+                    // is filled. CamelOS previously DROPPED these — that
+                    // worked for bulk HTTP transfers but was fatal for TLS
+                    // handshakes, where the ServerHello + Certificate
+                    // arrive as multiple TCP segments and a single dropped
+                    // segment forced a 30-60s RTO during which the TLS
+                    // handshake timer expired.
+                    //
+                    // We always send a dup ACK (so the sender can fast-
+                    // retransmit if it detects 3 dup ACKs) AND we queue
+                    // the segment for later delivery.
+                    if (!conn->user_closing) {
+                        tcp_ofo_enqueue(conn, seq, data, data_len);
+                    }
+                    s_printf("[TCP] OUT-OF-ORDER: seq=%u expected rcv_nxt=%u (queued %u bytes, queue=%d/8)\n",
+                             seq, conn->rcv_nxt, data_len,
+                             TCP_OFO_QUEUE_SIZE - tcp_ofo_find_free(conn));
                     tcp_send(conn, TCP_ACK, NULL, 0);
                 }
             }
@@ -857,6 +1014,7 @@ void tcp_retransmit_check(void)
             uint32_t elapsed = now - conn->time_wait_start;
             if (elapsed >= 6000) {  // Assuming 100Hz timer, 6000 ticks = 60 seconds
                 conn->state = TCP_CLOSED;
+                tcp_ofo_flush(conn);  // belt-and-suspenders: drain any residual queue
             }
             continue;
         }
@@ -872,6 +1030,7 @@ void tcp_retransmit_check(void)
                      conn->remote_port);
             tcp_send(conn, TCP_RST, NULL, 0);
             conn->state = TCP_CLOSED;
+            tcp_ofo_flush(conn);
             if (conn->on_state_change) {
                 conn->on_state_change(TCP_ESTABLISHED, TCP_CLOSED);
             }

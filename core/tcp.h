@@ -38,6 +38,21 @@ typedef struct {
 #define TCP_LAST_ACK     9
 #define TCP_TIME_WAIT    10
 
+// Out-of-order segment queue entry.
+// RFC 793 mandates that receivers buffer out-of-order segments
+// (within the receive window) so the sender doesn't have to
+// retransmit them when an earlier segment is lost. Without this,
+// a single dropped segment forces a full RTO + retransmit round-
+// trip — fatal for TLS handshakes under QEMU SLIRP.
+#define TCP_OFO_QUEUE_SIZE  8
+#define TCP_OFO_SEG_MAX     1460     // One MSS per queued segment
+typedef struct {
+    uint8_t  in_use;
+    uint32_t seq;                   // Sequence number of first byte
+    uint16_t len;                   // Data length
+    uint8_t  data[TCP_OFO_SEG_MAX];
+} tcp_ofo_entry_t;
+
 // TCP Connection
 typedef struct tcp_connection {
     uint8_t state;
@@ -60,6 +75,9 @@ typedef struct tcp_connection {
     uint32_t recv_head;
     uint32_t recv_tail;
 
+    // Out-of-order reassembly queue (RFC 793 §3.3, §3.4)
+    tcp_ofo_entry_t ofo_queue[TCP_OFO_QUEUE_SIZE];
+
     // Timers
     uint32_t last_ack_time;
     uint32_t retransmit_timeout;
@@ -75,6 +93,13 @@ typedef struct tcp_connection {
     void (*on_data)(uint8_t* data, uint16_t len, void* user_data);
     void (*on_state_change)(uint8_t old_state, uint8_t new_state);
     void* callback_user_data;
+
+    // Closing flag: set by k_close() to indicate the application has
+    // given up interest in this connection. While set, received data
+    // segments are ACKed (to keep the peer's state machine progressing
+    // toward CLOSED) but NOT delivered to the (now-nulled) on_data
+    // callback and NOT buffered into the orphaned recv_buffer.
+    uint8_t user_closing;
 } tcp_connection_t;
 
 // Listen/accept support
