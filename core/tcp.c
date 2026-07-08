@@ -591,11 +591,41 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             break;
 
         case TCP_ESTABLISHED:
-            // Handle ACK — reset retransmit timer on acknowledgment
+        case TCP_CLOSE_WAIT:
+            // Handle ACK — advance send_head and clear retransmit state
+            // when all outstanding data is acknowledged.
+            //
+            // BUG 1 FIX (per user analysis): send_head was never advanced
+            // on ACK reception. This caused the retransmit path to bundle
+            // old already-acknowledged data with new sequence numbers,
+            // corrupting the TCP stream and causing the server to FIN.
+            //
+            // BUG 2 FIX (per user analysis): retransmit_timeout was never
+            // cleared when all data was ACKed. This left a stale timeout
+            // value that triggered instant spurious retransmits when new
+            // data was sent later.
             if (flags & TCP_ACK) {
                 if (ack > conn->snd_una) {
+                    uint32_t acked_bytes = ack - conn->snd_una;
                     conn->snd_una = ack;
-                    conn->retransmit_count = 0;  /* ACK received, reset retransmit */
+
+                    // Advance send_head by the number of acknowledged bytes
+                    conn->send_head += acked_bytes;
+                    if (conn->send_head > conn->send_tail) {
+                        conn->send_head = conn->send_tail;  // Sanity protection
+                    }
+
+                    // If all outstanding data is fully ACKed, reclaim buffer
+                    // space and clear retransmit state
+                    if (conn->send_head == conn->send_tail) {
+                        conn->send_head = 0;
+                        conn->send_tail = 0;
+                        // Clear retransmit timer so the next tcp_send_data
+                        // call starts fresh (no stale timeout)
+                        conn->retransmit_timeout = 0;
+                    }
+
+                    conn->retransmit_count = 0;
                     conn->last_ack_time = timer_get_ticks();
                 }
             }
@@ -1237,6 +1267,7 @@ void tcp_retransmit_check(void)
                 break;
 
             case TCP_ESTABLISHED:
+            case TCP_CLOSE_WAIT:
                 /* Retransmit unacknowledged data from the send buffer.
                  * We resend from send_head up to send_tail in MSS-sized chunks,
                  * starting from the sequence number that hasn't been ACKed. */
