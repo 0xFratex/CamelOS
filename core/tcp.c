@@ -484,9 +484,11 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
     // Process based on current state
     switch (conn->state) {
         case TCP_SYN_RECEIVED:
-            /* Server side: waiting for ACK to complete 3-way handshake */
+            /* Server side: waiting for ACK to complete 3-way handshake.
+             * Same race-free check as TCP_SYN_SENT above: use snd_una+1
+             * instead of snd_nxt to avoid the retransmit race. */
             if (flags & TCP_ACK) {
-                if (ack == conn->snd_nxt) {
+                if (ack == conn->snd_una + 1) {
                     conn->snd_una = ack;
                     conn->state = TCP_ESTABLISHED;
 
@@ -499,11 +501,28 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
         case TCP_SYN_SENT:
             if (flags & TCP_SYN && flags & TCP_ACK) {
-                if (ack == conn->snd_nxt) {
+                // RFC 793: a SYN-ACK is valid when its ACK field equals
+                // snd_una + 1 (i.e., it ACKs our SYN, which consumed
+                // sequence number snd_una = ISN).
+                //
+                // CRITICAL: we must NOT use snd_nxt here. During SYN
+                // retransmits, the retransmit code temporarily sets
+                // snd_nxt = snd_una (= ISN) so tcp_send emits the
+                // correct seq. If the NIC ISR fires during that window
+                // (interrupts ARE enabled — IMR=0x0015, ISR on int 0x81),
+                // this handler runs with snd_nxt = ISN instead of ISN+1,
+                // causing `ack == snd_nxt` → `ISN+1 == ISN` → false.
+                // The SYN-ACK is silently dropped and the connection
+                // stays in SYN_SENT forever, eventually timing out.
+                //
+                // Using snd_una + 1 is both RFC-correct AND immune to
+                // the retransmit race, because snd_una is never modified
+                // by the retransmit code.
+                if (ack == conn->snd_una + 1) {
                     conn->rcv_nxt = seq + 1;
                     conn->snd_una = ack;
                     conn->state = TCP_ESTABLISHED;
-                    conn->retransmit_count = 0;  /* Reset on successful handshake */
+                    conn->retransmit_count = 0;
                     // Cancel the SYN retransmit timer. Without this, a
                     // retransmit that was already "in flight" (timer
                     // armed, about to fire) could send a SYN on the
@@ -515,9 +534,15 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                     // Send ACK
                     tcp_send(conn, TCP_ACK, NULL, 0);
 
+                    s_printf("[TCP] Connection ESTABLISHED (SYN-ACK ack=%u, snd_una was %u)\n",
+                             ack, ack - 1);
+
                     if (conn->on_state_change) {
                         conn->on_state_change(TCP_SYN_SENT, TCP_ESTABLISHED);
                     }
+                } else {
+                    s_printf("[TCP] SYN-ACK rejected: ack=%u, expected snd_una+1=%u (snd_nxt=%u)\n",
+                             ack, conn->snd_una + 1, conn->snd_nxt);
                 }
             }
             break;

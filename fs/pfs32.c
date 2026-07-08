@@ -1038,6 +1038,15 @@ int pfs32_write_file(const char* path, uint8_t* data, uint32_t size) {
     disk_rw(1, entry_blk, dbuf);
 
     flush_fat();
+
+    // CRITICAL: Flush the disk write-back cache so file data actually
+    // reaches the physical disk immediately. Without this, file data
+    // stays in the in-memory disk cache and is lost on reboot — which
+    // is why the welcome setup config wasn't persisting across reboots.
+    // (welcome_setup_save_config also calls pfs32_sync() + disk_flush_cache(),
+    // but flushing here guarantees persistence for ALL sys_fs_write callers.)
+    disk_flush_cache();
+
     return size;
 }
 
