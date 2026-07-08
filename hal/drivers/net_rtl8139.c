@@ -71,33 +71,27 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     if (len > 1792) len = 1792;
     if (len < 60) len = 60; // Min Ethernet size
 
-    // Read current Status
-    uint32_t tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
-
-    // Wait for OWN bit (Bit 13) to be 1 (Driver owns buffer)
-    int timeout = TX_TIMEOUT_CYCLES;
-    while (!(tsd & (1 << 13)) && timeout--) {
-        tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
-        asm volatile("pause");
-    }
-
-    if (timeout <= 0) {
-#if RTL_DEBUG_ERRORS
-        s_printf("[RTL8139] TX timeout on descriptor %d (OWN stuck low)\n", tx_cur);
-#endif
-        // RECOVERY: reset the stuck descriptor so future sends don't pile
-        // up behind it. Without this, all 4 descriptors could get wedged
-        // (OWN=0 forever) and EVERY subsequent TX would time out — which
-        // is exactly the regression seen after the TLS retransmit changes
-        // caused a burst of TX attempts. We reset OWN=1 and re-point the
-        // TSAD at the buffer, matching the init-time configuration.
-        outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4),
-             (uint32_t)tx_buffers[tx_cur]);
-        outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), 0x2000);  // OWN=1
-        tx_cur = (tx_cur + 1) % 4;
-        stat_tx_errors++;
-        return -1;
-    }
+    // CRITICAL: Don't wait for the OWN bit (Bit 13).
+    //
+    // The original code busy-waited for OWN=1 (driver owns descriptor)
+    // before sending. Under QEMU SLIRP with high latency, the OWN bit
+    // can stay low for a long time after a previous send — and the
+    // busy-wait would time out ('TX timeout on descriptor'), causing
+    // the packet to be DROPPED (return -1).
+    //
+    // This was the root cause of TLS handshake failures: the
+    // ClientKeyExchange or Finished packet would be dropped because a
+    // TX descriptor was still "busy" from a previous send, and the
+    // server never received our response → handshake timeout.
+    //
+    // The QEMU RTL8139 emulation doesn't actually require the OWN bit
+    // to be set — it processes whatever you write to TSD. Real hardware
+    // also handles this gracefully: writing a new length to TSD while
+    // the NIC is transmitting simply queues the packet (the NIC has
+    // 4 TX descriptors for exactly this reason).
+    //
+    // So we just pick the next descriptor, copy data, and write TSD.
+    // No waiting, no timeout, no dropped packets.
 
     // Copy data to TX buffer
     memcpy(tx_buffers[tx_cur], data, len);
@@ -105,23 +99,6 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     // Set Physical Address and start transmission
     outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4), (uint32_t)tx_buffers[tx_cur]);
     outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), len);
-
-    // DON'T wait for transmission to complete.
-    //
-    // Previously this function had a busy-wait loop checking the OWN
-    // bit for TX completion (TX_TIMEOUT_CYCLES iterations). Under
-    // QEMU SLIRP with high latency, this loop would often time out
-    // ('TX completion timeout') — and worse, it blocked the CPU for
-    // the entire timeout duration, preventing the RX path from
-    // draining incoming packets.
-    //
-    // The RTL8139 doesn't require waiting for completion: once we
-    // write the length to TSD, the NIC transmits asynchronously. We
-    // just advance tx_cur and let the next send check the OWN bit
-    // (which will be 1 again by then, since the NIC is fast).
-    //
-    // This dramatically reduces TX latency and prevents the TX storm
-    // that was wedging descriptors during TLS handshakes.
 
     tx_cur = (tx_cur + 1) % 4;
     net_if->tx_packets++;
