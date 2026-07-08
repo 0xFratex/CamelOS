@@ -64,6 +64,11 @@ static char hw_disk_size_str[32] = "";
 static char hw_disk_free_str[32] = "";
 static int hw_cpu_supported = 0;
 
+// Keyboard layout — loaded from config so we can preserve it across saves.
+// Without this, every settings_save_config() call would hardcode kbd_layout=0
+// (US QWERTY), silently reverting the user's chosen layout (e.g. ABNT2).
+static int cfg_kbd_layout = 0;
+
 static void settings_load_config() {
     char buf[1024];
     int len = sys_fs_read("/Library/Preferences/system.conf", buf, sizeof(buf)-1);
@@ -92,6 +97,20 @@ static void settings_load_config() {
             } else if (strncmp(line, "natural_scroll=", 15) == 0) {
                 cfg_natural_scroll = (line[15] == '1');
                 cfg_scroll_inited = 1;
+            } else if (strncmp(line, "kbd_layout=", 11) == 0) {
+                // Preserve the user's keyboard layout (e.g. ABNT2=6).
+                // Previously this was never parsed, and
+                // settings_save_config() hardcoded kbd_layout=0 — so
+                // every Settings save silently reverted to US QWERTY.
+                int kbd_val = 0;
+                const char* p = line + 11;
+                while (*p >= '0' && *p <= '9') {
+                    kbd_val = kbd_val * 10 + (*p - '0');
+                    p++;
+                }
+                if (kbd_val >= 0 && kbd_val < 32) {
+                    cfg_kbd_layout = kbd_val;
+                }
             }
             // SECURITY: Skip password_hash lines — never parse or expose
             // the hash in user-facing code. The hash is only read by
@@ -672,7 +691,7 @@ static void settings_save_config(void) {
     pos += sprintf(buf + pos, "timezone=%s\n", cfg_timezone);
     pos += sprintf(buf + pos, "auto_lock=1\n");
     pos += sprintf(buf + pos, "lock_timeout=10\n");
-    pos += sprintf(buf + pos, "kbd_layout=0\n");
+    pos += sprintf(buf + pos, "kbd_layout=%d\n", cfg_kbd_layout);  // preserve user's layout, don't reset to US
     pos += sprintf(buf + pos, "natural_scroll=%d\n", cfg_natural_scroll);
     pos += sprintf(buf + pos, "configured=1\n");
 

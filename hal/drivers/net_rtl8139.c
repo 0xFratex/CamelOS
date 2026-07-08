@@ -83,8 +83,17 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
 
     if (timeout <= 0) {
 #if RTL_DEBUG_ERRORS
-        s_printf("[RTL8139] TX timeout on descriptor\n");
+        s_printf("[RTL8139] TX timeout on descriptor %d (OWN stuck low)\n", tx_cur);
 #endif
+        // RECOVERY: reset the stuck descriptor so future sends don't pile
+        // up behind it. Without this, all 4 descriptors could get wedged
+        // (OWN=0 forever) and EVERY subsequent TX would time out — which
+        // is exactly the regression seen after the TLS retransmit changes
+        // caused a burst of TX attempts. We reset OWN=1 and re-point the
+        // TSAD at the buffer, matching the init-time configuration.
+        outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4),
+             (uint32_t)tx_buffers[tx_cur]);
+        outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), 0x2000);  // OWN=1
         tx_cur = (tx_cur + 1) % 4;
         stat_tx_errors++;
         return -1;

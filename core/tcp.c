@@ -742,17 +742,20 @@ int tcp_send_data(tcp_connection_t* conn, uint8_t* data, uint16_t len) {
         sent += chunk;
     }
 
-    // Arm the retransmit timer so unacked data gets retransmitted.
-    // Without this, a lost ClientHello (e.g. dropped by SLIRP) would
-    // never be retransmitted and the TLS handshake would time out.
-    // This is especially important now that we clear retransmit_timeout
-    // when transitioning from SYN_SENT to ESTABLISHED (to prevent stale
-    // SYN retransmits). We must re-arm it here when actual data is sent.
+    // Arm the retransmit timer ONLY if it's not already armed.
+    // Re-arming on every send caused a TX storm: each tcp_send_data
+    // call reset the timer, and combined with the retransmit logic,
+    // this caused repeated ClientHello retransmits that wedged the
+    // RTL8139 TX descriptors (they'd time out and never recover).
+    // Now we only arm the timer if it was cleared (e.g. after an ACK
+    // or after the SYN→ESTABLISHED transition). If it's already
+    // armed, we leave it alone so the existing timeout continues
+    // counting from when the first unacked data was sent.
     if (conn->retransmit_timeout == 0) {
         conn->retransmit_timeout = TCP_RETRANSMIT_TIMEOUT;
+        conn->last_ack_time = timer_get_ticks();
+        conn->retransmit_count = 0;
     }
-    conn->last_ack_time = timer_get_ticks();
-    conn->retransmit_count = 0;
 
     return sent;
 }
