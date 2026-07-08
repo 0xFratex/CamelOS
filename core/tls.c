@@ -1959,17 +1959,17 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
         if (all_zeros) {
             s_printf("[TLS] Detected 6-byte zero prelude (QEMU SLIRP) — reconstructing record header\n");
 
-            // Read the handshake type (1 byte) and handshake length (3 bytes).
-            // These are what TCP delivered after trimming the 6-byte overlap
-            // — the real TLS record header (16 03 03 LH LL) was consumed by
-            // the overlap trim, leaving just the handshake header + body.
-            uint8_t hs_type;
-            received = tls_recv_all(session->socket_fd, &hs_type, 1);
-            if (received < 1) {
-                s_printf("[TLS] recv_record: EOF reading handshake type\n");
-                return TLS_ERR_SOCKET;
-            }
-
+            // The 6 zeros replaced the first 6 bytes of the real TLS segment:
+            //   bytes 0-4: TLS record header [16 03 03 LH LL]  (5 bytes)
+            //   byte 5:    handshake type [02 = ServerHello]   (1 byte)
+            //
+            // After the zeros, the data starts at offset 6 of the real segment:
+            //   HS_LEN[0] HS_LEN[1] HS_LEN[2] server_version_high server_version_low random[32] ...
+            //
+            // So we read 3 bytes for HS_LEN, then hardcode hs_type = 0x02
+            // (ServerHello — the first handshake message from any TLS server).
+            // The handshake type byte was consumed by the TCP overlap trim
+            // along with the record header.
             uint8_t hs_len_bytes[3];
             received = tls_recv_all(session->socket_fd, hs_len_bytes, 3);
             if (received < 3) {
@@ -1980,18 +1980,19 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
             uint32_t hs_len = ((uint32_t)hs_len_bytes[0] << 16) |
                               ((uint32_t)hs_len_bytes[1] << 8) |
                               (uint32_t)hs_len_bytes[2];
+            uint8_t hs_type = 0x02;  // ServerHello — hardcoded (type byte was trimmed)
             uint16_t record_len = (uint16_t)(hs_len + 4);  // +4 for handshake header
 
             // Sanity-check the handshake length. A typical ServerHello is
-            // 70-90 bytes; Certificate can be up to ~16 KB. Anything > 16 KB
-            // or 0 is corrupt.
+            // 38-130 bytes (server_version + random + session_id + cipher_suite
+            // + compression + optional extensions). Anything > 16 KB or 0 is corrupt.
             if (hs_len == 0 || hs_len > 16384) {
-                s_printf("[TLS] recv_record: bad handshake length %d after zero prelude (hs_type=0x%02X)\n",
-                         (int)hs_len, hs_type);
+                s_printf("[TLS] recv_record: bad handshake length %d after zero prelude\n",
+                         (int)hs_len);
                 return TLS_ERR_SOCKET;
             }
 
-            s_printf("[TLS] Reconstructed: content_type=0x16, hs_type=0x%02X, hs_len=%d, record_len=%d\n",
+            s_printf("[TLS] Reconstructed: content_type=0x16, hs_type=0x%02X (ServerHello), hs_len=%d, record_len=%d\n",
                      hs_type, (int)hs_len, (int)record_len);
 
             *content_type = 0x16;  // Handshake
@@ -2006,7 +2007,7 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
                 return TLS_ERR_SOCKET;
             }
 
-            buffer[0] = hs_type;
+            buffer[0] = hs_type;       // 0x02 = ServerHello
             buffer[1] = hs_len_bytes[0];
             buffer[2] = hs_len_bytes[1];
             buffer[3] = hs_len_bytes[2];
