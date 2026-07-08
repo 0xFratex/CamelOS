@@ -747,7 +747,17 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             // Handle FIN
             if (flags & TCP_FIN) {
                 if (conn->state == TCP_ESTABLISHED) {
-                    conn->rcv_nxt = seq + 1;
+                    // FIN occupies 1 unit of sequence space AFTER any data
+                    // payload. The data handler above already advanced
+                    // rcv_nxt by the payload length, so we only need to
+                    // increment by 1 for the FIN flag itself.
+                    //
+                    // BUG FIX: Previously used 'rcv_nxt = seq + 1', which
+                    // rewound rcv_nxt back to the segment's base seq,
+                    // clobbering the data we just accepted. This caused
+                    // an infinite partial-overlap trimming loop because
+                    // the stack thought it was missing bytes.
+                    conn->rcv_nxt++;
                     conn->state = TCP_CLOSE_WAIT;
                     // Send ACK for the FIN, but don't send our own FIN yet
                     // The application will call close() when ready
@@ -759,7 +769,10 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
         case TCP_FIN_WAIT1:
             if (flags & TCP_FIN && flags & TCP_ACK) {
                 // Simultaneous close: received FIN+ACK
-                conn->rcv_nxt = seq + 1;
+                // FIN occupies 1 unit of sequence space after any data.
+                // Use rcv_nxt++ (not seq+1) to avoid rewinding if data
+                // was delivered alongside the FIN.
+                conn->rcv_nxt++;
                 tcp_send(conn, TCP_ACK, NULL, 0);
                 conn->state = TCP_TIME_WAIT;
                 conn->time_wait_start = timer_get_ticks();
@@ -770,7 +783,8 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                 conn->state = TCP_FIN_WAIT2;
             } else if (flags & TCP_FIN) {
                 // Got FIN without ACK
-                conn->rcv_nxt = seq + 1;
+                // Use rcv_nxt++ to avoid rewinding if data was delivered.
+                conn->rcv_nxt++;
                 tcp_send(conn, TCP_ACK, NULL, 0);
                 conn->state = TCP_CLOSING;
             }
@@ -778,7 +792,9 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
         case TCP_FIN_WAIT2:
             if (flags & TCP_FIN) {
-                conn->rcv_nxt = seq + 1;
+                // Use rcv_nxt++ to avoid rewinding if data was delivered
+                // alongside the FIN.
+                conn->rcv_nxt++;
                 tcp_send(conn, TCP_ACK, NULL, 0);
                 conn->state = TCP_TIME_WAIT;
                 conn->time_wait_start = timer_get_ticks();
