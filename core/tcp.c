@@ -620,6 +620,48 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                 s_printf("[TCP] data packet: seq=%u rcv_nxt=%u data_len=%u on_data=%s\n",
                          seq, conn->rcv_nxt, data_len, conn->on_data ? "SET" : "NULL");
 
+                // QEMU SLIRP phantom-segment detection.
+                //
+                // SLIRP has a quirk where it sometimes sends a 6-byte
+                // all-zero segment at the same sequence number as the
+                // real data that follows. This is a TCP protocol
+                // violation (same seq, different data).
+                //
+                // If we deliver this phantom and advance rcv_nxt, the
+                // real data arriving at the same seq gets its first 6
+                // bytes trimmed by the overlap logic — eating the TLS
+                // record header. The TLS layer then sees garbage
+                // instead of a valid record.
+                //
+                // Fix: detect the phantom (6 bytes, all zeros, in-order)
+                // and DON'T advance rcv_nxt. We send a dup ACK so the
+                // peer continues. When the real data arrives at the same
+                // seq, there's no overlap to trim, and the full TLS
+                // record header is preserved.
+                //
+                // This is safe because:
+                //   1. A legitimate 6-byte all-zero TCP segment at the
+                //      start of a receive window is extremely rare.
+                //   2. If we're wrong, the peer retransmits and we get
+                //      another chance.
+                //   3. This only triggers for in-order segments (seq ==
+                //      rcv_nxt), not for retransmits.
+                if (data_len == 6 && seq == conn->rcv_nxt) {
+                    int all_zeros = 1;
+                    for (int z = 0; z < 6; z++) {
+                        if (data[z] != 0) { all_zeros = 0; break; }
+                    }
+                    if (all_zeros) {
+                        s_printf("[TCP] SLIRP phantom: 6 zero bytes at seq=%u — skipping (not advancing rcv_nxt)\n",
+                                 seq);
+                        // Send dup ACK (ack=rcv_nxt, which hasn't changed).
+                        // This tells the peer "I haven't received data past
+                        // rcv_nxt yet" so it retransmits the real data.
+                        tcp_send(conn, TCP_ACK, NULL, 0);
+                        goto after_data;
+                    }
+                }
+
                 // Handle partially-overlapping segments.
                 //
                 // When the server retransmits a segment that starts at or before
