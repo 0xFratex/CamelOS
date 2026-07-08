@@ -241,7 +241,23 @@ void rtl8139_receive_packets() {
         // Packet data length (exclude 4 bytes CRC)
         uint32_t packet_len = length - 4;
 
-        // Allocate packet buffer
+        // CRITICAL: Advance the read pointer and update CAPR BEFORE
+        // processing the packet. The previous code called net_handle_packet
+        // first, then advanced the pointer. But net_handle_packet can
+        // trigger TX (e.g. a TCP ACK), which can trigger an RX interrupt,
+        // which calls rtl8139_receive_packets RECURSIVELY. The recursive
+        // call would see the same packet at the old current_packet_ptr
+        // (because we hadn't advanced it yet) and re-deliver it — causing
+        // the infinite dup-segment storm seen in the logs.
+        //
+        // By advancing the pointer first, the recursive call will see
+        // the next packet (or no packet) instead of re-reading this one.
+        uint16_t next_ptr = (uint16_t)(((current_packet_ptr + length + 4 + 3) & ~3) % 32768);
+        current_packet_ptr = next_ptr;
+        outw(rtl_dev.io_base + RTL_REG_CAPR, current_packet_ptr - 16);
+
+        // Now safe to process the packet — any nested poll will see
+        // the updated read pointer.
         void* packet_copy = kmalloc(packet_len);
         if (packet_copy) {
             // Hardware wrap-around margin allows contiguous copy
@@ -261,10 +277,6 @@ void rtl8139_receive_packets() {
             stat_rx_errors++;
         }
 
-        // Update read pointer (CAPR)
-        current_packet_ptr = ((current_packet_ptr + length + 4 + 3) & ~3) % 32768;
-        outw(rtl_dev.io_base + RTL_REG_CAPR, current_packet_ptr - 16);
-        
         packets_processed++;
     }
 }
