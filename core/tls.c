@@ -1884,54 +1884,171 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
     uint8_t header[5];
 
     // ----------------------------------------------------------------
-    // Read the 5-byte TLS record header in ONE shot.
+    // QEMU SLIRP zero-byte prelude — ROOT CAUSE ANALYSIS
     //
-    // History: this function used to read the first byte alone, then
-    // branch on header[0]==0 to "reconstruct" a TLS record header from
-    // 6 zero bytes that QEMU SLIRP was supposedly injecting before
-    // the real ServerHello. That workaround was wrong:
+    // QEMU's SLIRP userspace TCP stack has a quirk where it sometimes
+    // sends a 6-byte all-zero segment as the very first data segment
+    // after the TCP 3-way handshake completes. This zero segment has
+    // the SAME sequence number as the real TLS ServerHello that
+    // follows it.
     //
-    //   * Google's HTTPS server NEVER sends a 0x00 byte at the start
-    //     of a TLS record — content_type is always 0x14/0x15/0x16/0x17.
-    //     A leading 0x00 means we are reading stale or corrupt data,
-    //     not a TLS record with a corrupted header.
+    // When the real ServerHello arrives (at the same seq), our TCP
+    // layer sees a partial overlap and trims the first 6 bytes —
+    // which happen to be the real TLS record header:
     //
-    //   * The "reconstruction" logic read 5 more bytes, then 3 more
-    //     (handshake length), then the body. If the 6-byte prelude was
-    //     actually stale garbage from a previous connection (which the
-    //     logs strongly suggest — the 6 bytes arrived BEFORE the
-    //     ClientHello was even sent), the code would consume 6+3 = 9
-    //     garbage bytes and then try to read a body of arbitrary
-    //     length, eventually timing out.
+    //   Real ServerHello on the wire:
+    //     [16 03 03 LH LL] [02 00 00 HS_LEN...] [server_version] [random] ...
+    //      ^--- 5-byte TLS record header ---^   ^--- handshake body ---^
     //
-    //   * The fallback at the old line 1956-1964 silently dropped
-    //     peek[4] and proceeded with a wrong header — pure bug.
+    //   What SLIRP delivers to us:
+    //     Segment 1: seq=S,     len=6,  data=[00 00 00 00 00 00]
+    //     Segment 2: seq=S,     len=N,  data=[16 03 03 LH LL 02 00 00 HS_LEN ...]
     //
-    // The new strategy is strict:
-    //   1. Read exactly 5 bytes.
-    //   2. Validate content_type ∈ {0x14, 0x15, 0x16, 0x17}.
-    //   3. If invalid, hex-dump the bytes for diagnosis, then return
-    //      an error. The TLS state machine will tear down the
-    //      connection — same end result as the old timeout, but
-    //      ~60 seconds faster.
+    //   After TCP overlap trimming (Segment 2's first 6 bytes eaten):
+    //     Socket buffer = [00 00 00 00 00 00] [02 00 00 HS_LEN 03 03 <random> ...]
+    //                      ^--- 6 zeros ---^   ^--- handshake body WITHOUT record header ---^
+    //
+    // So the 5-byte TLS record header (16 03 03 LH LL) is GONE. What
+    // remains is: 6 zeros, then the handshake type (0x02), then the
+    // 3-byte handshake length, then the rest of the ServerHello body.
+    //
+    // RECONSTRUCTION STRATEGY:
+    //   1. Read the first byte. If it's 0x00, read 5 more to confirm
+    //      the 6-byte zero prelude.
+    //   2. Read 1 byte → handshake_type (should be 0x02 = ServerHello).
+    //   3. Read 3 bytes → handshake_length (24-bit big-endian).
+    //   4. Reconstruct: content_type=0x16, version=0x0303,
+    //      record_length = handshake_length + 4.
+    //   5. Build buffer: [hs_type] [hs_len_bytes] [body...].
+    //   6. Read handshake_length bytes of body.
+    //
+    // PREVIOUS BUGS:
+    //   * Original code read 3 bytes after the zeros and treated them
+    //     ALL as the handshake length — but the first byte (0x02) is
+    //     the handshake TYPE, not part of the length. This produced
+    //     hs_len=0x020000=131072 and a 60-second timeout trying to
+    //     read 128 KB.
+    //   * My first fix removed the reconstruction entirely and tried
+    //     to "skip 64 bytes of garbage" — but the garbage included
+    //     real TLS data, so it found a random 0x16 byte in the server's
+    //     random field and built a garbage header with length 30384.
     // ----------------------------------------------------------------
-    int received = tls_recv_all(session->socket_fd, header, 5);
-    if (received < 5) {
-        s_printf("[TLS] recv_record: short header read (%d/5 bytes)\n", received);
+
+    // Read the first byte.
+    int received = tls_recv_all(session->socket_fd, header, 1);
+    if (received < 1) {
+        s_printf("[TLS] recv_record: EOF on first byte\n");
+        return TLS_ERR_SOCKET;
+    }
+
+    // Check for the SLIRP 6-byte zero prelude.
+    if (header[0] == 0x00) {
+        // Read 5 more bytes to confirm they're all zero.
+        uint8_t peek[5];
+        received = tls_recv_all(session->socket_fd, peek, 5);
+        if (received < 5) {
+            s_printf("[TLS] recv_record: short read during zero-prelude check\n");
+            return TLS_ERR_SOCKET;
+        }
+
+        int all_zeros = 1;
+        for (int i = 0; i < 5; i++) {
+            if (peek[i] != 0) { all_zeros = 0; break; }
+        }
+
+        if (all_zeros) {
+            s_printf("[TLS] Detected 6-byte zero prelude (QEMU SLIRP) — reconstructing record header\n");
+
+            // Read the handshake type (1 byte) and handshake length (3 bytes).
+            // These are what TCP delivered after trimming the 6-byte overlap
+            // — the real TLS record header (16 03 03 LH LL) was consumed by
+            // the overlap trim, leaving just the handshake header + body.
+            uint8_t hs_type;
+            received = tls_recv_all(session->socket_fd, &hs_type, 1);
+            if (received < 1) {
+                s_printf("[TLS] recv_record: EOF reading handshake type\n");
+                return TLS_ERR_SOCKET;
+            }
+
+            uint8_t hs_len_bytes[3];
+            received = tls_recv_all(session->socket_fd, hs_len_bytes, 3);
+            if (received < 3) {
+                s_printf("[TLS] recv_record: EOF reading handshake length\n");
+                return TLS_ERR_SOCKET;
+            }
+
+            uint32_t hs_len = ((uint32_t)hs_len_bytes[0] << 16) |
+                              ((uint32_t)hs_len_bytes[1] << 8) |
+                              (uint32_t)hs_len_bytes[2];
+            uint16_t record_len = (uint16_t)(hs_len + 4);  // +4 for handshake header
+
+            // Sanity-check the handshake length. A typical ServerHello is
+            // 70-90 bytes; Certificate can be up to ~16 KB. Anything > 16 KB
+            // or 0 is corrupt.
+            if (hs_len == 0 || hs_len > 16384) {
+                s_printf("[TLS] recv_record: bad handshake length %d after zero prelude (hs_type=0x%02X)\n",
+                         (int)hs_len, hs_type);
+                return TLS_ERR_SOCKET;
+            }
+
+            s_printf("[TLS] Reconstructed: content_type=0x16, hs_type=0x%02X, hs_len=%d, record_len=%d\n",
+                     hs_type, (int)hs_len, (int)record_len);
+
+            *content_type = 0x16;  // Handshake
+
+            // Build the buffer: [hs_type] [hs_len_bytes] [body...]
+            // This is exactly what tls_parse_server_hello expects — a
+            // handshake header (type + 3-byte length) followed by the
+            // handshake body.
+            if (record_len > max_len) {
+                s_printf("[TLS] recv_record: record_len %d > max_len %d\n",
+                         (int)record_len, (int)max_len);
+                return TLS_ERR_SOCKET;
+            }
+
+            buffer[0] = hs_type;
+            buffer[1] = hs_len_bytes[0];
+            buffer[2] = hs_len_bytes[1];
+            buffer[3] = hs_len_bytes[2];
+
+            uint32_t body_remaining = hs_len;
+            if (body_remaining > max_len - 4) {
+                body_remaining = (uint32_t)(max_len - 4);
+            }
+
+            received = tls_recv_all(session->socket_fd, buffer + 4, body_remaining);
+            if (received < (int)body_remaining) {
+                s_printf("[TLS] recv_record: short body read after reconstruction (%d/%d)\n",
+                         received, (int)body_remaining);
+                return TLS_ERR_SOCKET;
+            }
+
+            s_printf("[TLS] recv_record: reconstructed record OK, returning %d bytes\n",
+                     (int)(4 + body_remaining));
+            return (int)(4 + body_remaining);
+        } else {
+            // First byte was 0x00 but the next 5 weren't all zero.
+            // This shouldn't happen in practice (no valid TLS record
+            // starts with 0x00). Treat the 6 bytes we've read as a
+            // corrupted header and abort with a diagnostic dump.
+            s_printf("[TLS] recv_record: first byte 0x00 but not all-zero prelude\n");
+            s_printf("[TLS] recv_record: 6-byte hex dump: 00 %02X %02X %02X %02X %02X\n",
+                     peek[0], peek[1], peek[2], peek[3], peek[4]);
+            return TLS_ERR_SOCKET;
+        }
+    }
+
+    // Normal case: first byte is a valid content_type. Read remaining 4.
+    received = tls_recv_all(session->socket_fd, header + 1, 4);
+    if (received < 4) {
+        s_printf("[TLS] recv_record: short header read (%d/4 trailing bytes)\n", received);
         return TLS_ERR_SOCKET;
     }
 
     tls_record_header_t* hdr = (tls_record_header_t*)header;
     *content_type = hdr->content_type;
 
-    // Validate content_type. The four legal TLS 1.2 values are:
-    //   0x14 ChangeCipherSpec
-    //   0x15 Alert
-    //   0x16 Handshake
-    //   0x17 ApplicationData
-    // TLS 1.3 also uses 0x14-0x17 (it hides handshake msgs inside 0x17).
-    // Anything else means we are misaligned — usually stale bytes from
-    // a previous connection lingering in the socket buffer.
+    // Validate content_type.
     if (*content_type < 0x14 || *content_type > 0x17) {
         s_printf("[TLS] recv_record: INVALID content_type=0x%02X (expected 0x14-0x17)\n",
                  *content_type);
@@ -1940,44 +2057,21 @@ static int tls_recv_record(tls_session_t* session, uint8_t* content_type,
             s_printf(" %02X", header[i]);
         }
         s_printf("\n");
-
-        // Try to skip up to 64 bytes of leading garbage in case this
-        // is a small amount of stale data. If we don't find a valid
-        // header within 64 bytes, give up — the connection is beyond
-        // recovery and the handshake timer would have timed out anyway.
-        for (int skip = 0; skip < 64; skip++) {
-            // Shift: the next byte becomes header[0], read 4 more.
-            header[0] = header[1];
-            header[1] = header[2];
-            header[2] = header[3];
-            header[3] = header[4];
-            int r = tls_recv_all(session->socket_fd, &header[4], 1);
-            if (r < 1) {
-                s_printf("[TLS] recv_record: EOF while skipping garbage (skip=%d)\n", skip);
-                return TLS_ERR_SOCKET;
-            }
-            hdr = (tls_record_header_t*)header;
-            *content_type = hdr->content_type;
-            if (*content_type >= 0x14 && *content_type <= 0x17) {
-                s_printf("[TLS] recv_record: recovered valid header after skipping %d byte(s)\n",
-                         skip + 1);
-                goto have_valid_header;
-            }
-        }
-        s_printf("[TLS] recv_record: gave up after 64 bytes of garbage\n");
         return TLS_ERR_SOCKET;
     }
 
-have_valid_header:;
     uint16_t len = ntohs(hdr->length);
 
-    s_printf("[TLS] recv_record: content_type=0x%02X, version=0x%04X, length=%d\n",
-             hdr->content_type, ntohs(hdr->version), len);
+    // s_printf in CamelOS doesn't support %04X, so print version bytes individually.
+    {
+        uint8_t* vp = (uint8_t*)&hdr->version;
+        s_printf("[TLS] recv_record: content_type=0x%02X, version=0x%02X%02X, length=%d\n",
+                 hdr->content_type, vp[0], vp[1], (int)len);
+    }
 
-    // Sanity-check the record length. TLS 1.2 max is 16384 + 2048 of
-    // padding/ciphertext expansion = 18432. Anything larger is corrupt.
+    // Sanity-check the record length.
     if (len == 0 || len > 18432) {
-        s_printf("[TLS] recv_record: invalid record length %u (expected 1..18432)\n", len);
+        s_printf("[TLS] recv_record: invalid record length %d (expected 1..18432)\n", (int)len);
         return TLS_ERR_SOCKET;
     }
     if (len > max_len) {
@@ -1986,7 +2080,7 @@ have_valid_header:;
 
     received = tls_recv_all(session->socket_fd, buffer, len);
     if (received < len) {
-        s_printf("[TLS] recv_record: short body read (%d/%u bytes)\n", received, len);
+        s_printf("[TLS] recv_record: short body read (%d/%d bytes)\n", received, (int)len);
         return TLS_ERR_SOCKET;
     }
     return received;
