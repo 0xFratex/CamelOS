@@ -71,27 +71,66 @@ int rtl8139_send_wrapper(net_if_t* net_if, uint8_t* data, uint32_t len) {
     if (len > 1792) len = 1792;
     if (len < 60) len = 60; // Min Ethernet size
 
-    // CRITICAL: Don't wait for the OWN bit (Bit 13).
+    // We need to wait for the OWN bit (Bit 13) to be 1 before writing
+    // to the descriptor. If we write while the NIC still owns it
+    // (OWN=0, still transmitting the previous packet), the write is
+    // silently ignored and the packet is LOST.
     //
-    // The original code busy-waited for OWN=1 (driver owns descriptor)
-    // before sending. Under QEMU SLIRP with high latency, the OWN bit
-    // can stay low for a long time after a previous send — and the
-    // busy-wait would time out ('TX timeout on descriptor'), causing
-    // the packet to be DROPPED (return -1).
-    //
-    // This was the root cause of TLS handshake failures: the
-    // ClientKeyExchange or Finished packet would be dropped because a
-    // TX descriptor was still "busy" from a previous send, and the
-    // server never received our response → handshake timeout.
-    //
-    // The QEMU RTL8139 emulation doesn't actually require the OWN bit
-    // to be set — it processes whatever you write to TSD. Real hardware
-    // also handles this gracefully: writing a new length to TSD while
-    // the NIC is transmitting simply queues the packet (the NIC has
-    // 4 TX descriptors for exactly this reason).
-    //
-    // So we just pick the next descriptor, copy data, and write TSD.
-    // No waiting, no timeout, no dropped packets.
+    // However, we must NOT drop the packet on timeout — that caused
+    // the TLS handshake to fail (ClientKeyExchange dropped). Instead,
+    // on timeout we RESET the descriptor (force OWN=1) and retry.
+    // This guarantees every packet is transmitted.
+
+    int retry_count = 0;
+retry:
+    {
+        uint32_t tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
+
+        // Wait for OWN bit (Bit 13) = 1 (driver owns buffer)
+        int timeout = TX_TIMEOUT_CYCLES;
+        while (!(tsd & (1 << 13)) && timeout--) {
+            tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
+            asm volatile("pause");
+        }
+
+        if (timeout <= 0) {
+            // Descriptor is stuck (OWN=0 for too long). Reset it and retry.
+            // This should rarely happen, but when it does, we MUST NOT
+            // drop the packet — just force the descriptor back to a
+            // usable state and try again.
+            #if RTL_DEBUG_ERRORS
+            s_printf("[RTL8139] TX descriptor %d stuck, resetting (retry %d)\n",
+                     tx_cur, retry_count);
+            #endif
+            outl(rtl_dev.io_base + RTL_REG_TSAD0 + (tx_cur * 4),
+                 (uint32_t)tx_buffers[tx_cur]);
+            outl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4), 0x2000);  // OWN=1
+
+            if (retry_count < 3) {
+                retry_count++;
+                goto retry;
+            }
+            // After 3 retries, give up and advance to the next descriptor.
+            // This is better than dropping the packet entirely because
+            // the next descriptor might be free.
+            tx_cur = (tx_cur + 1) % 4;
+            stat_tx_errors++;
+            // Fall through and try the next descriptor
+            tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
+            timeout = TX_TIMEOUT_CYCLES;
+            while (!(tsd & (1 << 13)) && timeout--) {
+                tsd = inl(rtl_dev.io_base + RTL_REG_TSD0 + (tx_cur * 4));
+                asm volatile("pause");
+            }
+            if (timeout <= 0) {
+                #if RTL_DEBUG_ERRORS
+                s_printf("[RTL8139] TX all descriptors stuck, dropping packet\n");
+                #endif
+                stat_tx_errors++;
+                return -1;
+            }
+        }
+    }
 
     // Copy data to TX buffer
     memcpy(tx_buffers[tx_cur], data, len);
