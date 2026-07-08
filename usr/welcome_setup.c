@@ -229,10 +229,12 @@ void welcome_setup_load_config(void) {
     // Fall back to /etc/system.conf for backward compatibility
     char buffer[1024];
     int result = sys_fs_read("/Library/Preferences/system.conf", buffer, sizeof(buffer) - 1);
+    s_printf("[SETUP] load_config: read /Library/Preferences/system.conf result=%d\n", result);
     
     if (result <= 0) {
         // Try legacy path
         result = sys_fs_read("/etc/system.conf", buffer, sizeof(buffer) - 1);
+        s_printf("[SETUP] load_config: read /etc/system.conf result=%d\n", result);
     }
     
     if (result > 0) {
@@ -296,6 +298,9 @@ void welcome_setup_load_config(void) {
             line = next;
         }
     }
+    
+    s_printf("[SETUP] load_config: is_configured=%d, kbd_layout=%d, username='%s'\n",
+             g_setup.config.is_configured, g_setup.config.kbd_layout, g_setup.config.username);
 }
 
 int welcome_setup_save_config(void) {
@@ -671,6 +676,9 @@ int welcome_setup_save_config(void) {
     disk_flush_cache();
     pfs32_sync();
     disk_flush_cache();
+    
+    s_printf("[SETUP] save_config: wres=%d, is_configured=%d, returning %d\n",
+             wres, g_setup.config.is_configured, (wres > 0) ? 0 : -1);
     
     return (wres > 0) ? 0 : -1;
 }

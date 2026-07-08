@@ -183,6 +183,25 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
 
         sock->local_port = tcp_conn_get_local_port(sock->tcp_conn);
         sock->state = SOCKET_CONNECTING;
+
+        // CRITICAL: Set up the TCP data callback IMMEDIATELY after creating
+        // the connection, BEFORE waiting for ESTABLISHED.
+        //
+        // The NIC has interrupts enabled (ISR on int 0x81). As soon as the
+        // SYN is sent, the ISR can fire at any time to deliver the SYN-ACK
+        // and subsequent data segments. If on_data is NULL when data arrives,
+        // the data goes to the flat buffer (conn->recv_buffer) which nobody
+        // drains — and for the SLIRP 6-byte zero prelude, the server
+        // retransmits endlessly because our ACKs don't trigger the next
+        // segment, creating an infinite dup-segment loop.
+        //
+        // Previously, socket_setup_tcp_callbacks was called AFTER the polling
+        // loop detected ESTABLISHED (line ~213). But by then, the 6-byte
+        // zero prelude may have already been delivered to the flat buffer
+        // with on_data=NULL, and rcv_nxt advanced to 64008. The real
+        // ServerHello (at the same seq=64002) then gets treated as a dup.
+        socket_setup_tcp_callbacks(fd);
+
         s_printf("[TCP] SYN sent, local_port=%d, waiting for SYN-ACK...\n", sock->local_port);
 
         // Wait for connection (blocking) - OPTIMIZED polling
@@ -210,7 +229,11 @@ int k_connect(int fd, const sockaddr_in_t* addr) {
                 // Check if connection is established
                 if (tcp_conn_is_established(sock->tcp_conn)) {
                     sock->state = SOCKET_CONNECTED;
-                    socket_setup_tcp_callbacks(fd);
+                    // socket_setup_tcp_callbacks was already called above,
+                    // right after tcp_connect_with_ptr. No need to call it
+                    // again here — the callback has been active since before
+                    // the SYN-ACK arrived, ensuring no data was lost to the
+                    // flat buffer during the ESTABLISH transition.
                     s_printf("[TCP] Connection ESTABLISHED after %d ticks (loop=%d)\n", get_tick_count() - start, loop_count);
                     break;
                 }
