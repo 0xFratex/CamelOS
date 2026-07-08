@@ -160,21 +160,116 @@ static int resolve_and_load(const char* path) {
     strncpy(actual_path, path, 255);
     actual_path[255] = 0;
     int len = strlen(path);
-    
+
     if(len > 4 && strcmp(path + len - 4, ".app") == 0) {
-        // Try macOS-style .app bundle layout: .app/Contents/MacOS/Executable
-        // First, extract the app name from path
+        // ----------------------------------------------------------------
+        // macOS-style .app bundle resolution.
+        //
+        // Strategy (new): consult Info.plist FIRST. The plist tells us:
+        //   - CFBundleExecutable  -> name of the binary in Contents/MacOS/
+        //   - CamelBuiltin        -> if true, dispatch to the in-kernel
+        //                            init function via
+        //                            kernel_launch_builtin_app(name).
+        //                            Skip the stub binary entirely.
+        //   - CFBundleType        -> "builtin", "cdl", "elf", "macho"
+        //
+        // Old strategy was a 5-stage fallback chain that always ended
+        // at kernel_launch_builtin_app because Contents/MacOS/ was empty.
+        // Now that app_bootstrap.c writes a real stub binary into
+        // Contents/MacOS/, the OLD code would load the stub (which just
+        // prints a message) instead of dispatching to the real init
+        // function. The new code reads the plist first to decide.
+        // ----------------------------------------------------------------
+
+        // Extract the app name from the bundle path.
+        // /Applications/Browser.app -> "Browser"
         const char* name_start = path;
         const char* p = path;
         while (*p) { if (*p == '/') name_start = p + 1; p++; }
         int name_len = len - (name_start - path) - 4; // Remove .app
-        
-        // Try 1: .app/Contents/MacOS/<name>
-        if (name_len > 0 && name_len < 60) {
+        if (name_len <= 0 || name_len >= 60) {
+            return internal_load_library(path);  // bogus path
+        }
+        char app_name[64];
+        strncpy(app_name, name_start, name_len);
+        app_name[name_len] = 0;
+
+        // ----------------------------------------------------------------
+        // Special sentinel: "/builtin/<Name>" path.
+        // The stub binary (usr/stubs/builtin_stub.c) calls
+        // sys->exec("/builtin/Browser") when manually opened. We
+        // recognise that prefix here and dispatch directly to the
+        // in-kernel init function.
+        // ----------------------------------------------------------------
+        if (strncmp(path, "/builtin/", 9) == 0) {
+            extern int kernel_launch_builtin_app(const char* name);
+            int r = kernel_launch_builtin_app(path + 9);
+            if (r == 0) {
+                serial_write_string("CDL: /builtin/ dispatched: ");
+                serial_write_string(path + 9);
+                serial_write_string("\n");
+                return 0;
+            }
+            return -1;
+        }
+
+        // ----------------------------------------------------------------
+        // Read Info.plist and decide what to do.
+        // ----------------------------------------------------------------
+        char plist_path[256];
+        strcpy(plist_path, path);
+        strcat(plist_path, "/Info.plist");
+
+        // We use the bundle parser to read the plist. It handles both
+        // XML (which app_bootstrap.c writes) and key=value (legacy).
+        // app_bundle_parse_plist lives in app_bundle.c.
+        extern int app_bundle_parse_plist(const char* bundle_path, void* info);
+        typedef struct {
+            char name[64];
+            char identifier[128];
+            char executable[64];
+            char version[16];
+            char type[16];
+            char icon_file[64];
+            char min_os_version[16];
+            char cdl_path[256];
+        } bundle_info_t;
+        bundle_info_t info;
+        memset(&info, 0, sizeof(info));
+        app_bundle_parse_plist(path, &info);
+
+        // If the plist says this is a built-in app, dispatch directly.
+        // We detect this either via CFBundleType="builtin" OR via the
+        // CamelBuiltin=true boolean (which the parser converts to
+        // type="builtin" when no explicit type is set).
+        if (strcmp(info.type, "builtin") == 0) {
+            extern int kernel_launch_builtin_app(const char* name);
+            int r = kernel_launch_builtin_app(app_name);
+            if (r == 0) {
+                serial_write_string("CDL: Launched built-in app: ");
+                serial_write_string(app_name);
+                serial_write_string("\n");
+                return 0;
+            }
+            // Built-in dispatch failed — fall through to try other
+            // resolution strategies below.
+        }
+
+        // If the plist gave us a CDL path, try that.
+        if (info.cdl_path[0] && sys_fs_exists(info.cdl_path)) {
+            return internal_load_library(info.cdl_path);
+        }
+
+        // Try 1: .app/Contents/MacOS/<CFBundleExecutable> or <name>
+        // The stub binary is a real ELF file now (written by
+        // app_bootstrap.c), so if we reach here for a non-builtin app,
+        // we load it as a real CDL module.
+        {
+            const char* exec_name = info.executable[0] ? info.executable : app_name;
             char bundle_exec[256];
             strcpy(bundle_exec, path);
             strcat(bundle_exec, "/Contents/MacOS/");
-            strncat(bundle_exec, name_start, name_len);
+            strcat(bundle_exec, exec_name);
             if (sys_fs_exists(bundle_exec)) {
                 // Check for Mach-O magic
                 char magic_buf[8];
@@ -190,9 +285,9 @@ static int resolve_and_load(const char* path) {
                 return internal_load_library(bundle_exec);
             }
         }
-        
+
         // Try 2: /Applications/<name>.cdl (new macOS-like path)
-        if (name_len > 0 && name_len < 60) {
+        {
             char cdl_path[256];
             strcpy(cdl_path, "/Applications/");
             strncat(cdl_path, name_start, name_len);
@@ -201,9 +296,9 @@ static int resolve_and_load(const char* path) {
                 return internal_load_library(cdl_path);
             }
         }
-        
+
         // Try 3: Legacy /usr/apps/<name>.cdl
-        if (name_len > 0 && name_len < 60) {
+        {
             char cdl_path[256];
             strcpy(cdl_path, "/usr/apps/");
             strncat(cdl_path, name_start, name_len);
@@ -212,9 +307,9 @@ static int resolve_and_load(const char* path) {
                 return internal_load_library(cdl_path);
             }
         }
-        
+
         // Try 3b: /usr/lib/<name>.cdl (system libraries that are also apps)
-        if (name_len > 0 && name_len < 60) {
+        {
             char cdl_path[256];
             strcpy(cdl_path, "/usr/lib/");
             strncat(cdl_path, name_start, name_len);
@@ -223,37 +318,36 @@ static int resolve_and_load(const char* path) {
                 return internal_load_library(cdl_path);
             }
         }
-        
+
         // Try 4: Simple .app -> .cdl conversion (legacy behavior)
-        strcpy(actual_path, path);
-        actual_path[len - 4] = '\0';
-        strcat(actual_path, ".cdl");
-        if (sys_fs_exists(actual_path)) {
-            return internal_load_library(actual_path);
+        {
+            strcpy(actual_path, path);
+            actual_path[len - 4] = '\0';
+            strcat(actual_path, ".cdl");
+            if (sys_fs_exists(actual_path)) {
+                return internal_load_library(actual_path);
+            }
         }
-        
-        // Try 5: Built-in kernel apps (compiled into the kernel, not CDL)
-        // These apps are linked directly into the kernel and can be launched by name
-        if (name_len > 0 && name_len < 60) {
-            char app_name[64];
-            strncpy(app_name, name_start, name_len);
-            app_name[name_len] = 0;
-            
-            // Use the kernel's built-in app launcher
+
+        // Try 5: Built-in kernel apps as a last resort.
+        // (We may have already tried this above if type="builtin",
+        // but if the plist was missing or didn't set the type, we
+        // still want to give the built-in dispatcher a shot.)
+        {
             extern int kernel_launch_builtin_app(const char* name);
             int builtin_result = kernel_launch_builtin_app(app_name);
             if (builtin_result == 0) {
-                serial_write_string("CDL: Launched built-in app: ");
+                serial_write_string("CDL: Launched built-in app (fallback): ");
                 serial_write_string(app_name);
                 serial_write_string("\n");
-                return 0;  // Success
+                return 0;
             }
         }
-        
+
         // Last resort: try the path as-is
         return internal_load_library(path);
     }
-    
+
     return internal_load_library(actual_path);
 }
 

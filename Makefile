@@ -1,4 +1,4 @@
-#	Makefile	-	Camel	OS	Hybrid
+#       Makefile        -       Camel   OS      Hybrid
 #
 # Toolchain overrides:
 #   - Native Linux build (default):           make
@@ -55,6 +55,18 @@ CDL_LDFLAGS     =       -m      elf_i386        -shared -Bsymbolic      -e      
 
 COMMON_SRC      =       common/font.c   common/time.c
 
+# Built-in app stub: a tiny CDL module whose bytes get written into
+# /Applications/<App>.app/Contents/MacOS/<name> at boot so that the
+# bundle directory contains a REAL ELF binary (macOS-style) instead of
+# being empty. The bytes are embedded into the kernel as a C array via
+# tools/bin2c.py. See usr/stubs/builtin_stub.c for the source.
+builtin_stub.cdl: usr/stubs/builtin_stub.c
+	$(CC)   $(CDL_CFLAGS)   -c usr/stubs/builtin_stub.c -o builtin_stub.o
+	$(LD)   $(CDL_LDFLAGS) -o builtin_stub.cdl builtin_stub.o
+
+kernel/builtin_stub_blob.c: builtin_stub.cdl tools/bin2c.py
+	python3 tools/bin2c.py builtin_stub.cdl builtin_stub_blob kernel/builtin_stub_blob.c
+
 #       ---     SOURCES ---
 HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/serial.c    \
         hal/drivers/keyboard.c  hal/drivers/mouse.c     hal/drivers/sound.c     \
@@ -72,7 +84,7 @@ USR_SRC =       usr/shell.c     usr/bubbleview.c        usr/desktop.c   usr/fram
 
 #       NOTE:   files.c and terminal.c are compiled into the kernel as built-in apps
 #       They are launched via the kernel_launch_builtin_app() dispatch mechanism
-KERNEL_OBJ      =       system/entry.o  core/objc_msgSend.o     lib/setjmp.o    lib/soft_float.o        $(HAL_SRC:.c=.o)        $(CORE_SRC:.c=.o)       $(FS_SRC:.c=.o) $(USR_SRC:.c=.o)        $(ASSETS_SRC:.c=.o)     $(COMMON_SRC:.c=.o)
+KERNEL_OBJ      =       system/entry.o  core/objc_msgSend.o     lib/setjmp.o    lib/soft_float.o        $(HAL_SRC:.c=.o)        $(CORE_SRC:.c=.o)       $(FS_SRC:.c=.o) $(USR_SRC:.c=.o)        $(ASSETS_SRC:.c=.o)     $(COMMON_SRC:.c=.o)     kernel/builtin_stub_blob.o
 
 #       Installer       objects -       explicitly      list    them    to      avoid   dependency      issues
 INSTALLER_OBJ   =       installer/entry.o       installer/installer_main.o      installer/panic_framework.o     sys/api_installer.o     core/string.o   core/memory.o   core/spinlock.o core/task.o     core/scheduler.o        core/panic.o    hal/drivers/ata.o       hal/drivers/vga.o       hal/video/gfx_hal.o     hal/drivers/serial.o    hal/drivers/acpi.o      hal/cpu/apic.o  hal/cpu/timer.o hal/cpu/paging.o        fs/pfs32.o      fs/disk.o       hal/drivers/keyboard.o  hal/drivers/mouse.o     hal/drivers/rtc.o       installer/payload.o     common/font.o   kernel/assets.o installer/arp_stub.o    installer/disk_tools.o  installer/sys_requirements.o    installer/disk_health.o   installer/soft_div.o     installer/syscall_stub.o        lib/soft_float.o
@@ -101,7 +113,7 @@ core/objc_msgSend.o: core/objc_msgSend.S
 lib/setjmp.o: lib/setjmp.s
 	$(CC)     $(if $(CROSS),,-m32)    -c      $<      -o      $@
 
-system.bin:     $(KERNEL_OBJ)
+system.bin:     $(KERNEL_OBJ) kernel/builtin_stub_blob.o
 	$(LD)   $(KERNEL_LDFLAGS)       -T      linker_system.ld        -o      system.elf      $(KERNEL_OBJ)   -L$(GCC_LIB32)
 	$(OBJCOPY) -O      binary  system.elf      system.bin
 
@@ -180,10 +192,10 @@ camel_install.iso:      installer.elf
 disk.img:
 	@if [ ! -f disk.img ]; then \
 	dd if=/dev/zero of=disk.img bs=1M count=256; \
-	echo "Created disk.img (256MB)"; \
-	else \
-	echo "disk.img already exists, skipping creation"; \
-	fi
+        echo "Created disk.img (256MB)"; \
+        else \
+        echo "disk.img already exists, skipping creation"; \
+        fi
 
 #       ---     COMMANDS        ---
 
@@ -214,7 +226,7 @@ QEMU_NET_SIMPLE =       -net    nic,model=rtl8139       -net    user
 
 run:    disk.img
 	qemu-system-i386        -m      512     -drive  file=disk.img,format=raw,index=0,media=disk     \
-	-vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
+        -vga    std     -serial stdio   $(QEMU_NET_SIMPLE)      $(QEMU_AUDIO)
 
 #       Explicit        compilation     rules   to      handle  different       flags
 sys/api.o:      sys/api.c

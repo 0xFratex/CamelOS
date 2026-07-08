@@ -27,15 +27,32 @@ void app_bundle_init_system(void) {
     memset(loaded_bundles, 0, sizeof(loaded_bundles));
 }
 
-// Simple plist parser - reads key=value lines from Info.plist
+// Simple plist parser - reads either XML or key=value format Info.plist.
+//
+// History: this function originally only parsed plain "key=value" lines.
+// But app_bootstrap.c writes XML plists (the macOS standard format),
+// so EVERY plist failed to parse — the registry fell back to deriving
+// the app name from the directory name. This made CFBundleExecutable,
+// CFBundleIconFile, CamelBuiltin, etc. invisible to the launcher.
+//
+// The new parser handles both formats:
+//   * XML:    <key>CFBundleName</key>\n  <string>Files</string>
+//             <key>CamelBuiltin</key>\n  <true/>
+//   * key=value: CFBundleName=Files
+//                CamelBuiltin=true
+//
+// The XML parser is intentionally minimal — it only understands the
+// subset of plist XML that app_bootstrap.c actually emits: <key>,
+// <string>, <true/>, <false/>. That's enough to round-trip our own
+// plists and to parse real macOS Info.plist files for the common keys.
 int app_bundle_parse_plist(const char* bundle_path, AppBundleInfo* info) {
     char plist_path[BUNDLE_PATH_MAX];
     char buffer[BUNDLE_PLIST_MAX];
-    
+
     // Build path to Info.plist
     strcpy(plist_path, bundle_path);
     strcat(plist_path, "/Info.plist");
-    
+
     // Try to read plist
     int result = sys_fs_read(plist_path, buffer, sizeof(buffer) - 1);
     if (result <= 0) {
@@ -44,50 +61,155 @@ int app_bundle_parse_plist(const char* bundle_path, AppBundleInfo* info) {
         strcpy(info->type, APP_TYPE_CDL_COMPAT);
         return -1;
     }
-    
+
     buffer[result] = 0;
-    
-    // Parse key=value lines
-    char* line = buffer;
-    while (line && *line) {
-        char* next = strchr(line, '\n');
-        if (next) *next++ = 0;
-        
-        // Skip comments and empty lines
-        if (line[0] == '#' || line[0] == 0) { line = next; continue; }
-        
-        char* eq = strchr(line, '=');
-        if (!eq) { line = next; continue; }
-        
-        *eq = 0;
-        char* key = line;
-        char* value = eq + 1;
-        
-        // Trim whitespace
-        while (*key == ' ') key++;
-        while (*value == ' ') value++;
-        
-        if (strcmp(key, PLIST_KEY_CFNAME) == 0) {
-            strncpy(info->name, value, BUNDLE_NAME_MAX - 1);
-        } else if (strcmp(key, PLIST_KEY_CFIDENTIFIER) == 0) {
-            strncpy(info->identifier, value, BUNDLE_ID_MAX - 1);
-        } else if (strcmp(key, PLIST_KEY_CFEXECUTABLE) == 0) {
-            strncpy(info->executable, value, BUNDLE_NAME_MAX - 1);
-        } else if (strcmp(key, PLIST_KEY_CFVERSION) == 0) {
-            strncpy(info->version, value, 15);
-        } else if (strcmp(key, PLIST_KEY_CFTYPE) == 0) {
-            strncpy(info->type, value, 15);
-        } else if (strcmp(key, PLIST_KEY_CFICON) == 0) {
-            strncpy(info->icon_file, value, 63);
-        } else if (strcmp(key, PLIST_KEY_CFMINOS) == 0) {
-            strncpy(info->min_os_version, value, 15);
-        } else if (strcmp(key, PLIST_KEY_CFCDLPATH) == 0) {
-            strncpy(info->cdl_path, value, BUNDLE_PATH_MAX - 1);
+
+    memset(info, 0, sizeof(AppBundleInfo));
+    // Default type if not specified in plist
+    strcpy(info->type, APP_TYPE_BUILTIN);
+
+    // Detect format: XML starts with '<?xml' or '<plist'.
+    // Skip leading whitespace.
+    char* p = buffer;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    int is_xml = (p[0] == '<');
+
+    if (is_xml) {
+        // -------- XML plist parser --------
+        // Walk through the buffer finding <key>K</key> followed by
+        // <string>V</string> (or <true/> / <false/>). When we find a
+        // known key, store the value in info.
+        char current_key[64] = {0};
+
+        while (*p) {
+            // Find next '<'
+            if (*p != '<') { p++; continue; }
+            p++;  // skip '<'
+
+            // Skip XML comments, declarations, doctype, <?xml ... ?>
+            if (*p == '?' || *p == '!') {
+                while (*p && *p != '>') p++;
+                if (*p) p++;
+                continue;
+            }
+
+            // Parse the tag name.
+            char tag[32] = {0};
+            int ti = 0;
+            while (*p && *p != '>' && *p != ' ' && *p != '/' && ti < 31) {
+                tag[ti++] = *p++;
+            }
+            tag[ti] = 0;
+
+            // Skip attributes (we don't care about them).
+            while (*p && *p != '>' && *p != '/') p++;
+
+            int self_closing = (*p == '/');
+            if (*p && *p != '>') p++;  // skip '/'
+            if (*p) p++;  // skip '>'
+
+            if (strcmp(tag, "key") == 0) {
+                // Read text until </key>
+                char* close = strstr(p, "</key>");
+                if (!close) break;
+                int klen = close - p;
+                if (klen >= (int)sizeof(current_key)) klen = sizeof(current_key) - 1;
+                memcpy(current_key, p, klen);
+                current_key[klen] = 0;
+                p = close + 6;  // skip </key>
+            } else if (strcmp(tag, "string") == 0) {
+                // Read text until </string>
+                char* close = strstr(p, "</string>");
+                if (!close) break;
+                int vlen = close - p;
+                char value[256];
+                if (vlen >= (int)sizeof(value)) vlen = sizeof(value) - 1;
+                memcpy(value, p, vlen);
+                value[vlen] = 0;
+                p = close + 9;  // skip </string>
+
+                // Trim leading/trailing whitespace from value.
+                char* v = value;
+                while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+                int vl = strlen(v);
+                while (vl > 0 && (v[vl-1] == ' ' || v[vl-1] == '\t' ||
+                                  v[vl-1] == '\n' || v[vl-1] == '\r')) {
+                    v[--vl] = 0;
+                }
+
+                if (strcmp(current_key, PLIST_KEY_CFNAME) == 0) {
+                    strncpy(info->name, v, BUNDLE_NAME_MAX - 1);
+                } else if (strcmp(current_key, PLIST_KEY_CFIDENTIFIER) == 0) {
+                    strncpy(info->identifier, v, BUNDLE_ID_MAX - 1);
+                } else if (strcmp(current_key, PLIST_KEY_CFEXECUTABLE) == 0) {
+                    strncpy(info->executable, v, BUNDLE_NAME_MAX - 1);
+                } else if (strcmp(current_key, PLIST_KEY_CFVERSION) == 0) {
+                    strncpy(info->version, v, 15);
+                } else if (strcmp(current_key, PLIST_KEY_CFTYPE) == 0) {
+                    strncpy(info->type, v, 15);
+                } else if (strcmp(current_key, PLIST_KEY_CFICON) == 0) {
+                    strncpy(info->icon_file, v, 63);
+                } else if (strcmp(current_key, PLIST_KEY_CFMINOS) == 0) {
+                    strncpy(info->min_os_version, v, 15);
+                } else if (strcmp(current_key, PLIST_KEY_CFCDLPATH) == 0) {
+                    strncpy(info->cdl_path, v, BUNDLE_PATH_MAX - 1);
+                }
+                current_key[0] = 0;  // consume
+            } else if (strcmp(tag, "true") == 0 && self_closing) {
+                // Boolean true. Currently we only care about CamelBuiltin,
+                // which we encode as type="builtin" if true (and the
+                // explicit CFBundleType overrides this if set).
+                if (strcmp(current_key, "CamelBuiltin") == 0) {
+                    if (info->type[0] == 0) {
+                        strcpy(info->type, APP_TYPE_BUILTIN);
+                    }
+                }
+                current_key[0] = 0;
+            } else if (strcmp(tag, "false") == 0 && self_closing) {
+                current_key[0] = 0;
+            } else {
+                // Unknown tag — consume, don't crash.
+                current_key[0] = 0;
+            }
         }
-        
-        line = next;
+    } else {
+        // -------- key=value parser (legacy fallback) --------
+        char* line = buffer;
+        while (line && *line) {
+            char* next = strchr(line, '\n');
+            if (next) *next++ = 0;
+
+            if (line[0] == '#' || line[0] == 0) { line = next; continue; }
+
+            char* eq = strchr(line, '=');
+            if (!eq) { line = next; continue; }
+            *eq = 0;
+            char* key = line;
+            char* value = eq + 1;
+            while (*key == ' ') key++;
+            while (*value == ' ') value++;
+
+            if (strcmp(key, PLIST_KEY_CFNAME) == 0) {
+                strncpy(info->name, value, BUNDLE_NAME_MAX - 1);
+            } else if (strcmp(key, PLIST_KEY_CFIDENTIFIER) == 0) {
+                strncpy(info->identifier, value, BUNDLE_ID_MAX - 1);
+            } else if (strcmp(key, PLIST_KEY_CFEXECUTABLE) == 0) {
+                strncpy(info->executable, value, BUNDLE_NAME_MAX - 1);
+            } else if (strcmp(key, PLIST_KEY_CFVERSION) == 0) {
+                strncpy(info->version, value, 15);
+            } else if (strcmp(key, PLIST_KEY_CFTYPE) == 0) {
+                strncpy(info->type, value, 15);
+            } else if (strcmp(key, PLIST_KEY_CFICON) == 0) {
+                strncpy(info->icon_file, value, 63);
+            } else if (strcmp(key, PLIST_KEY_CFMINOS) == 0) {
+                strncpy(info->min_os_version, value, 15);
+            } else if (strcmp(key, PLIST_KEY_CFCDLPATH) == 0) {
+                strncpy(info->cdl_path, value, BUNDLE_PATH_MAX - 1);
+            }
+            line = next;
+        }
     }
-    
+
     return 0;
 }
 

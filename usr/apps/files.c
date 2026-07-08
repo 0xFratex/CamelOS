@@ -450,11 +450,34 @@ void files_draw_ctx(int win_x, int win_y) {
         {"Copy",     2},
         {"Delete",   4},
     };
+    /* macOS-style: when right-clicking a .app bundle, show an extra
+     * "Show Package Contents" item that navigates INTO the bundle
+     * directory instead of launching it. */
+    CtxItem app_items[] = {
+        {"Open",                   5},
+        {"Show Package Contents",  7},
+        {"Copy",                   2},
+        {"Delete",                 4},
+    };
+    
+    /* Detect if the right-clicked item is a .app bundle. */
+    int is_app_bundle = 0;
+    if (fm_cur->ctx_type == 1 &&
+        fm_cur->ctx_target_idx >= 0 &&
+        fm_cur->ctx_target_idx < fm_cur->entry_count) {
+        int elen = strlen(fm_cur->entries[fm_cur->ctx_target_idx].filename);
+        if ((fm_cur->entries[fm_cur->ctx_target_idx].attributes & 0x10) &&
+            elen > 4 &&
+            strcmp(fm_cur->entries[fm_cur->ctx_target_idx].filename + elen - 4, ".app") == 0) {
+            is_app_bundle = 1;
+        }
+    }
     
     CtxItem* items;
     int item_count;
     if (fm_cur->ctx_type == 0) { items = bg_items; item_count = 4; }
-    else { items = file_items; item_count = 3; }
+    else if (is_app_bundle)    { items = app_items; item_count = 4; }
+    else                       { items = file_items; item_count = 3; }
     
     int max_w = 0;
     for (int i = 0; i < item_count; i++) {
@@ -501,10 +524,28 @@ void files_ctx_click(int click_x, int click_y) {
     
     CtxItem bg_items[] = {{"New Folder",0},{"New File",1},{"Paste",3},{"Refresh",6}};
     CtxItem file_items[] = {{"Open",5},{"Copy",2},{"Delete",4}};
+    CtxItem app_items[] = {{"Open",5},{"Show Package Contents",7},{"Copy",2},{"Delete",4}};
+    
+    /* Detect if the right-clicked item is a .app bundle (same logic
+     * as in files_draw_ctx above — kept duplicated to avoid touching
+     * the shared state during paint). */
+    int is_app_bundle = 0;
+    if (fm_cur->ctx_type == 1 &&
+        fm_cur->ctx_target_idx >= 0 &&
+        fm_cur->ctx_target_idx < fm_cur->entry_count) {
+        int elen = strlen(fm_cur->entries[fm_cur->ctx_target_idx].filename);
+        if ((fm_cur->entries[fm_cur->ctx_target_idx].attributes & 0x10) &&
+            elen > 4 &&
+            strcmp(fm_cur->entries[fm_cur->ctx_target_idx].filename + elen - 4, ".app") == 0) {
+            is_app_bundle = 1;
+        }
+    }
+    
     CtxItem* items;
     int item_count;
     if (fm_cur->ctx_type == 0) { items = bg_items; item_count = 4; }
-    else { items = file_items; item_count = 3; }
+    else if (is_app_bundle)    { items = app_items; item_count = 4; }
+    else                       { items = file_items; item_count = 3; }
     
     int max_w = 0;
     for (int i = 0; i < item_count; i++) {
@@ -548,6 +589,19 @@ void files_ctx_click(int click_x, int click_y) {
                     break;
                 }
                 case 6: files_refresh(); break;
+                case 7: {
+                    /* "Show Package Contents" — navigate INTO the .app
+                     * bundle directory instead of launching it. This is
+                     * the macOS behaviour: right-click a .app, pick
+                     * "Show Package Contents", and Finder opens the
+                     * bundle as a regular folder so you can browse
+                     * Contents/, MacOS/, Resources/, etc. */
+                    if (fm_cur->ctx_target_idx >= 0 &&
+                        fm_cur->ctx_target_idx < fm_cur->entry_count) {
+                        fm_navigate_into(fm_cur->entries[fm_cur->ctx_target_idx].filename);
+                    }
+                    break;
+                }
             }
         }
     }
