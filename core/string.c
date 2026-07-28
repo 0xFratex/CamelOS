@@ -421,8 +421,12 @@ void printk(const char* fmt, ...) {
     char buf[256];
     va_list args;
     va_start(args, fmt);
-    vsprintf(buf, fmt, args);
+    vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     extern void s_printf(const char* fmt, ...); // From serial (variadic)
-    s_printf(buf);
+    // Pass buf as DATA ("%s"), not as a format string — prevents %s/%d
+    // inside `buf` (e.g. from logged user data) from being interpreted
+    // and reading random stack values, which can overflow s_printf's
+    // internal buffer and corrupt the return address.
+    s_printf("%s", buf);
 }

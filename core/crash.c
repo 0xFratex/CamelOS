@@ -151,9 +151,7 @@ void crash_report(crash_type_t type, const char* msg, registers_t* regs,
      * crash immediately, even if the log-file write fails.
      */
     s_printf("[CRASH] === Crash reported ===\n");
-    s_printf("[CRASH] Type: ");
-    s_printf(crash_type_name(type));
-    s_printf("\n");
+    s_printf("[CRASH] Type: %s\n", crash_type_name(type));
 
     /*
      * Allocate and zero-fill the crash log structure.
@@ -440,16 +438,10 @@ void crash_save_log(crash_log_t* log) {
     /* ---- Write to filesystem ---- */
     int result = pfs32_write_file(filepath, (uint8_t*)buf, (uint32_t)pos);
     if (result == PFS_OK) {
-        s_printf("[CRASH] Log written to ");
-        s_printf(filepath);
-        s_printf("\n");
+        s_printf("[CRASH] Log written to %s\n", filepath);
         klog_log(KLOG_INFO, "crash", "Crash log saved to %s", filepath);
     } else {
-        s_printf("[CRASH] FAILED to write log (err=");
-        char err_buf[16];
-        int_to_str(result, err_buf);
-        s_printf(err_buf);
-        s_printf(")\n");
+        s_printf("[CRASH] FAILED to write log (err=%d)\n", result);
         klog_log(KLOG_ERROR, "crash", "Failed to write crash log: err=%d", result);
     }
 

@@ -1298,9 +1298,9 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
             for (int j = 0; j < ti; j++) nc[nc_i++] = tmp[ti - 1 - j];
         }
         nc[nc_i] = 0;
-        s_printf(nc);
+        s_printf("%s", nc);
         s_printf(" body=");
-        s_printf(doc->body ? doc->body->tag : "NULL");
+        s_printf("%s", doc->body ? doc->body->tag : "NULL");
         s_printf(" children=");
         {
             int cc = doc->body ? doc->body->child_count : 0;
@@ -1311,7 +1311,7 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
                 for (int j = 0; j < ti; j++) cc_s[cc_i++] = tmp[ti - 1 - j];
             }
             cc_s[cc_i] = 0;
-            s_printf(cc_s);
+            s_printf("%s", cc_s);
         }
         s_printf("\n");
     }
@@ -2503,8 +2503,12 @@ static void resolve_url(const char* base_url, const char* src,
 }
 
 // Recursive walker — loads images for every <img> node under `node`.
-static void dom_load_images_recursive(dom_node_t *node, const char* base_url) {
+// Depth-limited to prevent stack exhaustion on deeply-nested or cyclic DOM
+// trees (each frame holds a 512-byte url buffer plus locals).
+#define DOM_LOAD_IMAGES_MAX_DEPTH 64
+static void dom_load_images_recursive(dom_node_t *node, const char* base_url, int depth) {
     if (!node) return;
+    if (depth > DOM_LOAD_IMAGES_MAX_DEPTH) return;
     if (node->type == DOM_NODE_ELEMENT &&
         str_casecmp(node->tag, "img") == 0 &&
         !node->image_load_attempted &&
@@ -2528,15 +2532,33 @@ static void dom_load_images_recursive(dom_node_t *node, const char* base_url) {
                         node->image = img;
                         node->image_w = (int)img->width;
                         node->image_h = (int)img->height;
+                        // Truncate URL in log to avoid overflowing s_printf's
+                        // 512-byte internal buffer (url can be up to 512 chars,
+                        // plus the prefix/suffix this would exceed 512).
+                        char url_short[256];
+                        int ul = strlen(url);
+                        if (ul > 255) ul = 255;
+                        memcpy(url_short, url, ul);
+                        url_short[ul] = 0;
                         s_printf("[DOM] Loaded image %s (%dx%d)\n",
-                                 url, img->width, img->height);
+                                 url_short, img->width, img->height);
                     } else {
-                        s_printf("[DOM] PNG decode failed for %s\n", url);
+                        char url_short[256];
+                        int ul = strlen(url);
+                        if (ul > 255) ul = 255;
+                        memcpy(url_short, url, ul);
+                        url_short[ul] = 0;
+                        s_printf("[DOM] PNG decode failed for %s\n", url_short);
                         kfree(img);
                     }
                 }
             } else {
-                s_printf("[DOM] Image fetch failed for %s (got=%d)\n", url, got);
+                char url_short[256];
+                int ul = strlen(url);
+                if (ul > 255) ul = 255;
+                memcpy(url_short, url, ul);
+                url_short[ul] = 0;
+                s_printf("[DOM] Image fetch failed for %s (got=%d)\n", url_short, got);
             }
             kfree(buf);
         }
@@ -2545,14 +2567,14 @@ static void dom_load_images_recursive(dom_node_t *node, const char* base_url) {
     // Recurse into children
     dom_node_t *child = node->first_child;
     while (child) {
-        dom_load_images_recursive(child, base_url);
+        dom_load_images_recursive(child, base_url, depth + 1);
         child = child->next_sibling;
     }
 }
 
 void dom_load_images(dom_document_t *doc) {
     if (!doc || !doc->body) return;
-    dom_load_images_recursive(doc->body, doc->base_url);
+    dom_load_images_recursive(doc->body, doc->base_url, 0);
 }
 
 // ============================================================================

@@ -8,8 +8,8 @@
 #define va_arg(v,l)     __builtin_va_arg(v,l)
 typedef __builtin_va_list va_list;
 
-// Forward declaration of vsprintf from core/string.c
-extern int vsprintf(char* buf, const char* fmt, va_list args);
+// Forward declaration of vsnprintf from core/string.c (bounds-checked)
+extern int vsnprintf(char* buf, size_t size, const char* fmt, va_list args);
 
 int init_serial() {
    outb(PORT + 1, 0x00);    // Disable all interrupts
@@ -35,7 +35,7 @@ void s_printf(const char* fmt, ...) {
     char buf[512];
     va_list args;
     va_start(args, fmt);
-    vsprintf(buf, fmt, args);
+    vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     for (int i = 0; buf[i] != 0; i++) {
         write_serial(buf[i]);
@@ -44,5 +44,7 @@ void s_printf(const char* fmt, ...) {
 
 
 void serial_write_string(const char* str) {
-    s_printf(str);
+    // Pass str as DATA, not as a format string — prevents %s/%d etc.
+    // in `str` from being interpreted and reading random stack values.
+    s_printf("%s", str);
 }

@@ -244,8 +244,8 @@ void gfx_init_hal(void* mboot_ptr) {
     s_printf("[GFX] Init: "); 
     char buf[16]; 
     extern void int_to_str(int, char*);
-    int_to_str(gfx_ctx.width, buf); s_printf(buf); s_printf("x");
-    int_to_str(gfx_ctx.height, buf); s_printf(buf); s_printf(" VRAM: 0x");
+    int_to_str(gfx_ctx.width, buf); s_printf("%s", buf); s_printf("x");
+    int_to_str(gfx_ctx.height, buf); s_printf("%s", buf); s_printf(" VRAM: 0x");
     
     // Manual hex print for debugging
     uint32_t vptr = (uint32_t)gfx_ctx.vram_ptr;

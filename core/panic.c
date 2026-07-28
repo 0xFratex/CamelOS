@@ -197,7 +197,7 @@ void panic(const char* msg, registers_t* regs) {
     
     // Log to serial first
     s_printf("\n\n[!!!] KERNEL PANIC [!!!]\n");
-    s_printf("Reason: "); s_printf(msg); s_printf("\n");
+    s_printf("Reason: %s\n", msg ? msg : "(null)");
     
     // Initialize graphics if not already done
     extern gfx_context_t gfx_ctx;
