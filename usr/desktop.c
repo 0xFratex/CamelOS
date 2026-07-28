@@ -451,7 +451,7 @@ void desktop_refresh() {
 }
 
 void desktop_init() {
-    // Read username from config to build the correct desktop path
+    // Read username + keyboard layout from config
     char buf[1024];
     int len = sys_fs_read("/Library/Preferences/system.conf", buf, sizeof(buf)-1);
     if (len <= 0) {
@@ -474,6 +474,22 @@ void desktop_init() {
                 strcpy(g_desktop_path, "/Users/");
                 strcat(g_desktop_path, username);
                 strcat(g_desktop_path, "/Desktop");
+            }
+        }
+        // Apply saved keyboard layout (e.g. ABNT2=6) so typing works after reboot
+        // without re-running the welcome setup wizard.
+        char* kbd_line = strstr(buf, "kbd_layout=");
+        if (kbd_line) {
+            int kbd_val = 0;
+            const char* p = kbd_line + 11;
+            while (*p >= '0' && *p <= '9') {
+                kbd_val = kbd_val * 10 + (*p - '0');
+                p++;
+            }
+            if (kbd_val >= 0 && kbd_val < 32) {
+                extern void kbd_set_layout(int);
+                kbd_set_layout(kbd_val);
+                s_printf("[DESKTOP] Applied keyboard layout %d from config\n", kbd_val);
             }
         }
     }
@@ -658,22 +674,62 @@ static void wallpaper_cache_ensure(int w, int h) {
 
     if (bmp_loaded) return;  // BMP loaded successfully — skip gradient
 
-    // Final fallback: Fill cached gradient using theme desktop_bg color
-    // Per-channel gradient with proper clamping to prevent underflow.
-    // The old formula (col = base - y/4) caused channel bleeding in dark
-    // mode: e.g. 0xFF1C1C1E - 31 = 0xFF1C1BFD (blue wraps, borrows from green).
+    // Final fallback: multi-stop diagonal gradient with a soft vignette.
+    // Light mode → sky blue → indigo; dark mode → deep navy → charcoal.
+    // Per-channel math with clamping (avoids the old base-y/4 channel bleed).
     const theme_t* theme = theme_get_current();
-    uint32_t base = theme->desktop_bg;
-    uint8_t base_r = (base >> 16) & 0xFF;
-    uint8_t base_g = (base >> 8) & 0xFF;
-    uint8_t base_b = base & 0xFF;
-    for(int y=0; y<h; y++) {
-        int shift = y / 4;
-        uint8_t nr = (base_r > shift) ? (base_r - shift) : 0;
-        uint8_t ng = (base_g > shift) ? (base_g - shift) : 0;
-        uint8_t nb = (base_b > shift) ? (base_b - shift) : 0;
-        uint32_t col = 0xFF000000 | ((uint32_t)nr << 16) | ((uint32_t)ng << 8) | nb;
-        for(int x=0; x<w; x++) wallpaper_cache[y*w+x] = col;
+    int is_dark = (theme_get_id() == THEME_DARK);
+
+    uint8_t c0_r, c0_g, c0_b, c1_r, c1_g, c1_b, c2_r, c2_g, c2_b;
+    if (is_dark) {
+        c0_r = 0x12; c0_g = 0x14; c0_b = 0x28;  // deep navy
+        c1_r = 0x1C; c1_g = 0x1C; c1_b = 0x2E;  // charcoal purple
+        c2_r = 0x0A; c2_g = 0x0A; c2_b = 0x12;  // near black
+    } else {
+        c0_r = 0x3B; c0_g = 0x8C; c0_b = 0xE0;  // bright sky
+        c1_r = 0x5B; c1_g = 0x6A; c1_b = 0xD0;  // soft indigo
+        c2_r = 0x2A; c2_g = 0x5A; c2_b = 0x9E;  // deep blue
+        // Prefer theme desktop_bg as the mid stop when available
+        uint32_t base = theme->desktop_bg;
+        c1_r = (base >> 16) & 0xFF;
+        c1_g = (base >> 8) & 0xFF;
+        c1_b = base & 0xFF;
+    }
+
+    for (int y = 0; y < h; y++) {
+        // Vertical blend weight 0..256
+        int ty = (h > 1) ? (y * 256) / (h - 1) : 0;
+        for (int x = 0; x < w; x++) {
+            int tx = (w > 1) ? (x * 256) / (w - 1) : 0;
+            // Diagonal mix: average of vertical + horizontal positions
+            int t = (ty + tx) / 2;
+            uint8_t r, g, b;
+            if (t < 128) {
+                // c0 → c1
+                int u = t * 2; // 0..256
+                r = c0_r + ((c1_r - c0_r) * u) / 256;
+                g = c0_g + ((c1_g - c0_g) * u) / 256;
+                b = c0_b + ((c1_b - c0_b) * u) / 256;
+            } else {
+                // c1 → c2
+                int u = (t - 128) * 2;
+                r = c1_r + ((c2_r - c1_r) * u) / 256;
+                g = c1_g + ((c2_g - c1_g) * u) / 256;
+                b = c1_b + ((c2_b - c1_b) * u) / 256;
+            }
+            // Soft vignette toward edges (darken ~12%)
+            int dx = (x < w/2) ? (w/2 - x) : (x - w/2);
+            int dy = (y < h/2) ? (h/2 - y) : (y - h/2);
+            int edge = (dx * 256) / (w/2 + 1) + (dy * 256) / (h/2 + 1);
+            if (edge > 256) edge = 256;
+            int darken = (edge * 30) / 256; // 0..30
+            if (r > darken) r -= darken; else r = 0;
+            if (g > darken) g -= darken; else g = 0;
+            if (b > darken) b -= darken; else b = 0;
+
+            wallpaper_cache[y * w + x] =
+                0xFF000000 | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+        }
     }
 }
 

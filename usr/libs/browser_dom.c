@@ -2722,29 +2722,383 @@ static void dom_free_subtree(dom_document_t* doc, dom_node_t* node) {
     if (doc) doc->node_count--;
 }
 
-void dom_set_inner_html(dom_node_t* node, const char* html) {
-    if (!node || !html) return;
+// ============================================================================
+// innerHTML (real implementation): parse an HTML fragment and append the
+// resulting nodes as children of `node`. Replaces the old stub that stored
+// the markup as a single literal text node (so el.innerHTML = "<b>hi</b>"
+// used to render the literal tags).
+// ============================================================================
+static void parse_fragment(dom_document_t *doc, dom_node_t *parent, const char *html) {
+    if (!doc || !parent || !html) return;
+    dom_node_t *stack[32];
+    int top = 0;
+    stack[0] = parent;
+    const char *p = html;
+    char tbuf[DOM_MAX_TEXT_LEN];
+    int tpos = 0;
 
-    // Remove all existing children by recursively freeing the subtree
-    dom_document_t* doc = dom_get_document();
-    dom_node_t* child = node->first_child;
+    #define FRAG_FLUSH_TEXT() do {                                          \
+        if (tpos > 0) {                                                     \
+            tbuf[tpos] = 0;                                                 \
+            while (tpos > 0 && is_ws(tbuf[tpos - 1])) tbuf[--tpos] = 0;     \
+            int hc = 0;                                                     \
+            for (int i = 0; i < tpos; i++) {                                \
+                if (!is_ws(tbuf[i])) { hc = 1; break; }                     \
+            }                                                               \
+            if (hc) {                                                       \
+                dom_node_t *tn = dom_node_alloc(doc);                       \
+                if (tn) {                                                   \
+                    tn->type = DOM_NODE_TEXT;                               \
+                    safe_strcpy(tn->text, tbuf, DOM_MAX_TEXT_LEN);          \
+                    decode_html_entities(tn->text);                         \
+                    tn->computed_style.display = DOM_DISPLAY_INLINE;        \
+                    dom_node_append_child(stack[top], tn);                  \
+                }                                                           \
+            }                                                               \
+            tpos = 0;                                                       \
+        }                                                                   \
+    } while (0)
+
+    while (*p) {
+        if (*p == '<') {
+            FRAG_FLUSH_TEXT();
+            p++;
+            /* comment */
+            if (*p == '!' && *(p + 1) == '-' && *(p + 2) == '-') {
+                p += 3;
+                while (*p && !(*p == '-' && *(p + 1) == '-' && *(p + 2) == '>')) p++;
+                if (*p) p += 3;
+                continue;
+            }
+            /* doctype / xml decl */
+            if (*p == '!' || str_casencmp(p, "?xml", 4) == 0) {
+                while (*p && *p != '>') p++;
+                if (*p) p++;
+                continue;
+            }
+            /* closing tag */
+            if (*p == '/') {
+                p++;
+                char ct[DOM_MAX_TAG_LEN]; int ci = 0;
+                while (*p && !is_ws(*p) && *p != '>') {
+                    if (ci < DOM_MAX_TAG_LEN - 1)
+                        ct[ci++] = char_tolower((unsigned char)*p);
+                    p++;
+                }
+                ct[ci] = 0;
+                while (*p && *p != '>') p++;
+                if (*p) p++;
+                while (top > 0 &&
+                       !(stack[top]->type == DOM_NODE_ELEMENT &&
+                         str_casecmp(stack[top]->tag, ct) == 0)) top--;
+                if (top > 0) top--;
+                continue;
+            }
+            /* opening tag name */
+            char tag[DOM_MAX_TAG_LEN]; int ti = 0;
+            while (*p && !is_ws(*p) && *p != '>' && *p != '/') {
+                if (ti < DOM_MAX_TAG_LEN - 1)
+                    tag[ti++] = char_tolower((unsigned char)*p);
+                p++;
+            }
+            tag[ti] = 0;
+            if (ti == 0) { while (*p && *p != '>') p++; if (*p) p++; continue; }
+            /* attributes + self-close detection */
+            char ab[512]; int ai = 0; int selfc = 0;
+            while (*p && *p != '>') {
+                if (*p == '/' && (*(p + 1) == '>' || is_ws(*(p + 1)))) {
+                    selfc = 1; p++; break;
+                }
+                if (ai < (int)sizeof(ab) - 1) ab[ai++] = *p;
+                p++;
+            }
+            ab[ai] = 0;
+            if (*p == '>') p++;
+            /* build element */
+            dom_node_t *el = dom_node_alloc(doc);
+            if (!el) break;   /* node pool exhausted — stop parsing fragment */
+            el->type = DOM_NODE_ELEMENT;
+            safe_strcpy(el->tag, tag, DOM_MAX_TAG_LEN);
+            el->computed_style.display     = default_display_for_tag(tag);
+            el->computed_style.font_size   = default_font_size_for_tag(tag);
+            el->computed_style.font_weight = default_font_weight_for_tag(tag);
+            apply_default_element_styles(el);
+            if (ai > 0) parse_tag_attrs(el, ab, ai);
+            dom_node_append_child(stack[top], el);
+            /* raw-text elements: <style>/<script> */
+            if (is_raw_text_element(tag)) {
+                char cp[64]; int cpi = 0;
+                cp[cpi++] = '<'; cp[cpi++] = '/';
+                for (int i = 0; i < ti && cpi < 60; i++) cp[cpi++] = tag[i];
+                cp[cpi++] = '>'; cp[cpi] = 0;
+                const char *cl = str_casestr(p, cp);
+                int clen = cl ? (int)(cl - p) : (int)strlen(p);
+                if (str_casecmp(tag, "style") == 0 &&
+                    doc->stylesheet_count < DOM_MAX_STYLESHEETS) {
+                    int n = (clen >= DOM_MAX_STYLESHEET_LEN)
+                            ? DOM_MAX_STYLESHEET_LEN - 1 : clen;
+                    memcpy(doc->stylesheets[doc->stylesheet_count], p, n);
+                    doc->stylesheets[doc->stylesheet_count][n] = 0;
+                    doc->stylesheet_count++;
+                } else if (str_casecmp(tag, "script") == 0 &&
+                           doc->script_count < DOM_MAX_SCRIPTS) {
+                    int n = (clen >= DOM_MAX_SCRIPT_LEN)
+                            ? DOM_MAX_SCRIPT_LEN - 1 : clen;
+                    memcpy(doc->scripts[doc->script_count], p, n);
+                    doc->scripts[doc->script_count][n] = 0;
+                    doc->script_count++;
+                }
+                el->computed_style.display = DOM_DISPLAY_NONE;
+                p = cl ? cl + strlen(cp) : p + clen;
+                continue;
+            }
+            if (!(is_void_element(tag) || selfc) && top < 31)
+                stack[++top] = el;
+        } else {
+            if (is_ws(*p)) {
+                if (tpos > 0 && !is_ws(tbuf[tpos - 1]) &&
+                    tpos < DOM_MAX_TEXT_LEN - 1) tbuf[tpos++] = ' ';
+            } else {
+                if (tpos < DOM_MAX_TEXT_LEN - 1) tbuf[tpos++] = *p;
+            }
+            p++;
+        }
+    }
+    FRAG_FLUSH_TEXT();
+    #undef FRAG_FLUSH_TEXT
+}
+
+void dom_set_inner_html(dom_node_t *node, const char *html) {
+    if (!node) return;
+    dom_document_t *doc = dom_get_document();
+    /* free existing children */
+    dom_node_t *child = node->first_child;
     while (child) {
-        dom_node_t* next = child->next_sibling;
+        dom_node_t *next = child->next_sibling;
         dom_free_subtree(doc, child);
         child = next;
     }
     node->first_child = NULL;
-    node->last_child = NULL;
+    node->last_child  = NULL;
     node->child_count = 0;
+    if (!html || !html[0]) return;
+    if (doc) parse_fragment(doc, node, html);
+}
 
-    // If the node belongs to a document, create a text node for the content
-    if (doc) {
-        dom_node_t* text_node = dom_node_alloc(doc);
-        if (text_node) {
-            text_node->type = DOM_NODE_TEXT;
-            safe_strcpy(text_node->text, html, DOM_MAX_TEXT_LEN);
-            text_node->computed_style.display = DOM_DISPLAY_INLINE;
-            dom_node_append_child(node, text_node);
+// ============================================================================
+// NODE MUTATION / TRAVERSAL — used by the mujs DOM bridge
+// ============================================================================
+static void dom_unlink_node(dom_node_t *n) {
+    if (!n || !n->parent) return;
+    dom_node_t *p = n->parent;
+    if (p->first_child == n) p->first_child = n->next_sibling;
+    if (p->last_child  == n) p->last_child  = n->prev_sibling;
+    if (n->prev_sibling) n->prev_sibling->next_sibling = n->next_sibling;
+    if (n->next_sibling) n->next_sibling->prev_sibling = n->prev_sibling;
+    if (p->child_count > 0) p->child_count--;
+    n->parent = n->next_sibling = n->prev_sibling = NULL;
+}
+
+void dom_node_remove_child(dom_node_t *parent, dom_node_t *child) {
+    if (!parent || !child || child->parent != parent) return;
+    dom_unlink_node(child);
+}
+
+void dom_node_insert_before(dom_node_t *parent, dom_node_t *newn, dom_node_t *ref) {
+    if (!parent || !newn) return;
+    if (newn->parent) dom_unlink_node(newn);
+    newn->parent = parent;
+    if (!ref) { dom_node_append_child(parent, newn); return; }
+    if (ref->parent != parent) return;
+    newn->next_sibling = ref;
+    newn->prev_sibling = ref->prev_sibling;
+    if (ref->prev_sibling) ref->prev_sibling->next_sibling = newn;
+    else parent->first_child = newn;
+    ref->prev_sibling = newn;
+    parent->child_count++;
+}
+
+void dom_node_replace_child(dom_node_t *parent, dom_node_t *newn, dom_node_t *old) {
+    if (!parent || !old || old->parent != parent) return;
+    if (newn == old) return;
+    dom_node_insert_before(parent, newn, old);
+    dom_unlink_node(old);
+}
+
+dom_node_t* dom_node_clone_node(dom_node_t *node, int deep) {
+    if (!node) return NULL;
+    dom_document_t *doc = dom_get_document();
+    dom_node_t *c = dom_node_alloc(doc);
+    if (!c) return NULL;
+    c->type = node->type;
+    memcpy(c->tag,        node->tag,        sizeof(c->tag));
+    memcpy(c->id,         node->id,         sizeof(c->id));
+    memcpy(c->class_name, node->class_name, sizeof(c->class_name));
+    memcpy(c->style,      node->style,      sizeof(c->style));
+    memcpy(c->href,       node->href,       sizeof(c->href));
+    memcpy(c->src,        node->src,        sizeof(c->src));
+    memcpy(c->text,       node->text,       sizeof(c->text));
+    c->attr_count = node->attr_count;
+    memcpy(c->attrs, node->attrs, sizeof(c->attrs));
+    c->computed_style = node->computed_style;
+    if (deep) {
+        for (dom_node_t *ch = node->first_child; ch; ch = ch->next_sibling) {
+            dom_node_t *cc = dom_node_clone_node(ch, 1);
+            if (cc) dom_node_append_child(c, cc);
         }
     }
+    return c;
+}
+
+void dom_node_set_text_content(dom_node_t *node, const char *text) {
+    if (!node) return;
+    dom_document_t *doc = dom_get_document();
+    dom_node_t *ch = node->first_child;
+    while (ch) {
+        dom_node_t *nx = ch->next_sibling;
+        dom_free_subtree(doc, ch);
+        ch = nx;
+    }
+    node->first_child = node->last_child = NULL;
+    node->child_count = 0;
+    if (text && *text) {
+        dom_node_t *t = dom_node_alloc(doc);
+        if (t) {
+            t->type = DOM_NODE_TEXT;
+            safe_strcpy(t->text, text, DOM_MAX_TEXT_LEN);
+            t->computed_style.display = DOM_DISPLAY_INLINE;
+            dom_node_append_child(node, t);
+        }
+    }
+}
+
+int dom_node_has_attr(dom_node_t *n, const char *name) {
+    return (n && dom_node_get_attr(n, name) != NULL) ? 1 : 0;
+}
+
+void dom_node_remove_attr(dom_node_t *n, const char *name) {
+    if (!n || !name) return;
+    for (int i = 0; i < n->attr_count; i++) {
+        if (str_casecmp(n->attrs[i].name, name) == 0) {
+            for (int j = i; j < n->attr_count - 1; j++)
+                n->attrs[j] = n->attrs[j + 1];
+            n->attr_count--;
+            if (str_casecmp(name, "id") == 0)            n->id[0] = 0;
+            else if (str_casecmp(name, "class") == 0)    n->class_name[0] = 0;
+            else if (str_casecmp(name, "style") == 0)    n->style[0] = 0;
+            return;
+        }
+    }
+}
+
+int dom_classlist_contains(dom_node_t *n, const char *cls) {
+    if (!n || !cls || !n->class_name[0]) return 0;
+    int L = strlen(cls);
+    const char *p = n->class_name;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        if (str_casencmp(p, cls, L) == 0 && (p[L] == ' ' || p[L] == 0)) return 1;
+        while (*p && *p != ' ') p++;
+    }
+    return 0;
+}
+
+static void classlist_mut(dom_node_t *n, const char *cls, int add) {
+    if (!n || !cls) return;
+    if (add) {
+        if (!dom_classlist_contains(n, cls)) {
+            if (n->class_name[0])
+                safe_strcpy(n->class_name + strlen(n->class_name),
+                            " ", DOM_MAX_CLASS_LEN - 1);
+            int left = DOM_MAX_CLASS_LEN - 1 - (int)strlen(n->class_name);
+            if (left > 0) {
+                int cl = (int)strlen(cls);
+                if (cl > left) cl = left;
+                int d = (int)strlen(n->class_name);
+                for (int i = 0; i < cl; i++) n->class_name[d + i] = cls[i];
+                n->class_name[d + cl] = 0;
+            }
+        }
+    } else {
+        char *p = n->class_name;
+        int L = (int)strlen(cls);
+        while (*p) {
+            char *s = p;
+            while (*p == ' ') p++;
+            if (str_casencmp(p, cls, L) == 0 && (p[L] == ' ' || p[L] == 0)) {
+                char *e = p + L;
+                while (*e == ' ') e++;
+                int rest = (int)strlen(e);
+                for (int i = 0; i <= rest; i++) s[i] = e[i];
+            } else {
+                while (*p && *p != ' ') p++;
+            }
+            if (s == p) break;
+        }
+    }
+}
+
+void dom_classlist_add(dom_node_t *n, const char *c)    { classlist_mut(n, c, 1); }
+void dom_classlist_remove(dom_node_t *n, const char *c) { classlist_mut(n, c, 0); }
+
+static void collect_tag(dom_node_t *n, const char *tag,
+                        dom_node_t **out, int max, int *cnt) {
+    if (!n || *cnt >= max) return;
+    if (n->type == DOM_NODE_ELEMENT &&
+        (tag[0] == '*' || str_casecmp(n->tag, tag) == 0)) out[(*cnt)++] = n;
+    for (dom_node_t *c = n->first_child; c; c = c->next_sibling)
+        collect_tag(c, tag, out, max, cnt);
+}
+int dom_collect_by_tag(dom_node_t *root, const char *tag,
+                       dom_node_t **out, int max) {
+    int cnt = 0; collect_tag(root, tag, out, max, &cnt); return cnt;
+}
+
+static void collect_class(dom_node_t *n, const char *cls,
+                          dom_node_t **out, int max, int *cnt) {
+    if (!n || *cnt >= max) return;
+    if (n->type == DOM_NODE_ELEMENT && dom_classlist_contains(n, cls))
+        out[(*cnt)++] = n;
+    for (dom_node_t *c = n->first_child; c; c = c->next_sibling)
+        collect_class(c, cls, out, max, cnt);
+}
+int dom_collect_by_class(dom_node_t *root, const char *cls,
+                         dom_node_t **out, int max) {
+    int cnt = 0; collect_class(root, cls, out, max, &cnt); return cnt;
+}
+
+static void collect_sel(dom_node_t *n, dom_css_selector_type_t t, const char *v,
+                        dom_node_t **out, int max, int *cnt) {
+    if (!n || *cnt >= max) return;
+    if (n->type == DOM_NODE_ELEMENT && element_matches_selector(n, t, v))
+        out[(*cnt)++] = n;
+    for (dom_node_t *c = n->first_child; c; c = c->next_sibling)
+        collect_sel(c, t, v, out, max, cnt);
+}
+int dom_collect_by_selector(dom_node_t *root, const char *sel,
+                            dom_node_t **out, int max) {
+    dom_css_selector_type_t t = DOM_CSS_SEL_TAG;
+    char v[DOM_MAX_SELECTOR_LEN]; v[0] = 0;
+    const char *s = skip_ws(sel);
+    if (*s == '.')      { t = DOM_CSS_SEL_CLASS; safe_strcpy(v, s + 1, DOM_MAX_SELECTOR_LEN); }
+    else if (*s == '#') { t = DOM_CSS_SEL_ID;    safe_strcpy(v, s + 1, DOM_MAX_SELECTOR_LEN); }
+    else                { safe_strcpy(v, s, DOM_MAX_SELECTOR_LEN); }
+    int cnt = 0; collect_sel(root, t, v, out, max, &cnt); return cnt;
+}
+
+int dom_collect_children(dom_node_t *n, dom_node_t **out, int max) {
+    int cnt = 0;
+    if (!n) return 0;
+    for (dom_node_t *c = n->first_child; c && cnt < max; c = c->next_sibling)
+        out[cnt++] = c;
+    return cnt;
+}
+
+// Re-run the cascade (CSS rules, then inline style=) over the whole tree so
+// nodes that JavaScript created/mutated after the first layout pass pick up
+// their styles. dom_compute_styles() must still be called afterwards to lay
+// them out (see the browser.c change).
+void dom_reapply_styles(dom_document_t *doc) {
+    if (doc && doc->root) apply_css_rules_to_tree(doc, doc->root);
 }

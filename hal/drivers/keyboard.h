@@ -9,6 +9,7 @@
 #define KBD_LAYOUT_SPANISH   4
 #define KBD_LAYOUT_ITALIAN   5
 #define KBD_LAYOUT_PORTBR    6
+#define KBD_LAYOUT_BRAZILIAN_ABNT2 6  /* alias — layout 6 is ABNT2 */
 #define KBD_LAYOUT_DVORAK    7
 #define KBD_LAYOUT_JAPANESE  8
 #define KBD_LAYOUT_KOREAN    9

@@ -15,6 +15,7 @@
 #include "../../core/socket.h"
 #include "../../core/tls.h"
 #include "../../core/http.h"
+#include "../../core/http2.h"
 #include "../dock.h"
 #include "../../core/window_server.h"
 #include "../libs/browser_dom.h"
@@ -620,31 +621,143 @@ static int decode_chunked(char* body, int body_len) {
     return dst - body;
 }
 
+// ============================================================================
+// HTTP/2 fetch helper — fetches a page over an existing TLS session using
+// HTTP/2, then reconstructs an HTTP/1.1-style response buffer so that all
+// downstream parsing (status line, headers, chunked, gzip, DOM) works
+// unchanged.  Returns total bytes written into `response`, or -1 on error.
+// ============================================================================
+static int browser_fetch_http2(tls_session_t* tls_session, int sockfd,
+                               const char* host, const char* path, int port,
+                               char* response, int response_size,
+                               int* http_status_out)
+{
+    *http_status_out = 0;
+
+    /* Wrap the existing TLS session in an HTTP/2 connection */
+    http2_connection_t* h2 = http2_init_over_tls(tls_session, sockfd, host, (uint16_t)port);
+    if (!h2) {
+        s_printf("[Browser] HTTP/2 init failed, will fall back to HTTP/1.1\n");
+        return -1;
+    }
+
+    /* Extra request headers (pseudo-headers are added by http2_get internally) */
+    http2_header_t extra[6];
+    int ec = 0;
+    strcpy(extra[ec].name, "user-agent");
+    strcpy(extra[ec].value,
+           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    ec++;
+    strcpy(extra[ec].name, "accept");
+    strcpy(extra[ec].value,
+           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    ec++;
+    strcpy(extra[ec].name, "accept-language");
+    strcpy(extra[ec].value, "en-US,en;q=0.9");
+    ec++;
+    strcpy(extra[ec].name, "accept-encoding");
+    strcpy(extra[ec].value, "gzip, deflate");
+    ec++;
+
+    /* Allocate a temporary buffer for the HTTP/2 response body */
+    uint8_t* h2_body = (uint8_t*)kmalloc(response_size);
+    if (!h2_body) {
+        h2->tls_session = NULL;
+        h2->socket_fd   = -1;
+        http2_close(h2);
+        return -1;
+    }
+    size_t h2_body_len = (size_t)response_size;
+
+    http2_header_t resp_hdrs[32];
+    int resp_hdr_count = 32;
+
+    s_printf("[Browser] Sending HTTP/2 GET %s\n", path);
+
+    int result = http2_get(h2, path, extra, ec,
+                           h2_body, &h2_body_len,
+                           resp_hdrs, &resp_hdr_count);
+
+    if (result != 0) {
+        s_printf("[Browser] HTTP/2 GET failed (result=%d)\n", result);
+        kfree(h2_body);
+        h2->tls_session = NULL;
+        h2->socket_fd   = -1;
+        http2_close(h2);
+        return -1;
+    }
+
+    /* ---- Extract :status pseudo-header ---- */
+    int status = 200;
+    for (int i = 0; i < resp_hdr_count; i++) {
+        if (resp_hdrs[i].is_pseudo && strcmp(resp_hdrs[i].name, ":status") == 0) {
+            status = 0;
+            for (const char* p = resp_hdrs[i].value; *p >= '0' && *p <= '9'; p++)
+                status = status * 10 + (*p - '0');
+            break;
+        }
+    }
+    *http_status_out = status;
+    s_printf("[Browser] HTTP/2 response status: %d, body: %d bytes, %d headers\n",
+             status, (int)h2_body_len, resp_hdr_count);
+
+    /* ---- Reconstruct an HTTP/1.1-style response ---- */
+    int len = 0;
+    len += sprintf(response + len, "HTTP/1.1 %d OK\r\n", status);
+
+    for (int i = 0; i < resp_hdr_count; i++) {
+        if (resp_hdrs[i].is_pseudo) continue;   /* skip :status, :method, etc. */
+        int hl = strlen(resp_hdrs[i].name);
+        int vl = strlen(resp_hdrs[i].value);
+        if (len + hl + vl + 4 >= response_size) break;
+        memcpy(response + len, resp_hdrs[i].name, hl);   len += hl;
+        response[len++] = ':';
+        response[len++] = ' ';
+        memcpy(response + len, resp_hdrs[i].value, vl);  len += vl;
+        response[len++] = '\r';
+        response[len++] = '\n';
+    }
+    /* Blank line separating headers from body */
+    response[len++] = '\r';
+    response[len++] = '\n';
+
+    /* Append body */
+    int body_copy = (int)h2_body_len;
+    if (len + body_copy > response_size - 1)
+        body_copy = response_size - 1 - len;
+    if (body_copy > 0)
+        memcpy(response + len, h2_body, body_copy);
+    len += body_copy;
+    response[len] = '\0';
+
+    kfree(h2_body);
+
+    /* ---- Tear down HTTP/2 without closing the socket / TLS we don't own ---- */
+    if (h2->established && !h2->goaway_sent) {
+        http2_send_goaway(h2, h2->last_stream_id, HTTP2_ERROR_NO_ERROR);
+        h2->goaway_sent = 1;
+    }
+    h2->tls_session = NULL;   /* browser owns the TLS session */
+    h2->socket_fd   = -1;    /* browser owns the socket      */
+    http2_close(h2);          /* frees HPACK tables, streams, conn struct */
+
+    return len;
+}
+
 static void browser_load_page(const char* url) {
-    // Empty URL = new tab page
+    /* ---- Empty URL = new tab page ---- */
     if (!url || url[0] == 0) {
-        page_line_count = 0;
-        scroll_offset = 0;
-        is_loading = 0;
-        load_progress = 100;
-        link_count = 0;
-        page_title[0] = 0;
+        page_line_count = 0; scroll_offset = 0; is_loading = 0; load_progress = 100;
+        link_count = 0; page_title[0] = 0;
         if (source_html) { kfree(source_html); source_html = 0; source_len = 0; }
-        view_source = 0;
-        error_type = ERR_NONE;
-        error_detail[0] = 0;
+        view_source = 0; error_type = ERR_NONE; error_detail[0] = 0;
         strcpy(status_text, "New Tab");
         return;
     }
 
-    page_line_count = 0;
-    scroll_offset = 0;
-    is_loading = 1;
-    load_progress = 5;
-    link_count = 0;
-    page_title[0] = 0;
-    error_type = ERR_NONE;
-    error_detail[0] = 0;
+    page_line_count = 0; scroll_offset = 0; is_loading = 1; load_progress = 5;
+    link_count = 0; page_title[0] = 0; error_type = ERR_NONE; error_detail[0] = 0;
     strcpy(status_text, "Loading...");
     page_load_start = get_tick_count();
 
@@ -652,15 +765,15 @@ static void browser_load_page(const char* url) {
     use_dom_rendering = 0;
     if (source_html) { kfree(source_html); source_html = 0; source_len = 0; }
     view_source = 0;
-
     http_process_events();
 
+    /* ---- Parse URL ---- */
     int use_tls = 0;
     char host[128] = "";
     char path[128] = "/";
     int port = 80;
-
     const char* url_start = url;
+
     if (strncmp(url, "https://", 8) == 0) {
         use_tls = 1; url_start = url + 8; port = 443;
     } else if (strncmp(url, "http://", 7) == 0) {
@@ -677,36 +790,28 @@ static void browser_load_page(const char* url) {
         while (*colon >= '0' && *colon <= '9') { port = port * 10 + (*colon - '0'); colon++; }
         if (port == 0) port = use_tls ? 443 : 80;
     }
-
     if (*url_start == '/') { strncpy(path, url_start, 127); path[127] = 0; }
 
-    int path_len = strlen(path);
-    if (path_len > 0 && path[path_len - 1] == '/') {
-        if (path_len + 10 < 127) strcat(path, "index.html");
-    }
-    char original_path[128];
-    strncpy(original_path, path, 127); original_path[127] = 0;
+    /* FIX: Removed the index.html auto-append. It caused an extra 301
+     * redirect (google.com/ -> google.com/index.html -> www.google.com/).
+     * Servers already serve their homepage at "/". */
 
-    // DNS
+    /* ---- DNS ---- */
     char ip_str[16];
     extern int dns_resolve(const char* name, char* ip_buf, int ip_buf_len);
     s_printf("[Browser] DNS resolve: '%s'\n", host);
     int dns_ok = dns_resolve(host, ip_str, sizeof(ip_str));
-
     if (dns_ok != 0) {
         s_printf("[Browser] DNS FAILED for '%s' (err=%d)\n", host, dns_ok);
         error_type = ERR_DNS;
         strncpy(error_detail, host, 127); error_detail[127] = 0;
-        page_line_count = 0;
-        strcpy(status_text, "DNS Error");
+        page_line_count = 0; strcpy(status_text, "DNS Error");
         is_loading = 0; load_progress = 0;
         return;
     }
     s_printf("[Browser] DNS OK: '%s' -> %s\n", host, ip_str);
-
     load_progress = 15;
 
-    // Repaint after DNS resolution so user sees progress
     http_process_events();
     if (browser_window) {
         window_t* bw = (window_t*)browser_window;
@@ -723,12 +828,12 @@ static void browser_load_page(const char* url) {
     extern uint32_t ip_parse(const char* str);
     uint32_t ip = ip_parse(ip_str);
 
+    /* ---- Create socket & connect ---- */
     int sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         error_type = ERR_SOCKET;
         strncpy(error_detail, host, 127); error_detail[127] = 0;
-        page_line_count = 0;
-        strcpy(status_text, "Socket Error");
+        page_line_count = 0; strcpy(status_text, "Socket Error");
         is_loading = 0; load_progress = 0;
         return;
     }
@@ -736,12 +841,10 @@ static void browser_load_page(const char* url) {
     sockaddr_in_t server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    server_addr.sin_addr = ip;
+    server_addr.sin_port   = htons(port);
+    server_addr.sin_addr   = ip;
 
     strcpy(status_text, "Connecting...");
-
-    // Process GUI events during connection to keep cursor/UI responsive
     http_process_events();
     if (browser_window) {
         window_t* bw = (window_t*)browser_window;
@@ -757,40 +860,30 @@ static void browser_load_page(const char* url) {
 
     if (k_connect(sockfd, &server_addr) < 0) {
         k_close(sockfd);
-        // Flush stale packets from the NIC RX buffer
         extern void rtl8139_flush_rx(void);
         rtl8139_flush_rx();
         error_type = ERR_CONNECT;
         strncpy(error_detail, host, 127); error_detail[127] = 0;
-        page_line_count = 0;
-        strcpy(status_text, "Connection Error");
+        page_line_count = 0; strcpy(status_text, "Connection Error");
         is_loading = 0; load_progress = 0;
         return;
     }
-
     load_progress = 25;
 
+    /* ---- TLS handshake ---- */
     tls_session_t* tls_session = 0;
     if (use_tls) {
         strcpy(status_text, "Establishing secure connection...");
         extern tls_session_t* tls_client_handshake_fd(int sockfd, const char* hostname, uint16_t port);
         tls_session = tls_client_handshake_fd(sockfd, host, port);
-
         if (!tls_session) {
             k_close(sockfd);
-            // Flush stale packets from the NIC RX buffer. The failed TLS
-            // connection leaves packets in the RX ring that would pollute
-            // future DNS queries and TCP connections.
             extern void rtl8139_flush_rx(void);
             rtl8139_flush_rx();
-            // TLS handshake failed - warn but do NOT silently fall back to HTTP
-            s_printf("[BROWSER] WARNING: TLS handshake failed for %s. Connection not secure.\n", url);
-            // Don't automatically fall back to HTTP - return error instead
-            // User can explicitly request HTTP if needed
+            s_printf("[BROWSER] WARNING: TLS handshake failed for %s.\n", url);
             error_type = ERR_TLS;
             strncpy(error_detail, host, 127); error_detail[127] = 0;
-            page_line_count = 0;
-            strcpy(status_text, "TLS Error - Connection not secure");
+            page_line_count = 0; strcpy(status_text, "TLS Error - Connection not secure");
             is_loading = 0; load_progress = 0;
             return;
         }
@@ -798,7 +891,6 @@ static void browser_load_page(const char* url) {
         strcpy(status_text, "Secure connection established");
     }
 
-    // Repaint after connection/TLS so user sees progress
     http_process_events();
     if (browser_window) {
         window_t* bw = (window_t*)browser_window;
@@ -812,120 +904,187 @@ static void browser_load_page(const char* url) {
         gfx_swap_buffers();
     }
 
-    char request[768];
-    int rlen = 0;
-    rlen += sprintf(request + rlen, "GET %s HTTP/1.1\r\n", path);
-    rlen += sprintf(request + rlen, "Host: %s\r\n", host);
-    rlen += sprintf(request + rlen, "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n");
-    rlen += sprintf(request + rlen, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n");
-    rlen += sprintf(request + rlen, "Accept-Language: en-US,en;q=0.9\r\n");
-    rlen += sprintf(request + rlen, "Accept-Encoding: gzip, deflate\r\n");
-    rlen += sprintf(request + rlen, "Connection: close\r\n");
-    rlen += sprintf(request + rlen, "Upgrade-Insecure-Requests: 1\r\n");
-    rlen += sprintf(request + rlen, "\r\n");
-
-    int send_result;
-    if (use_tls && tls_session) send_result = tls_write(tls_session, request, rlen);
-    else send_result = k_sendto(sockfd, request, rlen, 0, NULL);
-
-    if (send_result < 0) {
-        if (tls_session) { extern void tls_client_session_close(tls_session_t*); tls_client_session_close(tls_session); }
-        k_close(sockfd);
-        error_type = ERR_SEND;
-        strncpy(error_detail, host, 127); error_detail[127] = 0;
-        page_line_count = 0;
-        strcpy(status_text, "Send Error");
-        is_loading = 0; load_progress = 0;
-        return;
-    }
-
-    load_progress = 45;
-
+    /* ---- Allocate response buffer ---- */
     char* response = (char*)kmalloc(BROWSER_RESPONSE_SIZE);
     if (!response) {
         if (tls_session) { extern void tls_client_session_close(tls_session_t*); tls_client_session_close(tls_session); }
         k_close(sockfd);
-        error_type = ERR_MEMORY;
-        page_line_count = 0;
-        strcpy(status_text, "Memory Error");
-        is_loading = 0; load_progress = 0;
+        error_type = ERR_MEMORY; page_line_count = 0;
+        strcpy(status_text, "Memory Error"); is_loading = 0; load_progress = 0;
         return;
     }
+
     int total_read = 0;
+    int http_status = 0;
 
-    uint32_t browser_recv_start = get_tick_count();
-    #define BROWSER_RECV_TIMEOUT 30000  // 30 seconds — allow more time for slow connections
-    extern int sys_get_key(void);  // from hal/drivers/keyboard.c
-    for (int retry = 0; retry < 30000 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
-        if (get_tick_count() - browser_recv_start > BROWSER_RECV_TIMEOUT) break;
+    /* ================================================================
+     *  PROTOCOL SELECTION: HTTP/2 (via ALPN) or HTTP/1.1
+     * ================================================================ */
+    int used_http2 = 0;
 
-        // Escape cancels the in-flight request. Previously the input callback
-        // (which checks is_loading) was never dispatched during a fetch, so
-        // the user could not abort a stuck page load. Now we drain the key
-        // queue directly from the recv loop.
-        int k = sys_get_key();
-        if (k == 27) {  // ESC
-            strcpy(status_text, "Stopped");
-            s_printf("[Browser] Load cancelled by user (ESC)\n");
-            break;
-        }
+    if (use_tls && tls_session) {
+        extern const char* tls_get_alpn_protocol(tls_session_t*);
+        const char* alpn = tls_get_alpn_protocol(tls_session);
 
-        // Poll NIC in bursts to drain packets faster
-        for (int p = 0; p < 8; p++) { extern void rtl8139_poll(); rtl8139_poll(); }
-        int n;
-        if (use_tls && tls_session) n = tls_read(tls_session, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
-        else n = k_recvfrom(sockfd, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1, 0, NULL);
-        if (n > 0) {
-            total_read += n;
-            s_printf("[Browser] recv: %d bytes (total=%d)\n", n, total_read);
-            browser_recv_start = get_tick_count();
-            int prog = 45 + (total_read * 45) / BROWSER_RESPONSE_SIZE;
-            if (prog > 90) prog = 90;
-            load_progress = prog;
-        }
-        else if (n == 0) {
-            s_printf("[Browser] recv EOF (total_read=%d)\n", total_read);
-            break;
-        }
-        else {
-            // Yield CPU properly by processing network/GUI events
-            http_process_events();
-        }
-        // Pump GUI events every iteration. Previously this was throttled to
-        // every 8th iteration (~160ms+ between pumps when k_recvfrom blocks),
-        // which made the system feel unresponsive and starved the timer IRQ's
-        // TCP retransmit path. http_process_events() already throttles via
-        // timer_sleep(1) (~20ms), so calling it every iteration is cheap.
-        http_process_events();
+        if (alpn && strcmp(alpn, "h2") == 0) {
+            /* ---- HTTP/2 path ---- */
+            strcpy(status_text, "Loading (HTTP/2)...");
+            s_printf("[Browser] ALPN selected 'h2' — using HTTP/2\n");
+            load_progress = 45;
 
-        // Repaint the browser window every iteration so the progress bar
-        // animates smoothly and the user sees continuous feedback. The paint
-        // callback is fast (clipped to dirty regions by gfx_hal) and the
-        // cost is dominated by gfx_swap_buffers, which we already pay.
-        if (browser_window) {
-            window_t* bw = (window_t*)browser_window;
-            if (bw->paint_callback) {
-                typedef void (*pcb)(window_t*,int,int,int,int);
-                extern uint32_t* gfx_get_active_buffer(void);
-                uint32_t* fb = gfx_get_active_buffer();
-                if (fb) {
-                    ((pcb)bw->paint_callback)(bw, bw->x, bw->y + 38, bw->width, bw->height - 38);
+            int h2_status = 0;
+            total_read = browser_fetch_http2(tls_session, sockfd, host, path, port,
+                                             response, BROWSER_RESPONSE_SIZE, &h2_status);
+            http_status = h2_status;
+
+            /* Close TLS + socket (browser owns them) */
+            { extern void tls_client_session_close(tls_session_t*); tls_client_session_close(tls_session); }
+            k_close(sockfd);
+            tls_session = 0;
+
+            if (total_read < 0) {
+                /* HTTP/2 failed — try falling back to HTTP/1.1 on a new connection */
+                s_printf("[Browser] HTTP/2 fetch failed, falling back to HTTP/1.1\n");
+                used_http2 = 0;
+
+                /* Re-connect for HTTP/1.1 fallback */
+                sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
+                if (sockfd < 0) {
+                    kfree(response);
+                    error_type = ERR_SOCKET; page_line_count = 0;
+                    strcpy(status_text, "Socket Error"); is_loading = 0; load_progress = 0;
+                    return;
                 }
+                memset(&server_addr, 0, sizeof(server_addr));
+                server_addr.sin_family = AF_INET;
+                server_addr.sin_port   = htons(port);
+                server_addr.sin_addr   = ip;
+                if (k_connect(sockfd, &server_addr) < 0) {
+                    k_close(sockfd); kfree(response);
+                    error_type = ERR_CONNECT; page_line_count = 0;
+                    strcpy(status_text, "Connection Error"); is_loading = 0; load_progress = 0;
+                    return;
+                }
+                extern tls_session_t* tls_create_session(void);
+                tls_session = tls_create_session();
+                if (tls_session) {
+                    tls_session->suppress_h2_alpn = 1;
+                    tls_session->socket_fd = sockfd;
+                    tls_session->owns_socket = 0;
+                    extern int tls_connect(tls_session_t*, const char*, uint16_t);
+                    if (tls_connect(tls_session, host, port) < 0) {
+                        extern void tls_destroy_session(tls_session_t*);
+                        tls_destroy_session(tls_session);
+                        tls_session = NULL;
+                    }
+                }
+                if (!tls_session) {
+                    k_close(sockfd); kfree(response);
+                    error_type = ERR_TLS; page_line_count = 0;
+                    strcpy(status_text, "TLS Error"); is_loading = 0; load_progress = 0;
+                    return;
+                }
+            } else {
+                used_http2 = 1;
+                load_progress = 92;
             }
-            extern void gfx_swap_buffers(void);
-            gfx_swap_buffers();
         }
     }
-    response[total_read] = 0;
 
-    if (tls_session) { extern void tls_client_session_close(tls_session_t*); tls_client_session_close(tls_session); }
-    k_close(sockfd);
+    /* ================================================================
+     *  HTTP/1.1 path (original code, runs when HTTP/2 was not used)
+     * ================================================================ */
+    if (!used_http2) {
+        char request[768];
+        int rlen = 0;
+        rlen += sprintf(request + rlen, "GET %s HTTP/1.1\r\n", path);
+        rlen += sprintf(request + rlen, "Host: %s\r\n", host);
+        rlen += sprintf(request + rlen, "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n");
+        rlen += sprintf(request + rlen, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n");
+        rlen += sprintf(request + rlen, "Accept-Language: en-US,en;q=0.9\r\n");
+        rlen += sprintf(request + rlen, "Accept-Encoding: gzip, deflate\r\n");
+        rlen += sprintf(request + rlen, "Connection: close\r\n");
+        rlen += sprintf(request + rlen, "Upgrade-Insecure-Requests: 1\r\n");
+        rlen += sprintf(request + rlen, "\r\n");
 
-    load_progress = 92;
+        int send_result;
+        if (use_tls && tls_session) send_result = tls_write(tls_session, request, rlen);
+        else send_result = k_sendto(sockfd, request, rlen, 0, NULL);
 
-    // Parse HTTP status
-    int http_status = 0;
-    // Dump first 80 bytes of the raw response so we can see the status line
+        if (send_result < 0) {
+            if (tls_session) { extern void tls_client_session_close(tls_session_t*); tls_client_session_close(tls_session); }
+            k_close(sockfd); kfree(response);
+            error_type = ERR_SEND;
+            strncpy(error_detail, host, 127); error_detail[127] = 0;
+            page_line_count = 0; strcpy(status_text, "Send Error");
+            is_loading = 0; load_progress = 0;
+            return;
+        }
+        load_progress = 45;
+
+        /* ---- Receive loop ---- */
+        uint32_t browser_recv_start = get_tick_count();
+        #define BROWSER_RECV_TIMEOUT 30000
+        extern int sys_get_key(void);
+
+        for (int retry = 0; retry < 30000 && total_read < BROWSER_RESPONSE_SIZE - 1; retry++) {
+            if (get_tick_count() - browser_recv_start > BROWSER_RECV_TIMEOUT) break;
+
+            int k = sys_get_key();
+            if (k == 27) {
+                strcpy(status_text, "Stopped");
+                s_printf("[Browser] Load cancelled by user (ESC)\n");
+                break;
+            }
+
+            for (int p = 0; p < 8; p++) { extern void rtl8139_poll(); rtl8139_poll(); }
+
+            int n;
+            if (use_tls && tls_session)
+                n = tls_read(tls_session, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1);
+            else
+                n = k_recvfrom(sockfd, response + total_read, BROWSER_RESPONSE_SIZE - total_read - 1, 0, NULL);
+
+            if (n > 0) {
+                total_read += n;
+                s_printf("[Browser] recv: %d bytes (total=%d)\n", n, total_read);
+                browser_recv_start = get_tick_count();
+                int prog = 45 + (total_read * 45) / BROWSER_RESPONSE_SIZE;
+                if (prog > 90) prog = 90;
+                load_progress = prog;
+            } else if (n == 0) {
+                s_printf("[Browser] recv EOF (total_read=%d)\n", total_read);
+                break;
+            } else {
+                http_process_events();
+            }
+
+            http_process_events();
+
+            if (browser_window) {
+                window_t* bw = (window_t*)browser_window;
+                if (bw->paint_callback) {
+                    typedef void (*pcb)(window_t*,int,int,int,int);
+                    extern uint32_t* gfx_get_active_buffer(void);
+                    uint32_t* fb = gfx_get_active_buffer();
+                    if (fb) ((pcb)bw->paint_callback)(bw, bw->x, bw->y + 38, bw->width, bw->height - 38);
+                }
+                extern void gfx_swap_buffers(void);
+                gfx_swap_buffers();
+            }
+        }
+        response[total_read] = 0;
+
+        if (tls_session) { extern void tls_client_session_close(tls_session_t*); tls_client_session_close(tls_session); }
+        k_close(sockfd);
+        load_progress = 92;
+    }
+
+    /* ================================================================
+     *  COMMON RESPONSE PROCESSING (identical for HTTP/1.1 and HTTP/2)
+     * ================================================================ */
+
+    /* ---- Parse HTTP status ---- */
     s_printf("[Browser] Response first 80 bytes:\n");
     int dump_len = total_read > 80 ? 80 : total_read;
     for (int i = 0; i < dump_len; i++) {
@@ -934,40 +1093,14 @@ static void browser_load_page(const char* url) {
         s_printf("%c", c);
     }
     s_printf("\n--- end ---\n");
-    // Also dump first 16 bytes as hex so we can see the exact garbage bytes
-    s_printf("[Browser] First 16 bytes hex:\n");
-    for (int i = 0; i < 16 && i < total_read; i++) {
-        s_printf("%02X ", (uint8_t)response[i]);
-    }
-    s_printf("\n");
 
-    // Some servers (notably Google via QEMU SLIRP) send a small TCP segment
-    // of spurious data (often all-zero bytes) before the actual HTTP response.
-    // This gets placed at the start of the response buffer, pushing the real
-    // 'HTTP/1.1 ...' line to a later offset. The spurious bytes are NOT part
-    // of the HTTP response — they're a TCP artifact (window probe, keep-alive,
-    // or retransmit coalescing) that should be skipped.
-    //
-    // Strategy:
-    //   1. Strip leading null bytes (HTTP responses never start with \0)
-    //   2. If the result doesn't start with 'HTTP/', search the first 32 bytes
-    //      for the 'HTTP/' prefix
+    http_status = 0;
     char* http_start = response;
-    // Strip leading null bytes
-    while (http_start < response + total_read && *http_start == 0) {
-        http_start++;
-    }
-    if (http_start != response) {
-        s_printf("[Browser] Stripped %d leading null bytes\n", (int)(http_start - response));
-    }
-    // If still doesn't start with HTTP/, search for it
+    while (http_start < response + total_read && *http_start == 0) http_start++;
+
     if (total_read >= 5 && strncmp(http_start, "HTTP/", 5) != 0) {
         for (int i = 0; i < 32 && i < total_read - (http_start - response) - 5; i++) {
-            if (strncmp(http_start + i, "HTTP/", 5) == 0) {
-                http_start += i;
-                s_printf("[Browser] Found HTTP/ at offset %d\n", i);
-                break;
-            }
+            if (strncmp(http_start + i, "HTTP/", 5) == 0) { http_start += i; break; }
         }
     }
 
@@ -975,29 +1108,23 @@ static void browser_load_page(const char* url) {
         char* sp = strchr(http_start, ' ');
         if (sp) { sp++; while (*sp >= '0' && *sp <= '9') { http_status = http_status * 10 + (*sp - '0'); sp++; } }
     } else {
-        // Fallback: the 'HTTP/' prefix may be missing (e.g., replaced by spurious
-        // zero bytes from a TCP retransmit artifact). Search the first 32 bytes
-        // for a 3-digit HTTP status code pattern: ' NNN ' where N is a digit.
-        // This handles cases like '.1 301 Moved' where 'HTTP/1' was lost.
         for (int i = 0; i < 30 && i < total_read - (http_start - response) - 5; i++) {
             if (http_start[i] == ' ' &&
                 http_start[i+1] >= '0' && http_start[i+1] <= '9' &&
                 http_start[i+2] >= '0' && http_start[i+2] <= '9' &&
                 http_start[i+3] >= '0' && http_start[i+3] <= '9' &&
                 (http_start[i+4] == ' ' || http_start[i+4] == '\r' || http_start[i+4] == '\n')) {
-                http_status = (http_start[i+1] - '0') * 100 +
-                              (http_start[i+2] - '0') * 10 +
-                              (http_start[i+3] - '0');
-                s_printf("[Browser] Fallback status detection: found %d at offset %d\n", http_status, i);
+                http_status = (http_start[i+1]-'0')*100 + (http_start[i+2]-'0')*10 + (http_start[i+3]-'0');
                 break;
             }
         }
     }
     s_printf("[Browser] HTTP status: %d\n", http_status);
 
-    // Handle redirects
-    if (http_status == 301 || http_status == 302 || http_status == 303 || http_status == 307 || http_status == 308) {
-        s_printf("[Browser] Redirect detected (status=%d), searching for Location header...\n", http_status);
+    /* ---- Handle redirects ---- */
+    if (http_status == 301 || http_status == 302 || http_status == 303 ||
+        http_status == 307 || http_status == 308) {
+        s_printf("[Browser] Redirect detected (status=%d)\n", http_status);
         char* location = NULL;
         char* h = http_start;
         while (*h) {
@@ -1014,61 +1141,48 @@ static void browser_load_page(const char* url) {
         }
         if (location) {
             char redirect_url[256]; int ri = 0;
-            while (location[ri] && location[ri] != '\r' && location[ri] != '\n' && ri < 255) { redirect_url[ri] = location[ri]; ri++; }
+            while (location[ri] && location[ri] != '\r' && location[ri] != '\n' && ri < 255)
+                { redirect_url[ri] = location[ri]; ri++; }
             redirect_url[ri] = 0;
-            s_printf("[Browser] Redirect Location found: '%s'\n", redirect_url);
+            s_printf("[Browser] Redirect Location: '%s'\n", redirect_url);
 
             if (redirect_url[0] == '/' && redirect_url[1] == '/') {
-                char resolved[256]; strcpy(resolved, use_tls ? "https:" : "http:"); strcat(resolved, redirect_url);
+                char resolved[256]; strcpy(resolved, use_tls ? "https:" : "http:");
+                strcat(resolved, redirect_url);
                 strncpy(redirect_url, resolved, 255); redirect_url[255] = 0;
             } else if (redirect_url[0] == '/') {
-                char resolved[256]; strcpy(resolved, use_tls ? "https://" : "http://"); strcat(resolved, host); strcat(resolved, redirect_url);
+                char resolved[256]; strcpy(resolved, use_tls ? "https://" : "http://");
+                strcat(resolved, host); strcat(resolved, redirect_url);
                 strncpy(redirect_url, resolved, 255); redirect_url[255] = 0;
             } else if (redirect_url[0] != 'h' || strncmp(redirect_url, "http", 4) != 0) {
-                char resolved[256]; strcpy(resolved, use_tls ? "https://" : "http://"); strcat(resolved, host);
+                char resolved[256]; strcpy(resolved, use_tls ? "https://" : "http://");
+                strcat(resolved, host);
                 char last_path[128]; strncpy(last_path, path, 127); last_path[127] = 0;
                 char* last_slash = strrchr(last_path, '/');
-                if (last_slash) { *(last_slash + 1) = 0; strcat(resolved, last_path); } else strcat(resolved, "/");
+                if (last_slash) { *(last_slash+1) = 0; strcat(resolved, last_path); }
+                else strcat(resolved, "/");
                 strcat(resolved, redirect_url);
                 strncpy(redirect_url, resolved, 255); redirect_url[255] = 0;
             }
 
             redirect_depth++;
             if (redirect_depth > 5) {
-                error_type = ERR_REDIRECT;
-                strcpy(error_detail, "Too many redirects");
-                page_line_count = 0;
-                strcpy(status_text, "Redirect Loop");
+                error_type = ERR_REDIRECT; strcpy(error_detail, "Too many redirects");
+                page_line_count = 0; strcpy(status_text, "Redirect Loop");
                 is_loading = 0; load_progress = 0; redirect_depth = 0;
-                kfree(response);
-                return;
+                kfree(response); return;
             }
-
             strncpy(url_buf, redirect_url, 255); url_buf[255] = 0;
             url_cursor = strlen(url_buf);
             strcpy(status_text, "Redirecting...");
             kfree(response);
             browser_load_page(redirect_url);
             return;
-        } else {
-            s_printf("[Browser] Redirect status %d but NO Location header found!\n", http_status);
-            // Dump first 200 bytes of response so we can see the headers
-            s_printf("[Browser] Response first 200 bytes:\n");
-            int dump_len = total_read > 200 ? 200 : total_read;
-            for (int i = 0; i < dump_len; i++) {
-                char c = response[i];
-                if (c < 32 && c != '\n' && c != '\r' && c != '\t') c = '.';
-                s_printf("%c", c);
-            }
-            s_printf("\n--- end response dump ---\n");
         }
     }
-
     redirect_depth = 0;
 
-    // Search for the body starting from http_start (which may be offset from
-    // response if there were spurious leading bytes). The body starts after
-    // the blank line (\r\n\r\n) that terminates the HTTP headers.
+    /* ---- Find body ---- */
     char* body = strstr(http_start, "\r\n\r\n");
     if (body) body += 4;
     else { body = strstr(http_start, "\n\n"); if (body) body += 2; else body = http_start; }
@@ -1076,51 +1190,32 @@ static void browser_load_page(const char* url) {
     if (body == response && strncmp(body, "HTTP/", 5) == 0) {
         char* scan = body;
         while (*scan) {
-            if ((*scan == '\r' && *(scan+1) == '\n' && *(scan+2) == '\r' && *(scan+3) == '\n')) { body = scan + 4; break; }
-            if ((*scan == '\n' && *(scan+1) == '\n')) { body = scan + 2; break; }
+            if (*scan=='\r' && *(scan+1)=='\n' && *(scan+2)=='\r' && *(scan+3)=='\n') { body = scan+4; break; }
+            if (*scan=='\n' && *(scan+1)=='\n') { body = scan+2; break; }
             scan++;
         }
     }
 
-    // Per HTTP spec, Transfer-Encoding (chunked) is about the transfer framing,
-    // while Content-Encoding (gzip) is about the content itself. The correct
-    // processing order is:
-    //   1. Decode chunked transfer encoding (removes the chunk framing)
-    //   2. Decompress gzip content encoding (decodes the actual content)
-    //
-    // BUG FIX: Previously gzip decompression ran BEFORE chunked decoding.
-    // When a response was BOTH chunked AND gzipped (very common — most
-    // real servers do both), the gzip check failed because body[0] was
-    // the first hex digit of the chunk size, not the gzip magic 0x1F.
-    // The chunked decoder then ran on the raw gzip stream, corrupting it
-    // and producing binary garbage that the DOM parser couldn't handle.
-    // Now we decode chunked first, then decompress gzip.
     int header_len = body - response;
 
-    // Step 1: Check for chunked Transfer-Encoding and decode if needed.
+    /* ---- Chunked decoding (HTTP/1.1 only; HTTP/2 never uses chunked) ---- */
     int is_chunked = 0;
-    {
-        // Scan headers for Transfer-Encoding: chunked
+    if (!used_http2) {
         char* h = http_start;
         while (h < body) {
-            if ((h[0]=='T'||h[0]=='t') && (h[1]=='r'||h[1]=='R') && (h[2]=='a'||h[2]=='A') &&
-                (h[3]=='n'||h[3]=='N') && (h[4]=='s'||h[4]=='S') && (h[5]=='f'||h[5]=='F') &&
-                (h[6]=='e'||h[6]=='E') && (h[7]=='r'||h[7]=='R') && (h[8]=='-'||h[8]=='-') &&
-                (h[9]=='E'||h[9]=='e') && (h[10]=='n'||h[10]=='N') && (h[11]=='c'||h[11]=='C') &&
-                (h[12]=='o'||h[12]=='O') && (h[13]=='d'||h[13]=='D') && (h[14]=='i'||h[14]=='I') &&
-                (h[15]=='n'||h[15]=='N') && (h[16]=='g'||h[16]=='G') && h[17]==':') {
-                // Found Transfer-Encoding header — check value
-                char* val = h + 18;
-                while (*val == ' ') val++;
-                if ((val[0]=='c'||val[0]=='C') && (val[1]=='h'||val[1]=='H') &&
-                    (val[2]=='u'||val[2]=='U') && (val[3]=='n'||val[3]=='N') &&
-                    (val[4]=='k'||val[4]=='K') && (val[5]=='e'||val[5]=='E') &&
-                    (val[6]=='d'||val[6]=='D')) {
-                    is_chunked = 1;
-                }
+            if ((h[0]=='T'||h[0]=='t')&&(h[1]=='r'||h[1]=='R')&&(h[2]=='a'||h[2]=='A')&&
+                (h[3]=='n'||h[3]=='N')&&(h[4]=='s'||h[4]=='S')&&(h[5]=='f'||h[5]=='F')&&
+                (h[6]=='e'||h[6]=='E')&&(h[7]=='r'||h[7]=='R')&&(h[8]=='-')&&
+                (h[9]=='E'||h[9]=='e')&&(h[10]=='n'||h[10]=='N')&&(h[11]=='c'||h[11]=='C')&&
+                (h[12]=='o'||h[12]=='O')&&(h[13]=='d'||h[13]=='D')&&(h[14]=='i'||h[14]=='I')&&
+                (h[15]=='n'||h[15]=='N')&&(h[16]=='g'||h[16]=='G')&&h[17]==':') {
+                char* val = h + 18; while (*val == ' ') val++;
+                if ((val[0]=='c'||val[0]=='C')&&(val[1]=='h'||val[1]=='H')&&
+                    (val[2]=='u'||val[2]=='U')&&(val[3]=='n'||val[3]=='N')&&
+                    (val[4]=='k'||val[4]=='K')&&(val[5]=='e'||val[5]=='E')&&
+                    (val[6]=='d'||val[6]=='D')) is_chunked = 1;
                 break;
             }
-            // Advance to next header line
             while (h < body && *h != '\n') h++;
             if (h < body) h++;
         }
@@ -1128,113 +1223,61 @@ static void browser_load_page(const char* url) {
 
     if (is_chunked) {
         int body_len = total_read - (body - response);
-        // Dump the first 40 bytes of the body BEFORE chunked decoding, in hex,
-        // so we can see whether the data is actually chunked (starts with hex
-        // chunk size + CRLF) or already raw gzip (starts with 0x1F 0x8B).
-        s_printf("[Browser] BEFORE chunked: body_len=%d, first 40 bytes hex:\n", body_len);
-        for (int i = 0; i < 40 && i < body_len; i++) {
-            s_printf("%02X ", (uint8_t)body[i]);
-            if ((i + 1) % 20 == 0) s_printf("\n");
-        }
-        s_printf("\n");
         int new_len = decode_chunked(body, body_len);
         total_read = (body - response) + new_len;
-        s_printf("[Browser] AFTER chunked: new_len=%d, first 40 bytes hex:\n", new_len);
-        for (int i = 0; i < 40 && i < new_len; i++) {
-            s_printf("%02X ", (uint8_t)body[i]);
-            if ((i + 1) % 20 == 0) s_printf("\n");
-        }
-        s_printf("\n");
-        s_printf("[Browser] Chunked encoding decoded: %d -> %d bytes\n", body_len, new_len);
-    } else {
-        s_printf("[Browser] Not chunked. is_gzip check will run on raw body.\n");
+        s_printf("[Browser] Chunked decoded: %d -> %d bytes\n", body_len, new_len);
     }
 
-    // Step 2: Check for gzip Content-Encoding and decompress if needed.
-    // This must run AFTER chunked decoding so the body starts with the
-    // gzip magic bytes (0x1F 0x8B) rather than a chunk size header.
+    /* ---- Gzip decompression ---- */
     int is_gzip = 0;
     {
-        // Scan headers for Content-Encoding: gzip
         char* h = http_start;
         while (h < body) {
-            if ((h[0]=='C'||h[0]=='c') && (h[1]=='o'||h[1]=='O') && (h[2]=='n'||h[2]=='N') &&
-                (h[3]=='t'||h[3]=='T') && (h[4]=='e'||h[4]=='E') && (h[5]=='n'||h[5]=='N') &&
-                (h[6]=='t'||h[6]=='T') && (h[7]=='-'||h[7]=='-') && (h[8]=='E'||h[8]=='e') &&
-                (h[9]=='n'||h[9]=='N') && (h[10]=='c'||h[10]=='C') && (h[11]=='o'||h[11]=='O') &&
-                (h[12]=='d'||h[12]=='D') && (h[13]=='i'||h[13]=='I') && (h[14]=='n'||h[14]=='N') &&
-                (h[15]=='g'||h[15]=='G') && h[16]==':') {
-                // Found Content-Encoding header — check value
-                char* val = h + 17;
-                while (*val == ' ') val++;
-                if ((val[0]=='g'||val[0]=='G') && (val[1]=='z'||val[1]=='Z') &&
-                    (val[2]=='i'||val[2]=='I') && (val[3]=='p'||val[3]=='P')) {
-                    is_gzip = 1;
-                }
+            if ((h[0]=='C'||h[0]=='c')&&(h[1]=='o'||h[1]=='O')&&(h[2]=='n'||h[2]=='N')&&
+                (h[3]=='t'||h[3]=='T')&&(h[4]=='e'||h[4]=='E')&&(h[5]=='n'||h[5]=='N')&&
+                (h[6]=='t'||h[6]=='T')&&(h[7]=='-')&&(h[8]=='E'||h[8]=='e')&&
+                (h[9]=='n'||h[9]=='N')&&(h[10]=='c'||h[10]=='C')&&(h[11]=='o'||h[11]=='O')&&
+                (h[12]=='d'||h[12]=='D')&&(h[13]=='i'||h[13]=='I')&&(h[14]=='n'||h[14]=='N')&&
+                (h[15]=='g'||h[15]=='G')&&h[16]==':') {
+                char* val = h + 17; while (*val == ' ') val++;
+                if ((val[0]=='g'||val[0]=='G')&&(val[1]=='z'||val[1]=='Z')&&
+                    (val[2]=='i'||val[2]=='I')&&(val[3]=='p'||val[3]=='P')) is_gzip = 1;
                 break;
             }
-            // Advance to next header line
             while (h < body && *h != '\n') h++;
             if (h < body) h++;
         }
     }
 
-    // Cast body[n] to uint8_t before comparison. `char` is signed on x86,
-    // so body[1] == 0x8B sign-extends to 0xFFFFFF8B (-117), which is NOT
-    // equal to 0x8B (139). This was causing the gzip magic byte check to
-    // fail even when the body correctly started with 0x1F 0x8B.
     if (is_gzip && (uint8_t)body[0] == 0x1F && (uint8_t)body[1] == 0x8B) {
-        // Decompress gzip body
         int body_len = total_read - (body - response);
         uint32_t decompressed_len = 0;
-        // Allocate a new buffer for decompressed data
         char* decompressed = (char*)kmalloc(BROWSER_RESPONSE_SIZE);
         if (decompressed) {
-            extern int gzip_inflate(const uint8_t* src, uint32_t src_len,
-                                    uint8_t* dst, uint32_t dst_cap,
-                                    uint32_t* dst_len);
+            extern int gzip_inflate(const uint8_t*, uint32_t, uint8_t*, uint32_t, uint32_t*);
             int result = gzip_inflate((const uint8_t*)body, body_len,
-                                     (uint8_t*)decompressed, BROWSER_RESPONSE_SIZE - 1,
-                                     &decompressed_len);
+                                      (uint8_t*)decompressed, BROWSER_RESPONSE_SIZE - 1,
+                                      &decompressed_len);
             if (result == 0 && decompressed_len > 0) {
-                // Copy decompressed data back over the body area of the response buffer
-                // We need the headers too for redirect handling, so copy decompressed
-                // body to a fresh buffer and replace the response
                 decompressed[decompressed_len] = 0;
-                // Rebuild response: headers + decompressed body
                 int new_total = header_len + decompressed_len;
                 if (new_total < BROWSER_RESPONSE_SIZE) {
                     memcpy(body, decompressed, decompressed_len + 1);
                     total_read = new_total;
                 } else {
-                    // Decompressed body exceeds the buffer. Previously this path
-                    // silently dropped the decompressed data, leaving the still-
-                    // gzipped binary in `body` for the DOM parser to choke on.
-                    // Now we copy as much as fits and log a warning so the user
-                    // can see why a large page may have rendered partially.
                     int fit = BROWSER_RESPONSE_SIZE - header_len - 1;
                     if (fit < 0) fit = 0;
                     memcpy(body, decompressed, fit);
                     body[fit] = 0;
                     total_read = header_len + fit;
-                    s_printf("[Browser] WARNING: decompressed body %u > buffer %d, truncated to %d\n",
-                             decompressed_len, BROWSER_RESPONSE_SIZE - header_len - 1, fit);
                 }
-                s_printf("[Browser] Gzip decompressed: %d -> %d bytes\n", body_len, decompressed_len);
-            } else {
-                s_printf("[Browser] Gzip decompress FAILED (result=%d, decompressed_len=%u)\n",
-                         result, decompressed_len);
+                s_printf("[Browser] Gzip decompressed: %d -> %u bytes\n", body_len, decompressed_len);
             }
             kfree(decompressed);
-            // Re-find body pointer (it hasn't moved since we copied in place)
         }
-    } else if (is_gzip) {
-        s_printf("[Browser] Gzip header detected but body doesn't start with magic bytes "
-                 "(0x%02X 0x%02X, expected 0x1F 0x8B)\n",
-                 (uint8_t)body[0], (uint8_t)body[1]);
     }
 
-    // Save source HTML for view source (limit 32KB — was 8KB, too small for modern pages)
+    /* ---- Save source HTML ---- */
     {
         int src_len = total_read - (body - response);
         if (src_len > 32768) src_len = 32768;
@@ -1244,7 +1287,7 @@ static void browser_load_page(const char* url) {
         }
     }
 
-    // Extract <title>
+    /* ---- Extract <title> ---- */
     char* title_start = strstr(body, "<title>");
     if (!title_start) title_start = strstr(body, "<TITLE>");
     if (!title_start) title_start = strstr(body, "<Title>");
@@ -1266,7 +1309,7 @@ static void browser_load_page(const char* url) {
         ws_set_title((window_t*)browser_window, "Browser");
     }
 
-    // HTML to text conversion
+    /* ---- HTML to text conversion ---- */
     memset(line_types, 0, sizeof(line_types));
     int line = 0, col = 0;
     int in_tag = 0, in_script = 0, in_style = 0, in_head = 0, in_title_tag = 0;
@@ -1391,164 +1434,157 @@ static void browser_load_page(const char* url) {
     page_line_count = line;
     #undef FLUSH_LINE
 
-    // DOM Engine
+    /* ---- DOM Engine ---- */
+    /* ====================================================================
+     * STACK-OVERFLOW GUARDS (read before changing these two lines):
+     *  BROWSER_RUN_JS = 0  -> skip the page's <script>. mujs evaluates
+     *     Google's huge inline JS with deep C recursion on the 16 KB main
+     *     stack and overflows it (wild-pointer page fault at ~0x193xxx).
+     *     Re-enable ONLY after the browser runs on its own large stack.
+     *  BROWSER_USE_DOM = 0 -> emergency fallback: skip style compute +
+     *     dom_render and show the page with the line-based renderer.
+     *     Flip to 0 if you ever see a panic AFTER the TRACE prints below.
+     * ==================================================================== */
+    #define BROWSER_USE_DOM  1
+    #define BROWSER_RUN_JS   0
+
     dom_doc = dom_document_create();
     if (dom_doc) {
-        // Sync the JS bridge document singleton with the browser's current DOM
-        // so JS bridge queries (getElementById, querySelector) operate on the
-        // correct document instead of a stale singleton from a previous page
         dom_set_bridge_document(dom_doc);
-        // Log what we're about to parse. The 'body' pointer points to the
-        // start of the HTTP response body (after headers). Log the first
-        // 200 bytes so we can verify the HTML is actually there.
-        {
-            int body_len = total_read - (body - response);
-            s_printf("[Browser] DOM parse: body_len=%d, first 200 bytes:\n", body_len);
-            int dump_len = body_len > 200 ? 200 : body_len;
-            for (int i = 0; i < dump_len; i++) {
-                char c = body[i];
-                if (c < 32 && c != '\n' && c != '\r' && c != '\t') c = '.';
-                s_printf("%c", c);
-            }
-            s_printf("\n--- end dump ---\n");
-        }
         int dom_ok = dom_parse_html(dom_doc, body);
         if (dom_ok == 0) {
-            // Wire up the external resource loader (browser_enhanced.c).
-            // Previously this code was missing, so <link rel="stylesheet" href="...">
-            // and <script src="..."> were silently dropped — only inline <style>
-            // and inline <script> were parsed. This is why external CSS/JS were
-            // "not rendered even when present in the response".
-            //
-            // Set the base URL first so relative hrefs / srcs can be resolved,
-            // then fetch & apply external stylesheets, then collect external
-            // (fetched + cached) and inline scripts into one concatenated buffer
-            // that the mujs execution block below will run.
-            browser_set_current_url_for_resources(url_buf);
-            browser_process_link_tags(body);
+            s_printf("[DOM] Parse complete: nodes=%d body=%s children=%d\n",
+                     dom_doc->node_count,
+                     dom_doc->body ? dom_doc->body->tag : "(null)",
+                     dom_doc->body ? dom_doc->body->child_count : 0);
 
-            dom_apply_all_stylesheets(dom_doc);
-            int content_h_est = browser_win_h - TAB_BAR_H - URL_BAR_H - STATUS_BAR_H;
-            if (show_bookmarks) content_h_est -= BOOKMARK_BAR_H;
-            dom_compute_styles(dom_doc, browser_win_w - PAD*2 - 12, content_h_est);
+            #if BROWSER_USE_DOM
+                /* External resource loader stays OFF — it recurses a full
+                 * DNS+TCP+TLS+HTTP fetch on this same tiny stack. */
+            #if 0
+                browser_set_current_url_for_resources(url_buf);
+                browser_process_link_tags(body);
+            #endif
 
-            // Collect ALL scripts (inline + external, in source order) into a
-            // single buffer for execution. `dom_get_scripts` only returns the
-            // inline scripts already extracted by the DOM parser; calling
-            // `browser_process_script_tags(body, ...)` re-walks the raw HTML
-            // and additionally fetches each <script src=...> via http_get,
-            // appending its body to the buffer.
-            //
-            // 128KB is enough for ~30 typical bundled scripts. If a page
-            // exceeds this, the truncation warning fires on serial.
-            static char all_scripts[131072];
-            browser_process_script_tags(body, all_scripts, sizeof(all_scripts));
-            const char* scripts = (all_scripts[0]) ? all_scripts : dom_get_scripts(dom_doc);
-            if (scripts && scripts[0]) {
-                js_state = js_newstate(NULL, NULL, JS_STRICT);
-                if (js_state) {
-                    // Register browser APIs with mujs so scripts can use document, window, console
-                    // -- console.log --
-                    js_newobject(js_state);
-                    js_newcfunction(js_state, js_browser_console_log, "log", 0);
-                    js_setproperty(js_state, -2, "log");
-                    js_setglobal(js_state, "console");
-                    // -- document object --
-                    js_newobject(js_state);
-                    js_newcfunction(js_state, js_browser_doc_getElementById, "getElementById", 1);
-                    js_setproperty(js_state, -2, "getElementById");
-                    js_newcfunction(js_state, js_browser_doc_querySelector, "querySelector", 1);
-                    js_setproperty(js_state, -2, "querySelector");
-                    js_newcfunction(js_state, js_browser_doc_createElement, "createElement", 1);
-                    js_setproperty(js_state, -2, "createElement");
-                    js_newcfunction(js_state, js_browser_doc_write, "write", 1);
-                    js_setproperty(js_state, -2, "write");
-                    // document.body
-                    js_newobject(js_state);
-                    js_pushstring(js_state, "BODY");
-                    js_setproperty(js_state, -2, "tagName");
-                    js_setproperty(js_state, -2, "body");
-                    // document.location
-                    js_newobject(js_state);
-                    js_pushstring(js_state, url_buf);
-                    js_setproperty(js_state, -2, "href");
-                    js_setproperty(js_state, -2, "location");
-                    js_setglobal(js_state, "document");
-                    // -- window object --
-                    js_newobject(js_state);
-                    js_getglobal(js_state, "document");
-                    js_setproperty(js_state, -2, "document");
-                    js_newobject(js_state);
-                    js_pushstring(js_state, url_buf);
-                    js_setproperty(js_state, -2, "href");
-                    js_setproperty(js_state, -2, "location");
-                    js_newcfunction(js_state, js_browser_window_setTimeout, "setTimeout", 2);
-                    js_setproperty(js_state, -2, "setTimeout");
-                    js_newcfunction(js_state, js_browser_window_setInterval, "setInterval", 2);
-                    js_setproperty(js_state, -2, "setInterval");
-                    js_setglobal(js_state, "window");
-                    // -- other globals --
-                    js_newcfunction(js_state, js_browser_alert, "alert", 1);
-                    js_setglobal(js_state, "alert");
-                    js_newcfunction(js_state, js_browser_parseInt, "parseInt", 1);
-                    js_setglobal(js_state, "parseInt");
+                s_printf("[Browser] TRACE: pre dom_apply_all_stylesheets\n");
+                dom_apply_all_stylesheets(dom_doc);
 
-                    // Set execution limit: 500K instructions max, 4MB memory
-                    // This prevents infinite loops in webpage JS from freezing the browser
-                    js_setlimit(js_state, 500000, 4 * 1024 * 1024);
-                    if (js_dostring(js_state, scripts)) s_printf("[Browser] JS execution error\n");
-                    // Process any setTimeout/setInterval callbacks that are due
-                    // Also set a lower limit for timer callbacks to prevent runaway scripts
-                    js_setlimit(js_state, 50000, 4 * 1024 * 1024);
-                    uint32_t timer_loop_start = get_tick_count();
-                    int any_active;
-                    do {
-                        any_active = 0;
-                        js_browser_process_timers(js_state);
+                int content_h_est = browser_win_h - TAB_BAR_H - URL_BAR_H - STATUS_BAR_H;
+                if (show_bookmarks) content_h_est -= BOOKMARK_BAR_H;
+
+                s_printf("[Browser] TRACE: pre dom_compute_styles\n");
+                dom_compute_styles(dom_doc, browser_win_w - PAD*2 - 12, content_h_est);
+                s_printf("[Browser] TRACE: post dom_compute_styles\n");
+
+                #if BROWSER_RUN_JS
+                /* --- page JavaScript (DISABLED: overflows 16 KB stack) --- */
+                const char* scripts = dom_get_scripts(dom_doc);
+                if (scripts && scripts[0]) {
+                    js_state = js_newstate(NULL, NULL, JS_STRICT);
+                    if (js_state) {
+                        js_newobject(js_state);
+                        js_newcfunction(js_state, js_browser_console_log, "log", 0);
+                        js_setproperty(js_state, -2, "log");
+                        js_setglobal(js_state, "console");
+
+                        js_newobject(js_state);
+                        js_newcfunction(js_state, js_browser_doc_getElementById, "getElementById", 1);
+                        js_setproperty(js_state, -2, "getElementById");
+                        js_newcfunction(js_state, js_browser_doc_querySelector, "querySelector", 1);
+                        js_setproperty(js_state, -2, "querySelector");
+                        js_newcfunction(js_state, js_browser_doc_createElement, "createElement", 1);
+                        js_setproperty(js_state, -2, "createElement");
+                        js_newcfunction(js_state, js_browser_doc_write, "write", 1);
+                        js_setproperty(js_state, -2, "write");
+                        js_newobject(js_state);
+                        js_pushstring(js_state, "BODY");
+                        js_setproperty(js_state, -2, "tagName");
+                        js_setproperty(js_state, -2, "body");
+                        js_newobject(js_state);
+                        js_pushstring(js_state, url_buf);
+                        js_setproperty(js_state, -2, "href");
+                        js_setproperty(js_state, -2, "location");
+                        js_setglobal(js_state, "document");
+
+                        js_newobject(js_state);
+                        js_getglobal(js_state, "document");
+                        js_setproperty(js_state, -2, "document");
+                        js_newobject(js_state);
+                        js_pushstring(js_state, url_buf);
+                        js_setproperty(js_state, -2, "href");
+                        js_setproperty(js_state, -2, "location");
+                        js_newcfunction(js_state, js_browser_window_setTimeout, "setTimeout", 2);
+                        js_setproperty(js_state, -2, "setTimeout");
+                        js_newcfunction(js_state, js_browser_window_setInterval, "setInterval", 2);
+                        js_setproperty(js_state, -2, "setInterval");
+                        js_setglobal(js_state, "window");
+
+                        js_newcfunction(js_state, js_browser_alert, "alert", 1);
+                        js_setglobal(js_state, "alert");
+                        js_newcfunction(js_state, js_browser_parseInt, "parseInt", 1);
+                        js_setglobal(js_state, "parseInt");
+
+                        js_setlimit(js_state, 500000, 4 * 1024 * 1024);
+                        if (js_dostring(js_state, scripts)) s_printf("[Browser] JS execution error\n");
+
+                        js_setlimit(js_state, 50000, 4 * 1024 * 1024);
+                        uint32_t timer_loop_start = get_tick_count();
+                        int any_active;
+                        do {
+                            any_active = 0;
+                            js_browser_process_timers(js_state);
+                            for (int ti = 0; ti < MAX_TIMER_SLOTS; ti++)
+                                if (browser_timer_slots[ti].active) { any_active = 1; break; }
+                            if (any_active) {
+                                http_process_events();
+                                if (get_tick_count() - timer_loop_start > 100) break;
+                            }
+                        } while (any_active);
+
                         for (int ti = 0; ti < MAX_TIMER_SLOTS; ti++) {
-                            if (browser_timer_slots[ti].active) { any_active = 1; break; }
+                            if (browser_timer_slots[ti].active) {
+                                js_delregistry(js_state, browser_timer_slots[ti].registry_key);
+                                browser_timer_slots[ti].active = 0;
+                            }
                         }
-                        if (any_active) {
-                            http_process_events();
-                            // Safety: don't spin for more than 2 seconds (100 ticks at 50Hz) processing timers
-                            if (get_tick_count() - timer_loop_start > 100) break;
-                        }
-                    } while (any_active);
-                    // Clear all timer slots before freeing state
-                    for (int ti = 0; ti < MAX_TIMER_SLOTS; ti++) {
-                        if (browser_timer_slots[ti].active) {
-                            js_delregistry(js_state, browser_timer_slots[ti].registry_key);
-                            browser_timer_slots[ti].active = 0;
-                        }
+                        js_freestate(js_state); js_state = 0;
                     }
-                    js_freestate(js_state); js_state = 0;
                 }
-            }
-            use_dom_rendering = 1;
+                #endif /* BROWSER_RUN_JS */
+
+                use_dom_rendering = 1;
+                s_printf("[Browser] TRACE: use_dom_rendering=1, leaving load_page\n");
+            #else
+                /* Emergency: DOM engine off, render the parsed text only. */
+                use_dom_rendering = 0;
+                s_printf("[Browser] TRACE: BROWSER_USE_DOM=0 -> line renderer\n");
+            #endif
         } else {
             dom_document_destroy(dom_doc); dom_doc = 0; use_dom_rendering = 0;
-            dom_set_bridge_document(NULL); // Clear stale bridge document
+            dom_set_bridge_document(NULL);
         }
     } else { use_dom_rendering = 0; dom_set_bridge_document(NULL); }
 
+    /* ---- Status bar ---- */
     char count_str[16];
-    if (use_dom_rendering) strcpy(status_text, "Loaded (DOM)");
-    else { strcpy(status_text, "Loaded ("); int_to_str(page_line_count, count_str); strcat(status_text, count_str); strcat(status_text, " lines)"); }
+    if (use_dom_rendering) strcpy(status_text, used_http2 ? "Loaded (DOM/H2)" : "Loaded (DOM)");
+    else {
+        strcpy(status_text, "Loaded (");
+        int_to_str(page_line_count, count_str);
+        strcat(status_text, count_str);
+        strcat(status_text, used_http2 ? " lines/H2)" : " lines)");
+    }
     if (http_status >= 400) { char st[64]; snprintf(st, 64, "HTTP %d - ", http_status); strcat(status_text, st); }
     if (use_tls) strcat(status_text, " [TLS]");
-    is_loading = 0; load_progress = 100;
 
-    // Track page load time
+    is_loading = 0; load_progress = 100;
     page_load_time = get_tick_count() - page_load_start;
     page_size_bytes = total_read;
 
-    // Track recently visited for NTP
     if (url_buf[0] && error_type == ERR_NONE) {
-        // Shift existing entries down
         if (recent_visit_count >= 6) recent_visit_count = 5;
-        for (int ri = recent_visit_count; ri > 0; ri--) {
+        for (int ri = recent_visit_count; ri > 0; ri--)
             memcpy(&recent_visits[ri], &recent_visits[ri-1], sizeof(recent_visits[0]));
-        }
         strncpy(recent_visits[0].title, page_title[0] ? page_title : url_buf, 47);
         recent_visits[0].title[47] = 0;
         strncpy(recent_visits[0].url, url_buf, 127);

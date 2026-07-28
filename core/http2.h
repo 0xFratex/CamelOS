@@ -78,12 +78,18 @@ typedef enum {
 #define HTTP2_ERROR_INADEQUATE_SECURITY 0x0c
 #define HTTP2_ERROR_HTTP_1_1_REQUIRED   0x0d
 
-// HTTP/2 Limits
-#define HTTP2_MAX_FRAME_SIZE      16777215  // 2^24 - 1
-#define HTTP2_MAX_STREAMS         256
-#define HTTP2_MAX_HEADERS         64
-#define HTTP2_HEADER_MAX_LEN      4096
+// HTTP/2 Limits — REDUCED to keep http2_connection_t allocatable
+// Original values (256 streams × 64 headers × 8KB each = 134 MB) made
+// kmalloc(sizeof(http2_connection_t)) fail immediately.
+#define HTTP2_MAX_FRAME_SIZE      16777215  // 2^24 - 1 (protocol limit, unchanged)
+#define HTTP2_MAX_STREAMS         8         // was 256 — we only need 1-2 at a time
+#define HTTP2_MAX_HEADERS         16        // was 64  — typical response has ~10
+#define HTTP2_HEADER_MAX_LEN      256       // was 4096 — header names/values rarely exceed this
 #define HTTP2_MAX_WINDOW          2147483647  // 2^31 - 1
+
+// Read cache size: one TLS record is at most ~16KB + overhead.
+// 32KB gives headroom for reassembly.
+#define HTTP2_READ_CACHE_SIZE     32768
 
 // ============================================================================
 // HPACK STATIC TABLE (RFC 7541 Appendix A)
@@ -273,13 +279,22 @@ typedef struct {
     hpack_dynamic_table_t encoder_table;
     hpack_dynamic_table_t decoder_table;
     
-    // Receive buffer
-    uint8_t recv_buffer[HTTP2_MAX_FRAME_SIZE + 9];
-    size_t recv_buffer_len;
+    // ---- READ CACHE ----
+    // Buffers partial TLS records so http2_receive_frame can read
+    // exactly 9 bytes (frame header) then exactly N bytes (payload)
+    // even when both arrive in a single TLS record.
+    // Replaces the old recv_buffer[16MB] that made the struct un-allocatable.
+    uint8_t read_cache[HTTP2_READ_CACHE_SIZE];
+    size_t  read_cache_len;      // Bytes currently valid in read_cache
+    size_t  read_cache_pos;      // Next unread byte in read_cache
     
     // Error info
     uint32_t last_error;
     char error_msg[128];
+
+    int owns_tls;       // 1 if http2_connect() created the TLS session
+    int owns_socket;    // 1 if http2_connect() created the socket
+    int tls_version;    // 12 or 13 (discriminator for the void* tls_session)
     
 } http2_connection_t;
 
@@ -313,24 +328,27 @@ int http2_post(http2_connection_t* conn, const char* path,
                uint8_t* response, size_t* response_len,
                http2_header_t* response_headers, int* response_header_count);
 
+http2_connection_t* http2_connect_fd(int socket_fd, void* tls_session, int use_tls,
+                                      const char* host, uint16_t port);
+
+// Initialize an HTTP/2 connection over an existing TLS session
+http2_connection_t* http2_init_over_tls(void* tls_session, int socket_fd,
+                                         const char* host, uint16_t port);
+
+// Send WINDOW_UPDATE frame
+int http2_send_window_update(http2_connection_t* conn, uint32_t stream_id, uint32_t increment);
+
 // ============================================================================
 // HPACK API
 // ============================================================================
 
-// Initialize HPACK dynamic table
 void hpack_init_table(hpack_dynamic_table_t* table, size_t max_size);
-
-// Free HPACK dynamic table
 void hpack_free_table(hpack_dynamic_table_t* table);
-
-// Add entry to dynamic table
 int hpack_add_entry(hpack_dynamic_table_t* table, const char* name, const char* value);
 
-// Encode header block
 int hpack_encode(hpack_dynamic_table_t* table, const http2_header_t* headers, int count,
                  uint8_t* output, size_t output_max);
 
-// Decode header block
 int hpack_decode(hpack_dynamic_table_t* table, const uint8_t* input, size_t input_len,
                  http2_header_t* headers, int max_headers, int* header_count);
 
@@ -338,69 +356,42 @@ int hpack_decode(hpack_dynamic_table_t* table, const uint8_t* input, size_t inpu
 // HTTP/2 FRAME FUNCTIONS
 // ============================================================================
 
-// Send SETTINGS frame
 int http2_send_settings(http2_connection_t* conn);
-
-// Send SETTINGS ACK
 int http2_send_settings_ack(http2_connection_t* conn);
-
-// Send PING frame
 int http2_send_ping(http2_connection_t* conn, const uint8_t* data);
-
-// Send PING ACK
 int http2_send_ping_ack(http2_connection_t* conn, const uint8_t* data);
 
-// Send HEADERS frame
 int http2_send_headers(http2_connection_t* conn, uint32_t stream_id,
                        const http2_header_t* headers, int header_count, int end_stream);
 
-// Send DATA frame
 int http2_send_data(http2_connection_t* conn, uint32_t stream_id,
                     const uint8_t* data, size_t len, int end_stream);
 
-// Send RST_STREAM frame
 int http2_send_rst_stream(http2_connection_t* conn, uint32_t stream_id, uint32_t error_code);
-
-// Send GOAWAY frame
 int http2_send_goaway(http2_connection_t* conn, uint32_t last_stream_id, uint32_t error_code);
-
-// Receive and process frame
 int http2_receive_frame(http2_connection_t* conn);
 
 // ============================================================================
 // INTEGER ENCODING (HPACK)
 // ============================================================================
 
-// Encode integer with prefix
 int hpack_encode_int(uint8_t* output, uint64_t value, int prefix_bits);
-
-// Decode integer with prefix
 int hpack_decode_int(const uint8_t* input, size_t input_len, uint64_t* value, int prefix_bits, size_t* consumed);
 
 // ============================================================================
 // STRING ENCODING (HPACK)
 // ============================================================================
 
-// Encode string (with Huffman if beneficial)
 int hpack_encode_string(uint8_t* output, const char* str, size_t max_len);
-
-// Decode string
 int hpack_decode_string(const uint8_t* input, size_t input_len, char* str, size_t max_len, size_t* consumed);
 
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
 
-// Get stream by ID
 http2_stream_t* http2_get_stream(http2_connection_t* conn, uint32_t stream_id);
-
-// Create new stream
 http2_stream_t* http2_create_stream(http2_connection_t* conn);
-
-// Close stream
 void http2_close_stream(http2_connection_t* conn, uint32_t stream_id);
-
-// Process received frame
 int http2_process_frame(http2_connection_t* conn, const uint8_t* frame, size_t len);
 
 #endif // HTTP2_H

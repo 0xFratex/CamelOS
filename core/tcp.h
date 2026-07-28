@@ -68,7 +68,7 @@ typedef struct tcp_connection {
 
     // Buffers - MUST match TCP_WINDOW_SIZE (16384) to prevent overflow
     uint8_t send_buffer[16384];
-    uint8_t recv_buffer[16384];
+    uint8_t recv_buffer[65536];
     uint8_t send_packet[1500];  // Per-connection send buffer (was static, caused reentrancy bug)
     uint32_t send_head;
     uint32_t send_tail;
@@ -101,6 +101,17 @@ typedef struct tcp_connection {
     // toward CLOSED) but NOT delivered to the (now-nulled) on_data
     // callback and NOT buffered into the orphaned recv_buffer.
     uint8_t user_closing;
+
+    // QEMU SLIRP zero-phantom tracking.
+    // When SLIRP sends a 6-byte all-zero segment that shares the sequence
+    // number of the real payload, we ACK and advance rcv_nxt (so the peer
+    // keeps sending) but do NOT deliver the zeros to the socket. We record
+    // how many phantom bytes we "accepted". If a later segment retransmits
+    // from the same base sequence with real non-zero data, we rewind
+    // rcv_nxt by this amount and re-process the real bytes (preserving the
+    // TLS record header that the phantom would otherwise have destroyed).
+    uint8_t  slirp_phantom_len;      /* length of last SLIRP zero phantom */
+    uint32_t slirp_phantom_time;     /* tick when phantom was delivered (NEW) */
 } tcp_connection_t;
 
 // Listen/accept support
@@ -142,7 +153,6 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
 /* Server-side API */
 int tcp_listen(uint16_t port, uint32_t bind_ip);
-int tcp_accept(int listener_id, tcp_connection_t** out_conn);
 int tcp_close_listener(int listener_id);
 tcp_listener_t* tcp_find_listener(uint16_t port);
 void tcp_process_listeners(void);

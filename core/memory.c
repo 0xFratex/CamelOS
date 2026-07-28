@@ -481,3 +481,16 @@ void* kmalloc_ap(size_t size, uint32_t* phys) {
 void* kmalloc_a(size_t size) {
     return kmalloc_ap(size, 0);
 }
+
+/* Returns 1 if ptr points into a live (allocated, not freed) heap block.
+ * Use this to validate pointers before memcpy/strcpy in the resource
+ * loader so a wild pointer trips a log line instead of a page fault. */
+int kheap_contains(const void* ptr) {
+    if (!ptr) return 0;
+    const mem_block_t* b = (const mem_block_t*)((const uint8_t*)ptr - sizeof(mem_block_t));
+    if (b->magic != MEM_MAGIC) return 0;   /* not a heap block */
+    if (b->free)                 return 0;   /* use-after-free  */
+    if ((const uint8_t*)ptr <  (const uint8_t*)b + sizeof(mem_block_t)) return 0;
+    if ((const uint8_t*)ptr >= (const uint8_t*)b + sizeof(mem_block_t) + b->size) return 0;
+    return 1;
+}

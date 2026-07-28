@@ -335,6 +335,7 @@ typedef struct tls_session {
     int is_server;
     int verify_cert;
     int session_resumed;
+    int owns_socket;
     
     // Application data buffer
     uint8_t app_data[16384];
@@ -345,6 +346,12 @@ typedef struct tls_session {
     void (*on_cert_verify)(x509_cert_t* cert, void* user_data);
     void* callback_user_data;
     
+    int extended_master_secret;
+    int session_ticket_present;
+    char alpn_protocol[16];
+
+    int suppress_h2_alpn;
+
 } tls_session_t;
 
 // ============================================================================
@@ -367,6 +374,8 @@ typedef struct {
 // ============================================================================
 // PUBLIC API FUNCTIONS
 // ============================================================================
+
+const char* tls_get_alpn_protocol(tls_session_t* session);
 
 // Session management
 tls_session_t* tls_create_session(void);

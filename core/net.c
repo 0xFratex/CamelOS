@@ -24,6 +24,7 @@ mac_addr_t my_mac = {{0,0,0,0,0,0}};
 ip_addr_t gateway_ip = {{0,0,0,0}};
 mac_addr_t gateway_mac = {{0,0,0,0,0,0}};
 int net_is_connected = 0;
+static int arp_initialized = 0;
 
 // Network driver poll function pointer - set during NIC initialization
 static void (*net_poll_func)(void) = NULL;
@@ -120,14 +121,13 @@ void net_add_static_arp(uint32_t ip, uint8_t* mac) {
 }
 
 void net_init_arp(void) {
-    arp_init();
-    // QEMU MAC
+    if (!arp_initialized) {
+        arp_init();
+        arp_initialized = 1;
+    }
+    /* Always ensure static entries exist (idempotent) */
     uint8_t qemu_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
-    
-    // Gateway: 10.0.2.2
     net_add_static_arp(ip_parse("10.0.2.2"), qemu_mac);
-    
-    // DNS: 10.0.2.3
     net_add_static_arp(ip_parse("10.0.2.3"), qemu_mac);
 }
 
@@ -222,26 +222,15 @@ int net_send_raw_ip(uint32_t dest_ip, uint8_t proto, const uint8_t* data, uint32
     } else {
         if (default_if->ip_addr == 0 || default_if->gateway == 0) {
 #if NET_DEBUG_ERRORS
-            s_printf("[NET] Interface not configured (ip=%d.%d.%d.%d gw=%d.%d.%d.%d)\n",
-                     (default_if->ip_addr >> 24) & 0xFF, (default_if->ip_addr >> 16) & 0xFF,
-                     (default_if->ip_addr >> 8) & 0xFF, default_if->ip_addr & 0xFF,
-                     (default_if->gateway >> 24) & 0xFF, (default_if->gateway >> 16) & 0xFF,
-                     (default_if->gateway >> 8) & 0xFF, default_if->gateway & 0xFF);
+            s_printf("[NET] Interface not configured\n");
 #endif
             return -1;
         }
 
-        // Determine if destination is local
         uint32_t dest_net = dest_ip & default_if->netmask;
         uint32_t my_net = default_if->ip_addr & default_if->netmask;
         int is_local = (dest_net == my_net);
-
         uint32_t route_ip = is_local ? dest_ip : default_if->gateway;
-
-        s_printf("[NET] send_raw_ip: dest=%d.%d.%d.%d local=%d route_ip=%d.%d.%d.%d\n",
-                 (dest_ip >> 24) & 0xFF, (dest_ip >> 16) & 0xFF, (dest_ip >> 8) & 0xFF, dest_ip & 0xFF,
-                 is_local,
-                 (route_ip >> 24) & 0xFF, (route_ip >> 16) & 0xFF, (route_ip >> 8) & 0xFF, route_ip & 0xFF);
 
         if (route_ip == 0) {
 #if NET_DEBUG_ERRORS
@@ -250,16 +239,29 @@ int net_send_raw_ip(uint32_t dest_ip, uint8_t proto, const uint8_t* data, uint32
             return -1;
         }
 
-        if(net_resolve_arp(route_ip, final_dest_mac.addr) != 0) {
+        if (net_resolve_arp(route_ip, final_dest_mac.addr) != 0) {
+            /* FALLBACK: In QEMU, the gateway (10.0.2.2) and DNS (10.0.2.3)
+             * always use the same MAC. If the ARP cache was cleared,
+             * use the known QEMU MAC directly. */
+            if (route_ip == ip_parse("10.0.2.2") || route_ip == ip_parse("10.0.2.3")) {
+                final_dest_mac.addr[0] = 0x52;
+                final_dest_mac.addr[1] = 0x54;
+                final_dest_mac.addr[2] = 0x00;
+                final_dest_mac.addr[3] = 0x12;
+                final_dest_mac.addr[4] = 0x34;
+                final_dest_mac.addr[5] = 0x56;
+                net_add_static_arp(route_ip, final_dest_mac.addr);
+            } else {
 #if NET_DEBUG_ERRORS
-            s_printf("[NET] ARP Failed for %d.%d.%d.%d\n",
-                     (route_ip >> 24) & 0xFF, (route_ip >> 16) & 0xFF,
-                     (route_ip >> 8) & 0xFF, route_ip & 0xFF);
+                s_printf("[NET] ARP Failed for %d.%d.%d.%d\n",
+                         (route_ip >> 24) & 0xFF, (route_ip >> 16) & 0xFF,
+                         (route_ip >> 8) & 0xFF, route_ip & 0xFF);
 #endif
-            return -1;
+                return -1;
+            }
         }
     }
-    
+
     uint32_t total_len = sizeof(eth_header_t) + sizeof(ip_header_t) + len;
     uint8_t* packet = (uint8_t*)kmalloc(total_len);
     if (!packet) return -1;
@@ -277,26 +279,25 @@ int net_send_raw_ip(uint32_t dest_ip, uint8_t proto, const uint8_t* data, uint32
     ip->ihl = 5;
     ip->ttl = 64;
     ip->proto = proto;
-    
-    // IP addresses in network byte order
+
     uint8_t* ip_src = (uint8_t*)&ip->src_ip;
     ip_src[0] = (default_if->ip_addr >> 24) & 0xFF;
     ip_src[1] = (default_if->ip_addr >> 16) & 0xFF;
     ip_src[2] = (default_if->ip_addr >> 8) & 0xFF;
     ip_src[3] = default_if->ip_addr & 0xFF;
-    
+
     uint8_t* ip_dst = (uint8_t*)&ip->dest_ip;
     ip_dst[0] = (dest_ip >> 24) & 0xFF;
     ip_dst[1] = (dest_ip >> 16) & 0xFF;
     ip_dst[2] = (dest_ip >> 8) & 0xFF;
     ip_dst[3] = dest_ip & 0xFF;
-    
+
     ip->len = htons(sizeof(ip_header_t) + len);
     ip->checksum = 0;
     ip->checksum = checksum(ip, sizeof(ip_header_t));
 
     memcpy(payload, data, len);
-    
+
     int res = default_if->send(default_if, packet, total_len);
     kfree(packet);
     return res;

@@ -1,8 +1,12 @@
 #ifndef GUI_TYPES_H
 #define GUI_TYPES_H
 
+#ifndef MAX_MENU_ITEMS
 #define MAX_MENU_ITEMS 8
+#endif
+#ifndef MAX_MENUS
 #define MAX_MENUS 6
+#endif
 #define MAX_SUBMENU_ITEMS 5
 
 // MenuItem: a single item in a menu dropdown.

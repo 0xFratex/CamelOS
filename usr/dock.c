@@ -202,23 +202,40 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     int x_pos[MAX_DOCK_APPS], sizes[MAX_DOCK_APPS], total_w;
     get_dock_layout(w, mx, my, x_pos, sizes, &total_w);
 
-    int shelf_h = 74;
-    int shelf_y = h - shelf_h - 12; // Float off bottom
-    int padding_x = 24;
+    int shelf_h = 76;
+    int shelf_y = h - shelf_h - 14; // Float off bottom
+    int padding_x = 26;
     int shelf_w = total_w + (padding_x * 2);
     int shelf_x = (w - shelf_w) / 2;
 
-    // 1. Draw Background (Glass Effect) — uses theme dock colors
     const theme_t* theme = theme_get_current();
+    int is_dark = (theme_get_id() == THEME_DARK);
+
+    // Soft drop shadow under the dock (stacked translucent rects)
+    for (int s = 4; s >= 1; s--) {
+        uint32_t shadow = is_dark ? 0x18000000 : 0x14000000;
+        gfx_fill_rounded_rect(shelf_x - s, shelf_y + s + 2, shelf_w + s * 2,
+                              shelf_h, shadow, 24);
+    }
+
+    // Glass background
     gfx_fill_rounded_rect(shelf_x, shelf_y, shelf_w, shelf_h, theme->dock_bg, 22);
-    
-    // 2. Inner Shine (Top Highlight)
-    // Drawn slightly smaller to look like a bevel
-    gfx_fill_rounded_rect(shelf_x+2, shelf_y+2, shelf_w-4, shelf_h-4, theme->dock_border, 20);
+
+    // Top edge highlight (glass sheen)
+    uint32_t sheen = is_dark ? 0x28FFFFFF : 0x55FFFFFF;
+    gfx_fill_rounded_rect(shelf_x + 3, shelf_y + 2, shelf_w - 6, 14, sheen, 10);
+
+    // Subtle border ring
+    gfx_draw_rect(shelf_x, shelf_y, shelf_w, shelf_h, theme->dock_border);
 
     for(int i=0; i<dock_count; i++) {
         int sz = sizes[i];
-        int y = shelf_y + (shelf_h - sz)/2 - 4; 
+        int y = shelf_y + (shelf_h - sz)/2 - 4;
+
+        // Magnified icons lift slightly upward
+        if (sz > DOCK_BASE_SIZE) {
+            y -= (sz - DOCK_BASE_SIZE) / 3;
+        }
 
         cm_draw_image(buffer, dock_icons[i].icon_res, x_pos[i], y, sz, sz);
 
@@ -228,13 +245,11 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         if(strcmp(match, "Calculator") == 0) match = "Calculator";
 
         if(is_app_running(match)) {
-            // Indicator Dot
-            int dot_sz = 4;
+            // Rounded indicator pill under the icon
+            int dot_sz = 5;
             int dot_x = x_pos[i] + (sz - dot_sz)/2;
-            int dot_y = shelf_y + shelf_h - 8;
-            
-            // Simple 4x4 rect acting as circle
-            gfx_fill_rect(dot_x, dot_y, dot_sz, dot_sz, DOCK_INDICATOR);
+            int dot_y = shelf_y + shelf_h - 10;
+            gfx_fill_rounded_rect(dot_x, dot_y, dot_sz, 4, theme->accent_color, 2);
         }
     }
 }

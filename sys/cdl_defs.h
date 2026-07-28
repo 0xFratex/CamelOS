@@ -11,8 +11,12 @@ typedef void (*input_cb_t)(int key);
 typedef void (*mouse_cb_t)(int x, int y, int btn);
 typedef void (*menu_cb_t)(int menu_idx, int item_idx);
 
-#define MAX_MENU_ITEMS 5
-#define MAX_MENUS 4
+#ifndef MAX_MENU_ITEMS
+#define MAX_MENU_ITEMS 8
+#endif
+#ifndef MAX_MENUS
+#define MAX_MENUS 6
+#endif
 
 typedef struct {
     char name[12];

@@ -12,6 +12,8 @@ int kbd_shift_pressed = 0;
 int kbd_ctrl_pressed = 0;
 int kbd_alt_pressed = 0;
 int kbd_caps_lock = 0;
+// Right-Alt (AltGr) — used for third-level symbols on ABNT2 / ISO layouts
+static int kbd_altgr_pressed = 0;
 
 // Internal state for extended codes (e.g. E0 xx)
 static int kbd_extended = 0;
@@ -258,11 +260,13 @@ static const KeyboardLayout kbd_layouts[] = {
         '<', '>',  // OEM_102 key: < / >
         "Italian QWERTY"
     },
-    // 6: Brazilian ABNT2 - ISO layout with extra keys
-    // Scancode 0x29='/", 0x07=6/¨(dead), 0x1A=dead acute/grave,
-    // 0x1B=[/{, 0x27=ç/Ç, 0x28=~(dead)/^(dead), 0x2B=]/}
-    // 0x35=;/:, 0x56=\ /|, 0x73=/? (ABNT_C1), 0x7E=. (ABNT_C2 numpad)
-    // Data verified against kbdlayout.info KBDBR scancodes
+    // 6: Brazilian ABNT2 - ISO layout with extra keys (KBDBR)
+    // Scancode map (verified against Microsoft kbdlayout.info / Linux br-abnt2):
+    //   0x0C=-  0x0D==  0x1A=´/`(dead)  0x1B=[/{  0x27=ç/Ç
+    //   0x28=~/^ (dead)  0x29='/"  0x2B=]/}  0x35=;/:
+    //   0x56=\ /| (OEM_102)  0x73=/ ? (ABNT_C1)  0x7E=. (ABNT_C2)
+    //   Shift+6 = ¨ (dead diaeresis)
+    // AltGr (Right-Alt) third level is handled in keyboard_callback.
     {
         {0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
          '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 180, '[', '\n',
@@ -667,9 +671,13 @@ void init_keyboard() {
     kbd_shift_pressed = 0;
     kbd_ctrl_pressed = 0;
     kbd_alt_pressed = 0;
+    kbd_altgr_pressed = 0;
     kbd_caps_lock = 0;
     kbd_extended = 0;
-    kbd_layout = 0; // Default US QWERTY
+    // Keep existing layout if already set (e.g. re-init); default US only once
+    if (kbd_layout < 0 || kbd_layout >= KBD_LAYOUT_COUNT) {
+        kbd_layout = 0;
+    }
     kbd_dead_key = DEAD_KEY_NONE;
 }
 
@@ -712,7 +720,10 @@ void keyboard_callback() {
         uint8_t released = scancode & 0x7F;
         if (released == 0x2A || released == 0x36) kbd_shift_pressed = 0;
         if (released == 0x1D) kbd_ctrl_pressed = 0;
-        if (released == 0x38) kbd_alt_pressed = 0;
+        if (released == 0x38) {
+            kbd_alt_pressed = 0;
+            kbd_altgr_pressed = 0; // E0 0xB8 releases Right-Alt / AltGr
+        }
         kbd_extended = 0; // Reset extended state on release too
         return;
     }
@@ -721,7 +732,7 @@ void keyboard_callback() {
     int key_out = 0;
 
     if (kbd_extended) {
-        // Extended codes (Arrows, Home, End, etc.)
+        // Extended codes (Arrows, Home, End, Right-Alt/AltGr, etc.)
         switch (scancode) {
             case 0x48: key_out = KEY_UP; break;
             case 0x50: key_out = KEY_DOWN; break;
@@ -734,6 +745,17 @@ void keyboard_callback() {
             case 0x52: key_out = KEY_INSERT; break;
             case 0x53: key_out = KEY_DELETE; break;
             case 0x5B: key_out = KEY_LWIN; break; // Left Windows/Command
+            case 0x38:
+                // Right Alt (AltGr) — third-level symbols on ABNT2
+                kbd_altgr_pressed = 1;
+                kbd_alt_pressed = 1;
+                kbd_extended = 0;
+                return;
+            case 0x1D:
+                // Right Ctrl
+                kbd_ctrl_pressed = 1;
+                kbd_extended = 0;
+                return;
         }
         kbd_extended = 0;
     } else {
@@ -753,6 +775,7 @@ void keyboard_callback() {
         if (scancode == 0x56 && key_out == 0) {
             const KeyboardLayout* layout = &kbd_layouts[kbd_layout];
             if (layout->oem102_std) {
+                // AltGr + OEM_102 on ABNT2 is also \ |
                 key_out = kbd_shift_pressed ? layout->oem102_shift
                                             : layout->oem102_std;
             }
@@ -768,6 +791,33 @@ void keyboard_callback() {
         // This replaces the standard numpad delete/period on ABNT2 keyboards
         if (scancode == 0x7E && key_out == 0) {
             key_out = '.';
+        }
+
+        // ABNT2 AltGr (Right-Alt) third-level symbols
+        // Common Brazilian characters: superscript, degree, section, etc.
+        if (key_out == 0 && kbd_altgr_pressed &&
+            (kbd_layout == KBD_LAYOUT_BRAZILIAN_ABNT2 ||
+             kbd_layout == KBD_LAYOUT_BRAZILIAN_ABNT1)) {
+            switch (scancode) {
+                case 0x03: key_out = '@'; break;      // AltGr+2
+                case 0x04: key_out = '#'; break;      // AltGr+3
+                case 0x05: key_out = '$'; break;      // AltGr+4
+                case 0x08: key_out = '{'; break;      // AltGr+7
+                case 0x09: key_out = '['; break;      // AltGr+8
+                case 0x0A: key_out = ']'; break;      // AltGr+9
+                case 0x0B: key_out = '}'; break;      // AltGr+0
+                case 0x0C: key_out = 92; break;       // AltGr+- → backslash
+                case 0x0D: key_out = 167; break;      // AltGr+= → §
+                case 0x10: key_out = '/'; break;      // AltGr+q
+                case 0x11: key_out = '?'; break;      // AltGr+w
+                case 0x12: key_out = 176; break;      // AltGr+e → °
+                case 0x1A: key_out = 180; break;      // AltGr+´ → ´
+                case 0x1B: key_out = 170; break;      // AltGr+[ → ª
+                case 0x27: key_out = 186; break;      // AltGr+ç → º
+                case 0x28: key_out = '~'; break;      // AltGr+~ → ~
+                case 0x2B: key_out = 186; break;      // AltGr+] → º (alt)
+                case 0x35: key_out = '.'; break;      // AltGr+; → .
+            }
         }
 
         if (key_out == 0 && scancode < 58) {

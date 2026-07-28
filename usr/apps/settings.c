@@ -16,9 +16,10 @@
 #define TAB_ABOUT    0
 #define TAB_USER     1
 #define TAB_DISPLAY  2
-#define TAB_NETWORK  3
-#define TAB_HARDWARE 4
-#define TAB_COUNT    5
+#define TAB_KEYBOARD 3
+#define TAB_NETWORK  4
+#define TAB_HARDWARE 5
+#define TAB_COUNT    6
 
 static int current_tab = TAB_ABOUT;
 static int settings_scroll_y = 0;
@@ -50,6 +51,28 @@ static int theme_toggle_x = 0, theme_toggle_y = 0, theme_toggle_w = 0, theme_tog
 
 // Scroll direction toggle region
 static int scroll_toggle_x = 0, scroll_toggle_y = 0, scroll_toggle_w = 0, scroll_toggle_h = 0;
+
+// Keyboard layout list hit regions (Display/Keyboard tab)
+#define KBD_PICKER_MAX 12
+static int kbd_item_y[KBD_PICKER_MAX];
+static int kbd_item_h = 28;
+static int kbd_list_x = 0, kbd_list_w = 0;
+// Popular layouts shown in the picker (id → display name)
+static const int kbd_picker_ids[] = {
+    0,  // US QWERTY
+    1,  // UK QWERTY
+    6,  // Brazilian ABNT2
+    31, // Brazilian ABNT1
+    2,  // German
+    3,  // French
+    4,  // Spanish
+    5,  // Italian
+    29, // Portuguese PT
+    7,  // Dvorak
+    11, // Swiss
+    12  // Swedish
+};
+#define KBD_PICKER_COUNT (sizeof(kbd_picker_ids) / sizeof(kbd_picker_ids[0]))
 
 // System info
 static char sys_mem_str[32] = "";
@@ -205,7 +228,7 @@ static void draw_tab_bar(int x, int y, int w) {
     gfx_fill_rect(x, y, w, 28, 0xFFF2F2F7);
     gfx_draw_rect(x, y + 27, w, 1, 0xFFC6C6C8);
     
-    const char* tab_names[] = {"About", "User", "Display", "Network", "Hardware"};
+    const char* tab_names[] = {"About", "User", "Display", "Keyboard", "Network", "Hardware"};
     int tab_w = w / TAB_COUNT;
     
     for (int i = 0; i < TAB_COUNT; i++) {
@@ -468,6 +491,66 @@ static void draw_display_tab(int x, int y, int w, int h) {
     }
 }
 
+static void draw_keyboard_tab(int x, int y, int w, int h) {
+    const theme_t* theme = theme_get_current();
+    int cy = y + 20;
+
+    gfx_draw_string(x + 20, cy, "Keyboard Layout", theme->accent_color);
+    cy += 24;
+    gfx_draw_string(x + 20, cy, "Choose the layout that matches your physical keyboard.", theme->text_secondary);
+    cy += 28;
+
+    // Current layout badge
+    extern const char* kbd_layout_name(int);
+    char cur[80];
+    strcpy(cur, "Active: ");
+    strcat(cur, kbd_layout_name(cfg_kbd_layout));
+    gfx_fill_rounded_rect(x + 20, cy, w - 40, 28, 0xFFE8F0FE, 8);
+    gfx_draw_string(x + 32, cy + 7, cur, theme->accent_color);
+    cy += 42;
+
+    kbd_list_x = x + 20;
+    kbd_list_w = w - 40;
+    int list_h = KBD_PICKER_COUNT * kbd_item_h + 8;
+    gfx_fill_rounded_rect(kbd_list_x, cy, kbd_list_w, list_h, 0xFFF2F2F7, 10);
+    gfx_draw_rect(kbd_list_x, cy, kbd_list_w, list_h, theme->separator);
+
+    for (int i = 0; i < (int)KBD_PICKER_COUNT; i++) {
+        int iy = cy + 4 + i * kbd_item_h;
+        kbd_item_y[i] = iy;
+        int id = kbd_picker_ids[i];
+        int selected = (id == cfg_kbd_layout);
+
+        if (selected) {
+            gfx_fill_rounded_rect(kbd_list_x + 4, iy, kbd_list_w - 8, kbd_item_h - 2,
+                                  0xFF007AFF, 6);
+        }
+
+        uint32_t tc = selected ? 0xFFFFFFFF : theme->text_primary;
+        gfx_draw_string(kbd_list_x + 16, iy + 7, kbd_layout_name(id), tc);
+
+        if (selected) {
+            gfx_draw_string(kbd_list_x + kbd_list_w - 36, iy + 7, "✓", 0xFFFFFFFF);
+        }
+    }
+    cy += list_h + 20;
+
+    gfx_draw_string(x + 20, cy, "Tip: ABNT2 includes dead keys (´ ` ~ ^ ¨) and the", theme->text_secondary);
+    cy += 18;
+    gfx_draw_string(x + 20, cy, "extra / key. Use Right-Alt (AltGr) for @ # { } ° §.", theme->text_secondary);
+    cy += 36;
+
+    // Apply button (same as Display — writes kbd_layout)
+    save_btn_x = x + w - 130;
+    save_btn_y = cy;
+    uint32_t btn_bg = save_btn_hover ? 0xFF0051D5 : 0xFF007AFF;
+    gfx_fill_rounded_rect(save_btn_x, save_btn_y, save_btn_w, save_btn_h, btn_bg, 6);
+    gfx_draw_string(save_btn_x + 25, save_btn_y + 8, "Apply", 0xFFFFFFFF);
+    if (save_feedback_timer > 0) {
+        gfx_draw_string(save_btn_x - 60, save_btn_y + 8, save_feedback_text, 0xFF34C759);
+    }
+}
+
 static void draw_hardware_tab(int x, int y, int w, int h) {
     // Apply scroll offset
     int scroll = settings_scroll_y;
@@ -662,6 +745,7 @@ static void settings_on_paint(window_t* win, int x, int y, int w, int h) {
         case TAB_ABOUT:    draw_about_tab(x, content_y, w, content_h); break;
         case TAB_USER:     draw_user_tab(x, content_y, w, content_h); break;
         case TAB_DISPLAY:  draw_display_tab(x, content_y, w, content_h); break;
+        case TAB_KEYBOARD: draw_keyboard_tab(x, content_y, w, content_h); break;
         case TAB_NETWORK:  draw_network_tab(x, content_y, w, content_h); break;
         case TAB_HARDWARE: draw_hardware_tab(x, content_y, w, content_h); break;
     }
@@ -773,6 +857,26 @@ static void settings_on_mouse(window_t* win, int x, int y, int btn) {
         y >= save_btn_y && y <= save_btn_y + save_btn_h) {
         settings_save_config();
     }
+
+    // Keyboard layout picker
+    if (current_tab == TAB_KEYBOARD) {
+        for (int i = 0; i < (int)KBD_PICKER_COUNT; i++) {
+            if (x >= kbd_list_x && x <= kbd_list_x + kbd_list_w &&
+                y >= kbd_item_y[i] && y < kbd_item_y[i] + kbd_item_h) {
+                cfg_kbd_layout = kbd_picker_ids[i];
+                extern void kbd_set_layout(int);
+                kbd_set_layout(cfg_kbd_layout);
+                extern const char* kbd_layout_name(int);
+                notif_post("Settings", "Keyboard Layout",
+                           kbd_layout_name(cfg_kbd_layout), NOTIF_TYPE_INFO);
+                return;
+            }
+        }
+        if (x >= save_btn_x && x <= save_btn_x + save_btn_w &&
+            y >= save_btn_y && y <= save_btn_y + save_btn_h) {
+            settings_save_config();
+        }
+    }
 }
 
 // Menu action handler for Settings app
@@ -809,9 +913,15 @@ static void settings_on_resize(window_t* win, int new_w, int new_h) {
 
 void init_settings_app() {
     settings_load_config();
-    Window* w = fw_create_window("Settings", 500, 420, settings_on_paint, settings_on_input, settings_on_mouse);
+    // Apply keyboard layout from config immediately
+    {
+        extern void kbd_set_layout(int);
+        kbd_set_layout(cfg_kbd_layout);
+    }
+    Window* w = fw_create_window("Settings", 560, 480, settings_on_paint, settings_on_input, settings_on_mouse);
     if (!w) return;  // Guard against window creation failure
-    w->min_w = 400;
+    w->min_w = 440;
+    settings_win_w = 560;
     
     // Wire up scroll and resize callbacks
     w->scroll_callback = (void*)settings_on_scroll;
@@ -830,9 +940,10 @@ void init_settings_app() {
     strcpy(w->menus[1].items[0].label, "About");
     strcpy(w->menus[1].items[1].label, "User");
     strcpy(w->menus[1].items[2].label, "Display");
-    strcpy(w->menus[1].items[3].label, "Network");
-    strcpy(w->menus[1].items[4].label, "Hardware");
-    w->menus[1].item_count = 5;
+    strcpy(w->menus[1].items[3].label, "Keyboard");
+    strcpy(w->menus[1].items[4].label, "Network");
+    strcpy(w->menus[1].items[5].label, "Hardware");
+    w->menus[1].item_count = 6;
     
     // Set menu action handler to prevent crash when clicking menu items
     w->on_menu_action = (void*)settings_on_menu_action;

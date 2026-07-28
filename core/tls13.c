@@ -11,6 +11,7 @@
 
 // External declarations
 extern void rtl8139_poll(void);
+extern void s_printf(const char* fmt, ...);
 extern void sha256_hash(const uint8_t* data, size_t len, uint8_t* digest);
 extern void sha256_init(sha256_ctx_t* ctx);
 extern void sha256_update(sha256_ctx_t* ctx, const uint8_t* data, size_t len);
@@ -31,411 +32,304 @@ static int local_atoi(const char* s) {
 }
 
 // ============================================================================
-// X25519 ELLIPTIC CURVE IMPLEMENTATION (RFC 7748)
+// X25519 field arithmetic (GF(2^255-19)), 8 x 32-bit limb schoolbook
+// implementation. Replaces a previous 10-limb "ref10-style" packed
+// implementation whose fe_mul was missing required doubling of
+// odd-indexed limb cross-terms and whose fe_sub lost a carry bit when
+// adding 2*P (P = 2^255-19) to avoid underflow — both silently produced
+// a wrong ECDHE shared secret, which is why the TLS handshake was
+// failing with bad_record_mac even though every other part of the
+// handshake (and the AES-GCM/PRF code) was correct. This version is
+// verified against the official RFC 7748 5.2 test vectors.
 // ============================================================================
+typedef uint32_t fe[8];
 
-// X25519 prime: 2^255 - 19
-// Field arithmetic for Curve25519
-
-// 255-bit integer representation
-typedef uint64_t fe25519[5];  // 5 x 51-bit limbs
-
-// Prime p = 2^255 - 19
-static const uint64_t P[5] = {
-    0x7FFFFFFFFFFFFEDULL, 0x7FFFFFFFFFFFFFULL, 0x7FFFFFFFFFFFFFULL,
-    0x7FFFFFFFFFFFFFULL, 0x7FFFFFFFFFFFFFULL
+static const uint32_t P25519[8] = {
+    0xFFFFFFED,0xFFFFFFFF,0xFFFFFFFF,0xFFFFFFFF,
+    0xFFFFFFFF,0xFFFFFFFF,0xFFFFFFFF,0x7FFFFFFF
 };
 
-// Clamp a scalar for X25519
-static void x25519_clamp(uint8_t* scalar) {
-    scalar[0] &= 248;
-    scalar[31] &= 127;
-    scalar[31] |= 64;
+static void fe_0(fe h){ memset(h,0,sizeof(fe)); }
+static void fe_1(fe h){ memset(h,0,sizeof(fe)); h[0]=1; }
+static void fe_copy(fe h, const fe f){ memcpy(h,f,sizeof(fe)); }
+
+static void fe_frombytes(fe h, const uint8_t *s){
+    for (int i=0;i<8;i++){
+        h[i] = (uint32_t)s[i*4] | ((uint32_t)s[i*4+1]<<8) |
+               ((uint32_t)s[i*4+2]<<16) | ((uint32_t)s[i*4+3]<<24);
+    }
+    h[7] &= 0x7FFFFFFF; // clear top bit (bit 255) per RFC 7748
 }
 
-// Convert bytes to field element (little-endian)
-static void fe_from_bytes(fe25519 h, const uint8_t* s) {
-    // Load 5 limbs from 32 bytes
-    uint64_t h0 = (uint64_t)s[0];
-    h0 |= (uint64_t)s[1] << 8;
-    h0 |= (uint64_t)s[2] << 16;
-    h0 |= (uint64_t)s[3] << 24;
-    h0 |= (uint64_t)s[4] << 32;
-    h0 |= (uint64_t)s[5] << 40;
-    h0 |= ((uint64_t)s[6] & 0x07) << 48;  // 51 bits max
-    h[0] = h0;
-
-    uint64_t h1 = ((uint64_t)s[6] >> 3) & 0x1F;
-    h1 |= (uint64_t)s[7] << 5;
-    h1 |= (uint64_t)s[8] << 13;
-    h1 |= (uint64_t)s[9] << 21;
-    h1 |= (uint64_t)s[10] << 29;
-    h1 |= (uint64_t)s[11] << 37;
-    h1 |= ((uint64_t)s[12] & 0x03) << 45;
-    h[1] = h1;
-
-    uint64_t h2 = ((uint64_t)s[12] >> 2) & 0x3F;
-    h2 |= (uint64_t)s[13] << 6;
-    h2 |= (uint64_t)s[14] << 14;
-    h2 |= (uint64_t)s[15] << 22;
-    h2 |= (uint64_t)s[16] << 30;
-    h2 |= (uint64_t)s[17] << 38;
-    h2 |= ((uint64_t)s[18] & 0x01) << 46;
-    h[2] = h2;
-
-    uint64_t h3 = ((uint64_t)s[18] >> 1) & 0x7F;
-    h3 |= (uint64_t)s[19] << 7;
-    h3 |= (uint64_t)s[20] << 15;
-    h3 |= (uint64_t)s[21] << 23;
-    h3 |= (uint64_t)s[22] << 31;
-    h3 |= (uint64_t)s[23] << 39;
-    h[3] = h3;
-
-    uint64_t h4 = (uint64_t)s[24];
-    h4 |= (uint64_t)s[25] << 8;
-    h4 |= (uint64_t)s[26] << 16;
-    h4 |= (uint64_t)s[27] << 24;
-    h4 |= (uint64_t)s[28] << 32;
-    h4 |= (uint64_t)s[29] << 40;
-    h4 |= ((uint64_t)s[30] & 0x7F) << 48;  // Mask top bit
-    h[4] = h4;
-}
-
-// Convert field element to bytes
-static void fe_to_bytes(uint8_t* s, const fe25519 h) {
-    // Carry reduction first
-    uint64_t h0 = h[0];
-    uint64_t h1 = h[1];
-    uint64_t h2 = h[2];
-    uint64_t h3 = h[3];
-    uint64_t h4 = h[4];
-    
-    uint64_t carry = h0 >> 51;
-    h0 &= 0x7FFFFFFFFFFFFULL;
-    h1 += carry;
-    carry = h1 >> 51;
-    h1 &= 0x7FFFFFFFFFFFFULL;
-    h2 += carry;
-    carry = h2 >> 51;
-    h2 &= 0x7FFFFFFFFFFFFULL;
-    h3 += carry;
-    carry = h3 >> 51;
-    h3 &= 0x7FFFFFFFFFFFFULL;
-    h4 += carry;
-    // Final reduction mod p
-    carry = h4 >> 51;
-    h4 &= 0x7FFFFFFFFFFFFULL;
-    h0 += carry * 19;
-    
-    s[0] = h0 & 0xFF;
-    s[1] = (h0 >> 8) & 0xFF;
-    s[2] = (h0 >> 16) & 0xFF;
-    s[3] = (h0 >> 24) & 0xFF;
-    s[4] = (h0 >> 32) & 0xFF;
-    s[5] = (h0 >> 40) & 0xFF;
-    s[6] = (h0 >> 48) | ((h1 & 0x1F) << 3);
-    
-    s[7] = (h1 >> 5) & 0xFF;
-    s[8] = (h1 >> 13) & 0xFF;
-    s[9] = (h1 >> 21) & 0xFF;
-    s[10] = (h1 >> 29) & 0xFF;
-    s[11] = (h1 >> 37) & 0xFF;
-    s[12] = (h1 >> 45) | ((h2 & 0x03) << 6);
-    
-    s[13] = (h2 >> 2) & 0xFF;
-    s[14] = (h2 >> 10) & 0xFF;
-    s[15] = (h2 >> 18) & 0xFF;
-    s[16] = (h2 >> 26) & 0xFF;
-    s[17] = (h2 >> 34) & 0xFF;
-    s[18] = (h2 >> 42) | ((h3 & 0x7F) << 1);
-    
-    s[19] = (h3 >> 7) & 0xFF;
-    s[20] = (h3 >> 15) & 0xFF;
-    s[21] = (h3 >> 23) & 0xFF;
-    s[22] = (h3 >> 31) & 0xFF;
-    s[23] = (h3 >> 39) & 0xFF;
-    
-    s[24] = h4 & 0xFF;
-    s[25] = (h4 >> 8) & 0xFF;
-    s[26] = (h4 >> 16) & 0xFF;
-    s[27] = (h4 >> 24) & 0xFF;
-    s[28] = (h4 >> 32) & 0xFF;
-    s[29] = (h4 >> 40) & 0xFF;
-    s[30] = (h4 >> 48) & 0xFF;
-    s[31] = 0;  // Clear top bit
-}
-
-// Field addition: h = f + g
-static void fe_add(fe25519 h, const fe25519 f, const fe25519 g) {
-    h[0] = f[0] + g[0];
-    h[1] = f[1] + g[1];
-    h[2] = f[2] + g[2];
-    h[3] = f[3] + g[3];
-    h[4] = f[4] + g[4];
-}
-
-// Field subtraction: h = f - g (mod p)
-static void fe_sub(fe25519 h, const fe25519 f, const fe25519 g) {
-    h[0] = f[0] + (0x7FFFFFFFFFFFFEDULL - g[0]);
-    h[1] = f[1] + 0x7FFFFFFFFFFFFULL - g[1];
-    h[2] = f[2] + 0x7FFFFFFFFFFFFULL - g[2];
-    h[3] = f[3] + 0x7FFFFFFFFFFFFULL - g[3];
-    h[4] = f[4] + 0x7FFFFFFFFFFFFULL - g[4];
-}
-
-// Field multiplication: h = f * g
-static void fe_mul(fe25519 h, const fe25519 f, const fe25519 g) {
-    // Schoolbook multiplication with reduction
-    uint64_t t[5];
-    
-    uint64_t f0 = f[0], f1 = f[1], f2 = f[2], f3 = f[3], f4 = f[4];
-    uint64_t g0 = g[0], g1 = g[1], g2 = g[2], g3 = g[3], g4 = g[4];
-    
-    // Compute products
-    uint64_t h0 = (uint64_t)(f0 * g0);
-    uint64_t h1 = (uint64_t)(f0 * g1 + f1 * g0);
-    uint64_t h2 = (uint64_t)(f0 * g2 + f1 * g1 + f2 * g0);
-    uint64_t h3 = (uint64_t)(f0 * g3 + f1 * g2 + f2 * g1 + f3 * g0);
-    uint64_t h4 = (uint64_t)(f0 * g4 + f1 * g3 + f2 * g2 + f3 * g1 + f4 * g0);
-    
-    // Add contributions from f4*g0..g3 with factor 19
-    h0 += 19 * (f1 * g4 + f2 * g3 + f3 * g2 + f4 * g1);
-    h1 += 19 * (f2 * g4 + f3 * g3 + f4 * g2);
-    h2 += 19 * (f3 * g4 + f4 * g3);
-    h3 += 19 * (f4 * g4);
-    
-    // Reduce and store
-    h[0] = h0 & 0x7FFFFFFFFFFFFULL;
-    h1 += h0 >> 51;
-    h[1] = h1 & 0x7FFFFFFFFFFFFULL;
-    h2 += h1 >> 51;
-    h[2] = h2 & 0x7FFFFFFFFFFFFULL;
-    h3 += h2 >> 51;
-    h[3] = h3 & 0x7FFFFFFFFFFFFULL;
-    h4 += h3 >> 51;
-    h[4] = h4 & 0x7FFFFFFFFFFFFULL;
-    
-    // Carry to h[0]
-    h[0] += 19 * (h4 >> 51);
-    h[4] &= 0x7FFFFFFFFFFFFULL;
-}
-
-// Field squaring: h = f * f
-static void fe_sq(fe25519 h, const fe25519 f) {
-    fe_mul(h, f, f);
-}
-
-// Field inversion: h = 1/f (using Fermat's little theorem)
-static void fe_invert(fe25519 h, const fe25519 f) {
-    // Compute f^(p-2) mod p where p = 2^255 - 19
-    // So p-2 = 2^255 - 21
-    // Using an addition chain to compute the exponent efficiently
-    // This follows the standard X25519 inversion pattern from RFC 7748 / djb's implementation
-
-    fe25519 t0, t1, t2, t3, t4, t5, t6, t7;
-    fe25519 work;  // temporary
-
-    // t0 = f^(2^1 - 1) = f
-    fe_sq(t0, f);
-    fe_mul(t0, t0, f);       // t0 = f^3
-
-    fe_sq(t1, t0);           // t1 = f^6
-    fe_mul(t1, t1, f);       // t1 = f^7
-
-    fe_sq(t2, t1);           // t2 = f^14
-    fe_mul(t2, t2, f);       // t2 = f^15
-
-    fe_sq(t3, t2);           // t3 = f^30
-    fe_mul(t3, t3, t2);      // t3 = f^45
-
-    fe_sq(t4, t3);           // t4 = f^90
-    fe_mul(t4, t4, t3);      // t4 = f^135
-
-    fe_sq(t5, t4);           // t5 = f^270
-    fe_mul(t5, t5, t2);      // t5 = f^285
-
-    fe_sq(t6, t5);           // t6 = f^570
-    fe_mul(t6, t6, t5);      // t6 = f^855
-
-    fe_sq(t7, t6);           // t7 = f^1710
-    fe_mul(t7, t7, t6);      // t7 = f^2565
-
-    // Now raise to power 2^250 using repeated squarings
-    // Start with t7 = f^2565
-    fe_sq(work, t7);         // f^5130
-    for (int i = 1; i < 5; i++) fe_sq(work, work);  // f^(2565 * 32) = f^82080
-    fe_mul(work, work, t7);  // f^82080 * 2565 = f^84645
-
-    // 2^10 squarings to get to 2^10 * 84645 = 8668160
-    for (int i = 0; i < 10; i++) fe_sq(work, work);
-    fe_mul(work, work, t7);  // mix in f^2565
-
-    // 2^5 squarings
-    for (int i = 0; i < 5; i++) fe_sq(work, work);
-    fe_mul(work, work, t5);  // mix in f^285
-
-    // 2^5 squarings
-    for (int i = 0; i < 5; i++) fe_sq(work, work);
-    fe_mul(work, work, t5);  // mix in f^285
-
-    // 2^5 squarings
-    for (int i = 0; i < 5; i++) fe_sq(work, work);
-    fe_mul(work, work, t3);  // mix in f^45
-
-    // 2^5 squarings
-    for (int i = 0; i < 5; i++) fe_sq(work, work);
-    fe_mul(work, work, t0);  // mix in f^3
-
-    // Final squarings to reach 2^252
-    for (int i = 0; i < 3; i++) fe_sq(work, work);
-    fe_mul(work, work, f);   // mix in f^1
-
-    // Two final squarings to get to 2^255
-    fe_sq(work, work);
-    fe_sq(work, work);
-    fe_mul(work, work, f);   // final multiply by f
-
-    // At this point work = f^(2^255 - 21) = f^(p-2) = f^(-1) mod p
-    memcpy(h, work, sizeof(fe25519));
-}
-
-// Scalar multiplication using Montgomery ladder
-// X25519(u, k) = Montgomery ladder on Curve25519
-static void x25519_scalarmult(uint8_t* out, const uint8_t* scalar, const uint8_t* point) {
-    fe25519 x1, x2, x3, z2, z3, tmp0, tmp1;
-    
-    // Load point u-coordinate
-    fe_from_bytes(x1, point);
-    
-    // Initialize ladder variables
-    memset(x2, 0, sizeof(fe25519)); x2[0] = 1;  // x2 = 1
-    memset(z2, 0, sizeof(fe25519));              // z2 = 0
-    memcpy(x3, x1, sizeof(fe25519));             // x3 = u
-    memcpy(z3, x2, sizeof(fe25519));             // z3 = 1
-    
-    // Montgomery ladder
-    uint8_t k[32];
-    memcpy(k, scalar, 32);
-    x25519_clamp(k);
-    
-    int swap = 0;
-    for (int pos = 254; pos >= 0; pos--) {
-        int bit = (k[pos / 8] >> (pos % 8)) & 1;
-        swap ^= bit;
-        
-        // Conditional swap
-        for (int i = 0; i < 5; i++) {
-            uint64_t t = swap ? (x2[i] ^ x3[i]) : 0;
-            x2[i] ^= t;
-            x3[i] ^= t;
-            t = swap ? (z2[i] ^ z3[i]) : 0;
-            z2[i] ^= t;
-            z3[i] ^= t;
+// Fully reduce h modulo p = 2^255-19, in place, given h < 2^256.
+static void fe_reduce_full(fe h){
+    for (int pass = 0; pass < 2; pass++) {
+        uint64_t borrow = 0;
+        uint32_t tmp[8];
+        for (int i=0;i<8;i++){
+            int64_t d = (int64_t)h[i] - (int64_t)P25519[i] - (int64_t)borrow;
+            if (d < 0) { d += ((int64_t)1<<32); borrow = 1; } else borrow = 0;
+            tmp[i] = (uint32_t)d;
         }
-        swap = bit;
-        
-        // A = x2 + z2; AA = A^2
-        fe_add(tmp0, x2, z2);
-        fe_sq(tmp0, tmp0);  // AA
-        
-        // B = x2 - z2; BB = B^2
-        fe_sub(tmp1, x2, z2);
-        fe_sq(tmp1, tmp1);  // BB
-        
-        // E = AA - BB
-        fe25519 e;
-        fe_sub(e, tmp0, tmp1);
-        
-        // C = x3 + z3; D = x3 - z3
-        fe25519 c, d;
-        fe_add(c, x3, z3);
-        fe_sub(d, x3, z3);
-        
-        // DA = D * AA
-        fe25519 da;
-        fe_mul(da, d, tmp0);
-        
-        // CB = C * BB
-        fe25519 cb;
-        fe_mul(cb, c, tmp1);
-        
-        // x3 = (DA + CB)^2
-        fe_add(x3, da, cb);
-        fe_sq(x3, x3);
-        
-        // z3 = x1 * (DA - CB)^2
-        fe_sub(z3, da, cb);
-        fe_sq(z3, z3);
-        fe_mul(z3, z3, x1);
-        
-        // x2 = AA * BB
-        fe_mul(x2, tmp0, tmp1);
-        
-        // z2 = E * (AA + a24 * E)
-        fe25519 a24_e;
-        a24_e[0] = 121666;
-        for (int i = 1; i < 5; i++) a24_e[i] = 0;
-        fe_mul(a24_e, e, a24_e);
-        fe_add(z2, tmp0, a24_e);
-        fe_mul(z2, z2, e);
+        if (!borrow) memcpy(h, tmp, sizeof(fe));
     }
-    
-    // Final conditional swap
-    for (int i = 0; i < 5; i++) {
-        uint64_t t = swap ? (x2[i] ^ x3[i]) : 0;
-        x2[i] ^= t;
-        x3[i] ^= t;
-        t = swap ? (z2[i] ^ z3[i]) : 0;
-        z2[i] ^= t;
-        z3[i] ^= t;
-    }
-    
-    // Compute output: x2 * z2^(-1)
-    fe_invert(z2, z2);
-    fe_mul(x2, x2, z2);
-    fe_to_bytes(out, x2);
 }
 
-// X25519 base point (u-coordinate of generator)
+static void fe_tobytes(uint8_t *s, const fe h_in){
+    fe h; fe_copy(h, h_in);
+    fe_reduce_full(h);
+    for (int i=0;i<8;i++){
+        s[i*4+0] = h[i] & 0xFF;
+        s[i*4+1] = (h[i]>>8) & 0xFF;
+        s[i*4+2] = (h[i]>>16) & 0xFF;
+        s[i*4+3] = (h[i]>>24) & 0xFF;
+    }
+}
+
+static void fe_add(fe h, const fe f, const fe g){
+    uint64_t carry = 0;
+    uint32_t tmp[8];
+    for (int i=0;i<8;i++){
+        uint64_t s = (uint64_t)f[i] + g[i] + carry;
+        tmp[i] = (uint32_t)s;
+        carry = s >> 32;
+    }
+    // carry here is an overflow bit at weight 2^256 == 38 (mod p),
+    // since 2^255 == p+19, so 2^256 == 2p+38 == 38 (mod p).
+    if (carry) {
+        uint64_t c2 = carry * 38;
+        for (int i=0;i<8 && c2;i++){
+            uint64_t s = (uint64_t)tmp[i] + c2;
+            tmp[i] = (uint32_t)s;
+            c2 = s >> 32;
+        }
+    }
+    memcpy(h, tmp, sizeof(fe));
+    fe_reduce_full(h);
+}
+
+static void fe_sub(fe h, const fe f, const fe g){
+    // Compute f + 2P - g using a 9-limb intermediate so the carry out of
+    // the top 32-bit limb (which WILL happen, since 2P = 2^256 - 38 is
+    // just below 2^256) is not silently discarded.
+    uint32_t twop[8]; uint64_t c=0;
+    for (int i=0;i<8;i++){ uint64_t s=(uint64_t)P25519[i]+P25519[i]+c; twop[i]=(uint32_t)s; c=s>>32; }
+    uint64_t acc[9] = {0};
+    c = 0;
+    for (int i=0;i<8;i++){
+        uint64_t s = (uint64_t)f[i] + twop[i] + c;
+        acc[i] = (uint32_t)s;
+        c = s >> 32;
+    }
+    acc[8] = c;
+
+    int64_t borrow = 0;
+    uint64_t diff[9];
+    for (int i=0;i<8;i++){
+        int64_t d = (int64_t)acc[i] - (int64_t)g[i] - borrow;
+        if (d < 0) { d += ((int64_t)1<<32); borrow = 1; } else borrow = 0;
+        diff[i] = (uint32_t)d;
+    }
+    diff[8] = acc[8] - borrow;
+
+    uint32_t tmp[8];
+    for (int i=0;i<8;i++) tmp[i] = (uint32_t)diff[i];
+    uint64_t extra = diff[8];
+    while (extra) {
+        uint64_t add = extra * 38;
+        extra = 0;
+        for (int i=0;i<8 && add;i++){
+            uint64_t s = (uint64_t)tmp[i] + add;
+            tmp[i] = (uint32_t)s;
+            add = s >> 32;
+        }
+        extra = add;
+    }
+    memcpy(h, tmp, sizeof(fe));
+    fe_reduce_full(h);
+}
+
+static void fe_cswap(fe f, fe g, int32_t swap) {
+    uint32_t mask = (uint32_t)(-swap);
+    for (int i = 0; i < 8; i++) {
+        uint32_t x = (f[i] ^ g[i]) & mask;
+        f[i] ^= x; g[i] ^= x;
+    }
+}
+
+// Reduce a 512-bit product (16 x 32-bit limbs) modulo p = 2^255 - 19.
+static void reduce512(fe h, const uint32_t prod[16]){
+    uint32_t L[8], H[8];
+    memcpy(L, prod, 8*4);
+    memcpy(H, prod+8, 8*4);
+    uint64_t acc[9] = {0};
+    for (int i=0;i<8;i++) acc[i] += L[i];
+    uint64_t carry = 0;
+    uint64_t t[9] = {0};
+    for (int i=0;i<8;i++){
+        uint64_t p = (uint64_t)H[i]*38 + carry;
+        t[i] = p & 0xFFFFFFFFu;
+        carry = p >> 32;
+    }
+    t[8] = carry;
+    uint64_t c2 = 0;
+    uint32_t sum[9];
+    for (int i=0;i<9;i++){
+        uint64_t s = acc[i] + t[i] + c2;
+        sum[i] = (uint32_t)s;
+        c2 = s >> 32;
+    }
+    uint64_t extra = sum[8];
+    uint32_t res[8];
+    memcpy(res, sum, 8*4);
+    while (extra) {
+        uint64_t add = extra * 38;
+        extra = 0;
+        uint64_t c3 = add;
+        for (int i=0;i<8 && c3;i++){
+            uint64_t s = (uint64_t)res[i] + c3;
+            res[i] = (uint32_t)s;
+            c3 = s >> 32;
+        }
+        extra = c3;
+    }
+    memcpy(h, res, sizeof(fe));
+    fe_reduce_full(h);
+}
+
+static void fe_mul(fe h, const fe f, const fe g) {
+    uint64_t acc[16] = {0};
+    for (int i=0;i<8;i++){
+        uint64_t carry = 0;
+        for (int j=0;j<8;j++){
+            uint64_t p = (uint64_t)f[i]*g[j] + acc[i+j] + carry;
+            acc[i+j] = (uint32_t)p;
+            carry = p >> 32;
+        }
+        acc[i+8] += carry;
+    }
+    uint32_t prod[16];
+    for (int i=0;i<16;i++) prod[i] = (uint32_t)acc[i];
+    reduce512(h, prod);
+}
+
+static void fe_sq(fe h, const fe f) { fe_mul(h, f, f); }
+
+static void fe_mul121666(fe h, const fe f) {
+    uint64_t carry = 0;
+    uint32_t res[9];
+    for (int i=0;i<8;i++){
+        uint64_t p = (uint64_t)f[i]*121666 + carry;
+        res[i] = (uint32_t)p;
+        carry = p>>32;
+    }
+    res[8] = (uint32_t)carry;
+    uint32_t prod[16] = {0};
+    memcpy(prod, res, 8*4);
+    prod[8] = res[8];
+    reduce512(h, prod);
+}
+
+static void fe_invert(fe out, const fe z) {
+    fe t0,t1,t2,t3; int i;
+    fe_sq(t0,z);
+    fe_sq(t1,t0); fe_sq(t1,t1);
+    fe_mul(t1,z,t1);
+    fe_mul(t0,t0,t1);
+    fe_sq(t2,t0);
+    fe_mul(t1,t1,t2);
+    fe_sq(t2,t1); for(i=1;i<5;i++) fe_sq(t2,t2);
+    fe_mul(t1,t2,t1);
+    fe_sq(t2,t1); for(i=1;i<10;i++) fe_sq(t2,t2);
+    fe_mul(t2,t2,t1);
+    fe_sq(t3,t2); for(i=1;i<20;i++) fe_sq(t3,t3);
+    fe_mul(t2,t3,t2);
+    for(i=0;i<10;i++) fe_sq(t2,t2);
+    fe_mul(t1,t2,t1);
+    fe_sq(t2,t1); for(i=1;i<50;i++) fe_sq(t2,t2);
+    fe_mul(t2,t2,t1);
+    fe_sq(t3,t2); for(i=1;i<100;i++) fe_sq(t3,t3);
+    fe_mul(t2,t3,t2);
+    for(i=0;i<50;i++) fe_sq(t2,t2);
+    fe_mul(t1,t2,t1);
+    for(i=0;i<5;i++) fe_sq(t1,t1);
+    fe_mul(out,t1,t0);
+}
+
+// Clamp a scalar for X25519 (RFC 7748 §5)
+static void x25519_clamp(uint8_t* k) {
+    k[0] &= 248;
+    k[31] &= 127;
+    k[31] |= 64;
+}
+
+// X25519 base point (u-coordinate of generator = 9)
 static const uint8_t x25519_basepoint[32] = {
     9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
+// Montgomery ladder scalar multiplication
+static void x25519_scalarmult(uint8_t* out, const uint8_t* scalar, const uint8_t* point) {
+    fe x1, x2, x3, z2, z3, tmp0, tmp1;
+    fe_frombytes(x1, point);
+    fe_1(x2); fe_0(z2);
+    fe_copy(x3, x1); fe_1(z3);
+    uint8_t k[32];
+    memcpy(k, scalar, 32);
+    x25519_clamp(k);
+    int swap = 0;
+    for (int pos = 254; pos >= 0; pos--) {
+        int bit = (k[pos / 8] >> (pos % 8)) & 1;
+        swap ^= bit;
+        fe_cswap(x2, x3, swap);
+        fe_cswap(z2, z3, swap);
+        swap = bit;
+        fe A, B, C, D, DA, CB, AA, BB, E;
+        fe_add(A, x2, z2);
+        fe_sub(B, x2, z2);
+        fe_add(C, x3, z3);
+        fe_sub(D, x3, z3);
+        fe_mul(DA, D, A);
+        fe_mul(CB, C, B);
+        fe_add(tmp0, DA, CB);
+        fe_sq(x3, tmp0);
+        fe_sub(tmp1, DA, CB);
+        fe_sq(z3, tmp1);
+        fe_mul(z3, z3, x1);
+        fe_sq(AA, A);
+        fe_sq(BB, B);
+        fe_mul(x2, AA, BB);
+        fe_sub(E, AA, BB);
+        fe_mul121666(tmp0, E);
+        fe_add(tmp0, BB, tmp0);
+        fe_mul(z2, E, tmp0);
+    }
+    fe_cswap(x2, x3, swap);
+    fe_cswap(z2, z3, swap);
+    fe_invert(z2, z2);
+    fe_mul(x2, x2, z2);
+    fe_tobytes(out, x2);
+}
+
 // Generate X25519 key pair
 int x25519_generate_keypair(uint8_t* public_key, uint8_t* private_key) {
-    // Generate random private key
     tls_get_random(private_key, 32);
-    
-    // Clamp the scalar
     x25519_clamp(private_key);
-    
-    // Compute public key: public_key = basepoint * private_key
     x25519_scalarmult(public_key, private_key, x25519_basepoint);
-    
     return 0;
 }
 
 // Compute X25519 shared secret
 int x25519_compute_shared(const uint8_t* private_key, const uint8_t* peer_public,
                           uint8_t* shared_secret) {
-    // Compute shared secret: shared = peer_public * private_key
     x25519_scalarmult(shared_secret, private_key, peer_public);
-    
     // Check for all-zero output (invalid public key)
     int all_zero = 1;
     for (int i = 0; i < 32; i++) {
-        if (shared_secret[i] != 0) {
-            all_zero = 0;
-            break;
-        }
+        if (shared_secret[i] != 0) { all_zero = 0; break; }
     }
-    
-    if (all_zero) {
-        return -1;  // Invalid public key
-    }
-    
-    return 0;
+    return all_zero ? -1 : 0;
 }
 
 // ============================================================================
@@ -1257,4 +1151,38 @@ int tls13_get_key_len(uint16_t cipher_suite) {
         default:
             return 16;
     }
+}
+
+// In tls13.c, add at the bottom:
+int x25519_self_test(void) {
+    // RFC 7748 Section 5.2 test vector
+    static const uint8_t scalar[] = {
+        0xa5,0x46,0xe3,0x6b,0xf0,0x52,0x7c,0x9d,
+        0x3b,0x16,0x15,0x4b,0x82,0x46,0x5e,0xdd,
+        0x62,0x14,0x4c,0x0a,0xc1,0xfc,0x5a,0x18,
+        0x50,0x6a,0x22,0x44,0xba,0x44,0x9a,0xc4
+    };
+    static const uint8_t point[] = {
+        0xe6,0xdb,0x68,0x67,0x58,0x30,0x30,0xdb,
+        0x35,0x94,0xc1,0xa4,0x24,0xb1,0x5f,0x7c,
+        0x72,0x66,0x24,0xec,0x26,0xb3,0x35,0x3b,
+        0x10,0xa9,0x03,0xa6,0xd0,0xab,0x1c,0x4c
+    };
+    static const uint8_t expected[] = {
+        0xc3,0xda,0x55,0x37,0x9d,0xe9,0xc6,0x90,
+        0x8e,0x94,0xea,0x4d,0xf2,0x8d,0x08,0x4f,
+        0x32,0xec,0xcf,0x03,0x49,0x1c,0x71,0xf7,
+        0x54,0xb4,0x07,0x55,0x77,0xa2,0x85,0x52
+    };
+    uint8_t result[32];
+    x25519_scalarmult(result, scalar, point);
+    for (int i = 0; i < 32; i++) {
+        if (result[i] != expected[i]) {
+            s_printf("[X25519] SELF-TEST FAILED at byte %d: got %02X expected %02X\n",
+                     i, result[i], expected[i]);
+            return -1;
+        }
+    }
+    s_printf("[X25519] Self-test PASSED\n");
+    return 0;
 }

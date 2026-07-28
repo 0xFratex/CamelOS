@@ -150,6 +150,9 @@ int selected_drive_idx = -1;
 int util_drive_idx = 0;
 int util_part_idx = -1;
 
+extern uint32_t get_tick_count(void);   // ms-resolution tick (same one disk_tools.c uses)
+uint32_t install_start_tick = 0;        // wall-clock anchor for "Time Remaining"
+
 // Modal state
 int modal_active = 0;
 int modal_just_opened = 0;
@@ -245,9 +248,32 @@ static const uint8_t cursor_bmp[] = {
 // =============================================================================
 
 void add_log(const char* msg) {
-    // VGA logs removed — no on-screen log text during installation.
-    // Debug output should go to serial port only.
-    (void)msg;  // Suppress unused parameter warning
+    if (!msg || !*msg) return;
+
+    int cur  = (int)strlen(install_log);
+    int need = (int)strlen(msg);
+    int cap  = (int)sizeof(install_log);          // 2048
+
+    // If appending would overflow, drop the OLDEST lines so we keep a live tail.
+    if (cur + need + 2 >= cap) {
+        int keep = cap - need - 2;
+        if (keep < 0)   keep = 0;
+        if (keep > cur) keep = cur;
+        int start = cur - keep;
+        while (start < cur && install_log[start] != '\n') start++;  // align to line
+        if (start < cur) start++;                                  // skip the '\n'
+        int movelen = cur - start;
+        for (int i = 0; i < movelen; i++) install_log[i] = install_log[start + i]; // left-shift (safe: dst<src)
+        install_log[movelen] = 0;
+        cur = movelen;
+    }
+
+    if (cur + need + 1 < cap) {
+        memcpy(install_log + cur, msg, need);
+        install_log[cur + need]     = '\n';
+        install_log[cur + need + 1] = 0;
+    }
+    log_line_count++;
 }
 
 // =============================================================================
@@ -441,6 +467,51 @@ void draw_cursor(void) {
 // =============================================================================
 // HELPERS
 // =============================================================================
+
+// --- Colour math (integer only, no float / libgcc) -------------------------
+static uint32_t lerp_color(uint32_t a, uint32_t b, int t) {   // t = 0..256
+    if (t < 0) t = 0; if (t > 256) t = 256;
+    int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+    int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+    int r = (ar * (256 - t) + br * t) >> 8;
+    int g = (ag * (256 - t) + bg * t) >> 8;
+    int bl= (ab * (256 - t) + bb * t) >> 8;
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bl;
+}
+static uint32_t lighten(uint32_t c, int a) {
+    int r = ((c >> 16) & 0xFF) + a; if (r > 255) r = 255;
+    int g = ((c >> 8)  & 0xFF) + a; if (g > 255) g = 255;
+    int b = ( c        & 0xFF) + a; if (b > 255) b = 255;
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+static uint32_t darken(uint32_t c, int a) {
+    int r = ((c >> 16) & 0xFF) - a; if (r < 0) r = 0;
+    int g = ((c >> 8)  & 0xFF) - a; if (g < 0) g = 0;
+    int b = ( c        & 0xFF) - a; if (b < 0) b = 0;
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+static int is_light(uint32_t c) {
+    int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    return (r * 299 + g * 587 + b * 114) / 1000 > 150;
+}
+// "src over dst" composite; src carries alpha in its top byte, dst is opaque.
+static uint32_t blend_over(uint32_t dst, uint32_t src) {
+    uint32_t a = src >> 24;
+    if (a == 0)        return dst;
+    if (a >= 255)      return src | 0xFF000000u;
+    int sr = (src >> 16) & 0xFF, sg = (src >> 8) & 0xFF, sb = src & 0xFF;
+    int dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
+    int r = (sr * (int)a + dr * (int)(255 - a)) >> 8;
+    int g = (sg * (int)a + dg * (int)(255 - a)) >> 8;
+    int b = (sb * (int)a + db * (int)(255 - a)) >> 8;
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+static uint32_t isqrt_u(uint32_t n) {           // integer square root (Newton)
+    if (n == 0) return 0;
+    uint32_t x = n, y = (x + 1) / 2;
+    while (y < x) { x = y; y = (x + n / x) / 2; }
+    return x;
+}
 
 void format_disk_size(uint64_t sectors, char* out) {
     if (sectors == 0) { strcpy(out, "0 MB"); return; }
@@ -975,24 +1046,54 @@ void draw_centered_text(int y, const char* str, int scale, uint32_t color) {
     gfx_draw_string_scaled((WIN_W - w) / 2, y, str, color, scale);
 }
 
+static void draw_pill(int x, int y, int w, int h, const char* label,
+                      uint32_t col, int enabled) {
+    int r  = h / 2;
+    int br = r - 1; if (br < 1) br = 1;
+    uint32_t top    = enabled ? lighten(col, 34) : 0xFFFBFBFBu;
+    uint32_t bot    = enabled ? darken(col, 14)  : 0xFFE2E2E6u;
+    uint32_t border = enabled ? darken(col, 60)  : 0xFFB6B6BAu;
+    uint32_t txt    = enabled ? (is_light(col) ? C_TEXT_DARK : 0xFFFFFFFFu) : 0xFF9A9A9Eu;
+    (void)top;
+
+    gfx_fill_rounded_rect(x + 2, y + 3, w, h, C_SHADOW, r);
+    gfx_fill_rounded_rect(x, y, w, h, border, r);
+    gfx_fill_rounded_rect(x + 1, y + 1, w - 2, h - 2, bot, br);
+    int gh = (h - 2) / 2;
+    int gr = br - 1; if (gr < 1) gr = 1;
+    if (gh > 2)
+        gfx_fill_rounded_rect(x + 2, y + 2, w - 4, gh, 0x55FFFFFFu, gr);
+
+    int tlen = (int)strlen(label) * 8;
+    gfx_draw_string(x + (w - tlen) / 2, y + (h - 16) / 2, label, txt);
+}
+
+
 int ui_button(int x, int y, int w, int h, const char* label, uint32_t color) {
     if (modal_active) return 0;
-    int hover   = (mx >= x && mx <= x+w && my >= y && my <= y+h);
+    int hover   = (mx >= x && mx <= x + w && my >= y && my <= y + h);
     int pressed = (hover && mb_left);
-    uint32_t bg = color;
-    if (hover) {
-        uint32_t r=(bg>>16)&0xFF, g=(bg>>8)&0xFF, b=bg&0xFF;
-        if(r>20) r-=20;
-        if(g>20) g-=20;
-        if(b>20) b-=20;
-        bg = 0xFF000000|(r<<16)|(g<<8)|b;
-    }
-    gfx_fill_rounded_rect(x+2, y+3, w, h, C_SHADOW, 10);
-    gfx_fill_rounded_rect(x, y, w, h, bg, 10);
-    if (pressed) gfx_draw_rect(x, y, w, h, C_BORDER);
-    int tlen = strlen(label) * 8;
-    uint32_t tcol = (color == C_WHITE || color == C_BG) ? C_TEXT_DARK : C_WHITE;
-    gfx_draw_string(x + (w-tlen)/2, y + (h-16)/2 + (pressed?1:0), label, tcol);
+    int r  = h / 2;
+    int br = r - 1; if (br < 1) br = 1;
+
+    uint32_t col = color;
+    if (hover && !pressed) col = darken(color, 12);
+    int yy = y + (pressed ? 1 : 0);
+
+    uint32_t border = darken(color, 60);
+    uint32_t bot    = darken(col, pressed ? 8 : 14);
+
+    gfx_fill_rounded_rect(x + 2, yy + 3, w, h, C_SHADOW, r);          /* drop shadow   */
+    gfx_fill_rounded_rect(x, yy, w, h, border, r);                    /* rounded border*/
+    gfx_fill_rounded_rect(x + 1, yy + 1, w - 2, h - 2, bot, br);      /* body (inset 1)*/
+    int gh = (h - 2) / 2;
+    int gr = br - 1; if (gr < 1) gr = 1;
+    if (gh > 2)
+        gfx_fill_rounded_rect(x + 2, yy + 2, w - 4, gh, 0x55FFFFFFu, gr); /* top gloss */
+
+    int tlen = (int)strlen(label) * 8;
+    uint32_t tcol = is_light(color) ? C_TEXT_DARK : 0xFFFFFFFFu;
+    gfx_draw_string(x + (w - tlen) / 2, yy + (h - 16) / 2, label, tcol);
     return (hover && mb_clicked);
 }
 
@@ -1012,85 +1113,104 @@ int ui_icon_button(int x, int y, int w, int h, const char* label, uint32_t bg, u
 // MENU BAR
 // =============================================================================
 
+static void mrow(int rx, int ry, int rw, const char* label) {
+    int hov = (mx >= rx && mx < rx + rw && my >= ry && my < ry + 20);
+    if (hov) {
+        gfx_fill_rounded_rect(rx + 5, ry + 2, rw - 10, 16, 0xFF2D6FE0u, 4);
+        gfx_draw_string(rx + 15, ry + 6, label, 0xFFFFFFFFu);
+    } else {
+        gfx_draw_string(rx + 15, ry + 6, label, 0xFF333333u);
+    }
+}
+static int mtitle(int cur_x, const char* name, int id) {
+    int w  = measure_text_width(name) + 20;
+    int ph = 20;
+    int py0 = (HEADER_HEIGHT - ph) / 2;
+    int hovered = (mx >= cur_x && mx < cur_x + w && my < HEADER_HEIGHT);
+    int open    = (open_menu_id == id);
+
+    if (open) {
+        gfx_fill_rounded_rect(cur_x, py0, w, ph, 0xFF2D6FE0u, 5);
+        gfx_fill_rect(cur_x + 2, py0 + ph - 5, w - 4, 9, 0xFF2D6FE0u); /* flat bottom -> merges with dropdown */
+        gfx_draw_string(cur_x + 10, py0 + 6, name, 0xFFFFFFFFu);
+    } else if (hovered) {
+        gfx_fill_rounded_rect(cur_x, py0, w, ph, 0x30000000u, 5);
+        gfx_draw_string(cur_x + 10, py0 + 6, name, C_TEXT_DARK);
+    } else {
+        gfx_draw_string(cur_x + 10, py0 + 6, name, 0xFF333333u);
+    }
+    return w;
+}
+
 void render_menu_bar(void) {
-    // Aqua-style gradient header
-    for (int i = 0; i < HEADER_HEIGHT; i++) {
-        uint32_t col = (i < HEADER_HEIGHT/2) ? 0xFFF8F8F8 : 0xFFE8E8E8;
-        gfx_fill_rect(0, i, WIN_W, 1, col);
-    }
-    gfx_draw_rect(0, HEADER_HEIGHT, WIN_W, 1, 0xFF888888);
+    for (int i = 0; i < HEADER_HEIGHT; i++)
+        gfx_fill_rect(0, i, WIN_W, 1,
+                      lerp_color(0xFFF7F7F7u, 0xFFD6D6D6u, i * 256 / HEADER_HEIGHT));
+    gfx_fill_rect(0, HEADER_HEIGHT,     WIN_W, 1, 0xFF8E8E90u);
+    gfx_fill_rect(0, HEADER_HEIGHT + 1, WIN_W, 1, 0x28000000u);
+    gfx_fill_rect(0, 0,                 WIN_W, 1, 0xFFFFFFFFu);
 
-    int cur_x = 15;
+    /* brand tile */
+    gfx_fill_rounded_rect(6, 6, 15, 16, C_ACCENT, 4);
+    gfx_fill_rounded_rect(6, 6, 15, 8,  0x55FFFFFFu, 3);
+    gfx_draw_string(9, 8, "C", 0xFFFFFFFFu);
 
-    // "Camel" menu
-    int w = measure_text_width("Camel") + 20;
-    gfx_draw_string(cur_x + 10, 8, "Camel", 0xFF444444);
+    int cur_x = 26;
+    int my2   = HEADER_HEIGHT;
+    int w;
+
+    /* --- Camel --- */
+    w = mtitle(cur_x, "Camel", -1);
     if (open_menu_id == -1) {
-        gfx_fill_rect(cur_x, 0, w, HEADER_HEIGHT, 0xFF3D89D6);
-        gfx_draw_string(cur_x + 10, 8, "Camel", 0xFFFFFFFF);
-        int my2 = HEADER_HEIGHT;
-        gfx_fill_rect(cur_x, my2, 160, 86, 0xFFF2F2F2);
-        gfx_draw_rect(cur_x, my2, 160, 86, 0xFF888888);
-        gfx_draw_string(cur_x + 10, my2 + 10, "About Camel OS", 0xFF444444);
-        gfx_draw_rect(cur_x + 5, my2 + 30, 150, 1, 0xFFCCCCCC);
-        gfx_draw_string(cur_x + 10, my2 + 40, "Restart", 0xFF444444);
-        gfx_draw_string(cur_x + 10, my2 + 60, "Shutdown", 0xFF444444);
+        gfx_fill_rounded_rect(cur_x + 3, my2 + 3, 160, 86, C_SHADOW, 8);
+        gfx_fill_rounded_rect(cur_x, my2, 160, 86, 0xFF9A9A9Cu, 8);          /* rounded border */
+        gfx_fill_rounded_rect(cur_x + 1, my2 + 1, 158, 84, 0xFFF4F4F4u, 7);  /* panel          */
+        gfx_fill_rect(cur_x + 6, my2 + 30, 148, 1, 0xFFD8D8D8u);
+        mrow(cur_x, my2 + 6,  160, "About Camel OS");
+        mrow(cur_x, my2 + 40, 160, "Restart");
+        mrow(cur_x, my2 + 60, 160, "Shutdown");
     }
     cur_x += w;
 
-    // "View" menu
-    w = measure_text_width("View") + 20;
-    gfx_draw_string(cur_x + 10, 8, "View", 0xFF444444);
+    /* --- View --- */
+    w = mtitle(cur_x, "View", 0);
     if (open_menu_id == 0) {
-        gfx_fill_rect(cur_x, 0, w, HEADER_HEIGHT, 0xFF3D89D6);
-        gfx_draw_string(cur_x + 10, 8, "View", 0xFFFFFFFF);
-        int my2 = HEADER_HEIGHT;
-        gfx_fill_rect(cur_x, my2, 180, 46, 0xFFF2F2F2);
-        gfx_draw_rect(cur_x, my2, 180, 46, 0xFF888888);
-        const char* items[] = { "Installer Logs" };
-        for (int i = 0; i < 1; i++) {
-            int iy = my2 + 3 + i * 20;
-            gfx_draw_string(cur_x + 15, iy + 6, items[i], 0xFF444444);
-        }
+        gfx_fill_rounded_rect(cur_x + 3, my2 + 3, 180, 46, C_SHADOW, 8);
+        gfx_fill_rounded_rect(cur_x, my2, 180, 46, 0xFF9A9A9Cu, 8);
+        gfx_fill_rounded_rect(cur_x + 1, my2 + 1, 178, 44, 0xFFF4F4F4u, 7);
+        mrow(cur_x, my2 + 3, 180, "Installer Logs");
     }
     cur_x += w;
 
-    // "Tools" menu (NEW)
-    w = measure_text_width("Tools") + 20;
-    gfx_draw_string(cur_x + 10, 8, "Tools", 0xFF444444);
+    /* --- Tools --- */
+    w = mtitle(cur_x, "Tools", 1);
     if (open_menu_id == 1) {
-        gfx_fill_rect(cur_x, 0, w, HEADER_HEIGHT, 0xFF3D89D6);
-        gfx_draw_string(cur_x + 10, 8, "Tools", 0xFFFFFFFF);
-        int my2 = HEADER_HEIGHT;
-        gfx_fill_rect(cur_x, my2, 200, 66, 0xFFF2F2F2);
-        gfx_draw_rect(cur_x, my2, 200, 66, 0xFF888888);
-        const char* items[] = { "System Check", "Disk Utility" };
-        for (int i = 0; i < 2; i++) {
-            int iy = my2 + 3 + i * 20;
-            gfx_draw_string(cur_x + 15, iy + 6, items[i], 0xFF444444);
-        }
+        gfx_fill_rounded_rect(cur_x + 3, my2 + 3, 200, 66, C_SHADOW, 8);
+        gfx_fill_rounded_rect(cur_x, my2, 200, 66, 0xFF9A9A9Cu, 8);
+        gfx_fill_rounded_rect(cur_x + 1, my2 + 1, 198, 64, 0xFFF4F4F4u, 7);
+        gfx_fill_rect(cur_x + 6, my2 + 22, 188, 1, 0xFFD8D8D8u);
+        mrow(cur_x, my2 + 3,  200, "System Check");
+        mrow(cur_x, my2 + 23, 200, "Disk Utility");
     }
     cur_x += w;
 
-    // "Help" menu
-    w = measure_text_width("Help") + 20;
-    gfx_draw_string(cur_x + 10, 8, "Help", 0xFF444444);
+    /* --- Help --- */
+    w = mtitle(cur_x, "Help", 2);
     if (open_menu_id == 2) {
-        gfx_fill_rect(cur_x, 0, w, HEADER_HEIGHT, 0xFF3D89D6);
-        gfx_draw_string(cur_x + 10, 8, "Help", 0xFFFFFFFF);
-        int my2 = HEADER_HEIGHT;
-        gfx_fill_rect(cur_x, my2, 180, 46, 0xFFF2F2F2);
-        gfx_draw_rect(cur_x, my2, 180, 46, 0xFF888888);
-        gfx_draw_string(cur_x + 10, my2 + 10, "Installation Guide", 0xFF444444);
-        gfx_draw_string(cur_x + 10, my2 + 30, "System Requirements", 0xFF444444);
+        gfx_fill_rounded_rect(cur_x + 3, my2 + 3, 180, 46, C_SHADOW, 8);
+        gfx_fill_rounded_rect(cur_x, my2, 180, 46, 0xFF9A9A9Cu, 8);
+        gfx_fill_rounded_rect(cur_x + 1, my2 + 1, 178, 44, 0xFFF4F4F4u, 7);
+        gfx_fill_rect(cur_x + 6, my2 + 28, 168, 1, 0xFFD8D8D8u);
+        mrow(cur_x, my2 + 10, 180, "Installation Guide");
+        mrow(cur_x, my2 + 30, 180, "System Requirements");
     }
 }
 
 int process_menu_bar(int px, int py, int click) {
-    int cur_x = 15;
+    int cur_x = 26;
     int target_menu = -3;
 
-    // "Camel" menu
+    /* Camel */
     int w = measure_text_width("Camel") + 20;
     if (px >= cur_x && px < cur_x + w && py < HEADER_HEIGHT && click) target_menu = -1;
     if (open_menu_id == -1) {
@@ -1099,12 +1219,11 @@ int process_menu_bar(int px, int py, int click) {
             int ry = py - my2;
             if (ry >= 40 && ry < 60) {
                 disk_flush_cache();
-                for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller
+                for (volatile int _i = 0; _i < 100000; _i++) {}
                 outb(0x64, 0xFE);
-            }
-            else if (ry >= 60 && ry < 80) {
+            } else if (ry >= 60 && ry < 80) {
                 disk_flush_cache();
-                for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller
+                for (volatile int _i = 0; _i < 100000; _i++) {}
                 outw(0x604, 0x2000); asm volatile("cli; hlt");
             }
             open_menu_id = -2;
@@ -1112,7 +1231,7 @@ int process_menu_bar(int px, int py, int click) {
     }
     cur_x += w;
 
-    // "View" menu
+    /* View */
     w = measure_text_width("View") + 20;
     if (px >= cur_x && px < cur_x + w && py < HEADER_HEIGHT && click) target_menu = 0;
     if (open_menu_id == 0) {
@@ -1123,7 +1242,7 @@ int process_menu_bar(int px, int py, int click) {
     }
     cur_x += w;
 
-    // "Tools" menu (NEW)
+    /* Tools */
     w = measure_text_width("Tools") + 20;
     if (px >= cur_x && px < cur_x + w && py < HEADER_HEIGHT && click) target_menu = 1;
     if (open_menu_id == 1) {
@@ -1131,7 +1250,7 @@ int process_menu_bar(int px, int py, int click) {
         for (int i = 0; i < 2; i++) {
             int iy = my2 + 3 + i * 20;
             if (click && px >= cur_x && px < cur_x + 200 && py >= iy && py < iy + 20) {
-                if (i == 0) { sys_check_done = 0; current_state = STATE_SYS_CHECK; }
+                if (i == 0)      { sys_check_done = 0; current_state = STATE_SYS_CHECK; }
                 else if (i == 1) { scan_hardware(); current_state = STATE_DISK_UTIL; }
                 open_menu_id = -2;
             }
@@ -1139,7 +1258,7 @@ int process_menu_bar(int px, int py, int click) {
     }
     cur_x += w;
 
-    // "Help" menu
+    /* Help */
     w = measure_text_width("Help") + 20;
     if (px >= cur_x && px < cur_x + w && py < HEADER_HEIGHT && click) target_menu = 2;
 
@@ -1157,9 +1276,11 @@ int process_menu_bar(int px, int py, int click) {
 
 void render_logs_window(void) {
     if (!logs_window_open) return;
+
     int win_w = 600, win_h = 300;
     if (log_window_dragging) {
-        log_window_x += mx - log_window_drag_x; log_window_y += my - log_window_drag_y;
+        log_window_x += mx - log_window_drag_x;
+        log_window_y += my - log_window_drag_y;
         log_window_drag_x = mx; log_window_drag_y = my;
         if (log_window_x < 0) log_window_x = 0;
         if (log_window_y < 0) log_window_y = 0;
@@ -1167,41 +1288,73 @@ void render_logs_window(void) {
         if (log_window_y + win_h > WIN_H) log_window_y = WIN_H - win_h;
     }
     int wx = log_window_x, wy = log_window_y;
-    gfx_fill_rounded_rect(wx+2, wy+2, win_w, win_h, C_SHADOW, 8);
+
+    gfx_fill_rounded_rect(wx + 2, wy + 2, win_w, win_h, C_SHADOW, 8);
     gfx_fill_rounded_rect(wx, wy, win_w, win_h, 0xFFFFFFFF, 8);
     gfx_draw_rect(wx, wy, win_w, win_h, C_BORDER);
+
+    // Title bar
     gfx_fill_rect(wx, wy, win_w, 30, C_SIDEBAR);
     gfx_draw_rect(wx, wy, win_w, 30, C_BORDER);
     gfx_draw_string(wx + 10, wy + 8, "Installer Logs", C_TEXT_DARK);
 
+    // Close button
     int close_x = wx + win_w - 25, close_y = wy + 6;
     gfx_fill_rounded_rect(close_x, close_y, 18, 18, C_DANGER, 3);
     gfx_draw_string(close_x + 4, close_y + 2, "x", 0xFFFFFFFF);
-    if (mx >= close_x && mx < close_x+18 && my >= close_y && my < close_y+18 && mb_clicked)
+    if (mx >= close_x && mx < close_x + 18 && my >= close_y && my < close_y + 18 && mb_clicked)
         logs_window_open = 0;
 
-    if (mx >= wx && mx < wx+win_w && my >= wy && my < wy+30 && mb_clicked) {
+    // Drag handle (title bar)
+    if (mx >= wx && mx < wx + win_w && my >= wy && my < wy + 30 && mb_clicked) {
         log_window_dragging = 1; log_window_drag_x = mx; log_window_drag_y = my;
     }
     if (!mb_left) log_window_dragging = 0;
 
+    // Text area
     int lx = wx + 10, ly = wy + 40, lw = win_w - 20, lh = win_h - 60;
     gfx_fill_rect(lx, ly, lw, lh, C_BG);
     gfx_draw_rect(lx, ly, lw, lh, C_BORDER);
 
+    if (current_state == STATE_INSTALLING)
+        gfx_draw_string(lx + lw - 56, ly + 2, "[ live ]", C_SUCCESS);
+
+    if (!install_log[0]) {
+        gfx_draw_string(lx + 5, ly + 5, "(no log output yet)", C_TEXT_MUTED);
+        return;
+    }
+
+    // Count lines, then start drawing from the LAST max_vis lines (tail view)
+    int total_lines = 0;
+    {
+        const char* q = install_log;
+        while (*q) { if (*q == '\n') total_lines++; q++; }
+        if (q > install_log && *(q - 1) != '\n') total_lines++;
+    }
+    int max_vis = (lh - 12) / 16;
+    if (max_vis < 1) max_vis = 1;
+
+    const char* startp = install_log;
+    if (total_lines > max_vis) {
+        int skip = total_lines - max_vis;
+        while (skip > 0 && *startp) { if (*startp == '\n') skip--; startp++; }
+    }
+
     int line_y = ly + 5;
-    char* ptr = install_log;
-    while (*ptr && line_y < ly + lh - 16) {
-        char* end = strchr(ptr, '\n');
-        if (end) {
-            int len = end - ptr;
-            char line[128]; strncpy(line, ptr, len); line[len] = 0;
+    const char* ptr = startp;
+    while (*ptr && line_y < ly + lh - 4) {
+        const char* end = strchr(ptr, '\n');
+        int len = end ? (int)(end - ptr) : (int)strlen(ptr);
+        if (len > 0) {
+            char line[128];
+            if (len > 127) len = 127;
+            memcpy(line, ptr, len);
+            line[len] = 0;
             gfx_draw_string(lx + 5, line_y, line, C_TEXT_DARK);
-            line_y += 16; ptr = end + 1;
-        } else {
-            gfx_draw_string(lx + 5, line_y, ptr, C_TEXT_DARK);
-            break;
         }
+        line_y += 16;
+        if (!end) break;
+        ptr = end + 1;
     }
 }
 
@@ -1271,18 +1424,46 @@ void render_modal(void) {
     }
 }
 
+static void render_panel_bg(int y0, int h, int wmx, int wmy, int wmR, int alpha) {
+    int r  = wmR * 62 / 100;
+    int R2 = wmR * wmR, r2 = r * r;
+    for (int py = y0; py < y0 + h && py < WIN_H; py++) {
+        int t = (h > 1) ? ((py - y0) * 256 / (h - 1)) : 0; if (t > 256) t = 256;
+        uint32_t base = lerp_color(0xFFF6F6FAu, 0xFFE6E6EEu, t);
+        gfx_fill_rect(0, py, WIN_W, 1, base);
+        if (wmR <= 0 || alpha <= 0) continue;
+        int dy = py - wmy;
+        if (dy < -wmR || dy > wmR) continue;
+        int d2 = R2 - dy * dy; if (d2 < 0) continue;
+        int xo = (int)isqrt_u((uint32_t)d2);
+        int xi = (r2 - dy * dy > 0) ? (int)isqrt_u((uint32_t)(r2 - dy * dy)) : 0;
+        int ady = dy < 0 ? -dy : dy;
+        int gap_limit = (ady * 100) / 119;                 // mouth wedge on +x
+        int grey = (dy < 0) ? (0xCC - (ady * 0x14) / wmR)  // upper facet (lighter)
+                            : (0xAE - (ady * 0x16) / wmR); // lower facet (darker)
+        if (grey < 0) grey = 0; if (grey > 255) grey = 255;
+        uint32_t src = ((uint32_t)alpha << 24) | ((uint32_t)grey << 16)
+                     | ((uint32_t)grey << 8)   |  (uint32_t)grey;
+        uint32_t bl = blend_over(base, src);
+        // spine + left cap  (dx in [-xo .. -(xi>0?xi:0)])
+        int ls = wmx - xo, le = wmx - (xi > 0 ? xi : 0);
+        if (le >= ls) { int x0 = ls < 0 ? 0 : ls, x1 = le > WIN_W - 1 ? WIN_W - 1 : le;
+                        if (x1 >= x0) gfx_fill_rect(x0, py, x1 - x0 + 1, 1, bl); }
+        // right arm / top cap  (dx in [xi .. min(xo, gap_limit)])
+        int re = gap_limit < xo ? gap_limit : xo, rs = wmx + xi, rr = wmx + re;
+        if (rr >= rs) { int x0 = rs < 0 ? 0 : rs, x1 = rr > WIN_W - 1 ? WIN_W - 1 : rr;
+                        if (x1 >= x0) gfx_fill_rect(x0, py, x1 - x0 + 1, 1, bl); }
+    }
+}
+
 // =============================================================================
 // SCREENS
 // =============================================================================
 
 // --- Welcome ---
 void render_welcome(void) {
-    // Subtle top-to-bottom gradient
-    for (int y = 0; y < WIN_H; y++) {
-        uint8_t r = 0xF2, g_ch = 0xF2, b = 0xF7;
-        uint32_t blend = (uint32_t)y * 12 / WIN_H;
-        gfx_fill_rect(0, y, WIN_W, 1, 0xFF000000 | ((r - blend) << 16) | ((g_ch - blend) << 8) | b);
-    }
+
+    render_panel_bg(HEADER_HEIGHT, WIN_H - HEADER_HEIGHT, CX, 360, 235, 0x40);
 
     // Hero icon (shadow + rounded card)
     int icon_y = HEADER_HEIGHT + 40;
@@ -1350,6 +1531,8 @@ void render_welcome(void) {
 
 // --- System Check (NEW) ---
 void render_sys_check(void) {
+    render_panel_bg(HEADER_HEIGHT, WIN_H - HEADER_HEIGHT, CX, 410, 230, 0x80);
+
     if (!sys_check_done) { sys_requirements_check(); sys_check_done = 1; }
     RequirementsCheck* req = sys_requirements_get();
 
@@ -1442,101 +1625,84 @@ void render_sys_check(void) {
 
 // --- Select Disk ---
 void render_select_disk(void) {
+    render_panel_bg(HEADER_HEIGHT, WIN_H - HEADER_HEIGHT, CX, 410, 235, 0x85);
     const char* steps[] = {"Welcome", "Check", "Select Disk", "Install"};
-    render_breadcrumb(HEADER_HEIGHT + 10, steps, 4, 2);
+    render_breadcrumb(HEADER_HEIGHT + 8, steps, 4, 2);
 
-    int content_y = HEADER_HEIGHT + 64;
-    draw_centered_text(content_y, "Select Installation Destination", 2, C_TEXT_DARK);
+    int content_y = HEADER_HEIGHT + 58;
+    draw_centered_text(content_y,      "Install Camel OS", 3, C_TEXT_DARK);
+    draw_centered_text(content_y + 40, "Choose the disk where you want to install Camel OS.", 1, C_TEXT_MUTED);
 
-    // Warning strip
-    gfx_fill_rounded_rect(CX - 360, content_y + 36, 720, 36, 0xFFFFF8E1, 6);
-    gfx_draw_rect(CX - 360, content_y + 36, 720, 36, 0xFFFFCA28);
-    gfx_draw_string(CX - 340, content_y + 48,
-                    "Warning: All existing data on the selected drive will be permanently erased.", 0xFF795500);
+    // gather present drives
+    int present[2], np = 0;
+    for (int i = 0; i < 2; i++) if (ide_devices[i].present) present[np++] = i;
 
-    int card_y = content_y + 88;
-    for (int i = 0; i < 2; i++) {
-        int hover    = (!modal_active && mx >= CX-340 && mx <= CX+340 && my >= card_y && my < card_y+110);
-        int selected = (selected_drive_idx == i);
-        uint32_t border = selected ? C_ACCENT : (hover ? C_TEXT_MUTED : C_BORDER);
-        uint32_t bg     = selected ? 0xFFE3F0FF : C_WHITE;
+    int panel_w = 560, panel_h = 172;
+    int px = (WIN_W - panel_w) / 2, py = content_y + 70;
+    gfx_fill_rounded_rect(px + 2, py + 3, panel_w, panel_h, C_SHADOW, 14);
+    gfx_fill_rounded_rect(px, py, panel_w, panel_h, 0xFFFFFFFFu, 14);
+    gfx_draw_rect(px, py, panel_w, panel_h, C_BORDER);
 
-        gfx_fill_rounded_rect(CX-340+2, card_y+2, 680, 110, C_SHADOW, 12);
-        gfx_fill_rounded_rect(CX-340, card_y, 680, 110, bg, 12);
-        gfx_draw_rect(CX-340, card_y, 680, 110, border);
+    const embedded_image_t* imgs; uint32_t ic; imgs = get_embedded_images(&ic);
+    const embedded_image_t* hdd = 0;
+    for (uint32_t i = 0; i < ic; i++) if (strcmp(imgs[i].name, "hdd_icon") == 0) { hdd = &imgs[i]; break; }
 
-        if (selected) {
-            // Blue selection ring
-            gfx_draw_rect(CX-340+2, card_y+2, 676, 106, C_ACCENT);
+    int slot_w = np ? panel_w / np : panel_w;
+    for (int s = 0; s < np; s++) {
+        int drv = present[s];
+        int sx = px + s * slot_w, scx = sx + slot_w / 2;
+        int sel = (selected_drive_idx == drv);
+        if (s > 0) gfx_fill_rect(px + s * slot_w, py + 16, 1, panel_h - 32, C_BORDER);
+        // red focus ring (the OS X installer "selected destination" glow)
+        if (sel) {
+            gfx_fill_rounded_rect(scx - 46, py + 12, 92, 124, 0x35FF3B30u, 14);
+            gfx_fill_rounded_rect(scx - 42, py + 16, 84, 116, 0xFFE0392Bu, 12);
+            gfx_fill_rounded_rect(scx - 39, py + 19, 78, 110, 0xFFF7F7FAu, 10);
         }
-
-        // Drive icon
-        gfx_fill_rounded_rect(CX-310, card_y+24, 60, 60, C_SIDEBAR, 10);
-        gfx_draw_string(CX-296, card_y+44, "HDD", C_TEXT_MUTED);
-
-        if (ide_devices[i].present) {
-            // Drive name
-            char drv_label[32];
-            strcpy(drv_label, (i==0) ? "Primary Drive (ATA 0)" : "Secondary Drive (ATA 1)");
-            gfx_draw_string_scaled(CX-236, card_y+18, drv_label, C_TEXT_DARK, 1);
-
-            // Capacity + model
-            char sz[32]; format_disk_size(ide_devices[i].sectors, sz);
-            gfx_draw_string(CX-236, card_y+38, sz, C_TEXT_MUTED);
-            gfx_draw_string(CX-236 + 100, card_y+38, ide_devices[i].model, C_TEXT_MUTED);
-
-            // Partition mini-map (180x20)
-            render_disk_mini_map(CX-236, card_y+60, 300, 20, i);
-
-            // Health badge (scan on first display)
-            if (!health_scanned[i]) { disk_health_scan(i); health_scanned[i] = 1; }
-            render_health_badge(CX + 150, card_y + 16, disk_health_get_score(i));
-
-            // Partition label
-            char part_info[32];
-            int pc = 0;
-            for (int k=0; k<4; k++) if (disk_mbr[i].partitions[k].type != 0) pc++;
-            if (disk_has_mbr[i]) {
-                strcpy(part_info, ""); int_to_str(pc, part_info); strcat(part_info, " partition(s)");
-            } else {
-                strcpy(part_info, "Uninitialized");
-            }
-            gfx_draw_string(CX + 150, card_y + 42, part_info, C_TEXT_MUTED);
-
-            if (hover && mb_clicked) selected_drive_idx = i;
-        } else {
-            gfx_draw_string(CX-236, card_y+40, "No drive detected in this bay", C_TEXT_MUTED);
-        }
-
-        card_y += 128;
+        // 3-D drive glyph
+        if (hdd) gfx_draw_asset_scaled(0, scx - 32, py + 26, hdd->data, hdd->width, hdd->height, 64, 64);
+        else     gfx_draw_string_scaled(scx - 16, py + 44, "HDD", C_TEXT_MUTED, 2);
+        // labels
+        char nm[24]; strcpy(nm, drv == 0 ? "Primary" : "Secondary");
+        gfx_draw_string(scx - strlen(nm) * 4, py + 100, nm, C_TEXT_DARK);
+        char sz[24]; format_disk_size(ide_devices[drv].sectors, sz);
+        gfx_draw_string(scx - strlen(sz) * 4, py + 118, sz, C_TEXT_MUTED);
+        // hit test
+        if (!modal_active && mb_clicked && mx >= sx && mx < sx + slot_w && my >= py && my < py + panel_h)
+            selected_drive_idx = drv;
     }
+    if (np == 0)
+        gfx_draw_string_centered(CX, py + panel_h / 2 - 7, "No installation target detected", C_TEXT_MUTED, 1);
 
-    // Navigation
-    int nav_y = WIN_H - 80;
-    if (ui_button(CX - 340, nav_y, 150, 50, "< Back", C_WHITE)) current_state = STATE_SYS_CHECK;
+    // dynamic "will be installed on" line
+    char line[64];
+    if (selected_drive_idx >= 0 && ide_devices[selected_drive_idx].present) {
+        strcpy(line, "Camel OS will be installed on \x22");
+        strcat(line, ide_devices[selected_drive_idx].model); strcat(line, "\x22");
+    } else strcpy(line, "Select a disk above to continue.");
+    gfx_draw_string(CX - strlen(line) * 4, py + panel_h + 20, line, C_TEXT_MUTED);
 
-    if (selected_drive_idx != -1 && ide_devices[selected_drive_idx].present) {
-        uint64_t caps = ide_devices[selected_drive_idx].sectors;
-        if (caps < 204800ULL) {
-            gfx_fill_rounded_rect(CX + 100, nav_y + 5, 240, 38, 0xFFFFECEE, 6);
-            gfx_draw_rect(CX + 100, nav_y + 5, 240, 38, C_DANGER);
-            gfx_draw_string(CX + 115, nav_y + 17, "Drive too small (< 100 MB)", C_DANGER);
-        } else {
-            char req_note[48]; strcpy(req_note, "Requires ~8 MB minimum");
-            gfx_draw_string(CX + 100, nav_y + 18, req_note, C_TEXT_MUTED);
-            if (ui_button(CX + 190, nav_y, 150, 50, "Install >", C_ACCENT)) {
-                install_step = 0; install_sub_step = 0; install_file_idx = 0;
-                install_error = 0; install_error_msg[0] = 0;
-                kernel_write_offset = 0; install_pct = 0; install_target_pct = 0;
-                install_step_tick = 0;
-                install_idle_ticks = 0;
-                install_step_start_tick = 0; install_total_write_failures = 0;
-                current_state = STATE_INSTALLING;
-                add_log("Starting installation process");
-            }
+    // navigation pills
+    int nav_y = WIN_H - 70;
+    if (ui_button(px, nav_y, 130, 44, "Disk Utility", C_WHITE)) { scan_hardware(); current_state = STATE_DISK_UTIL; }
+    if (ui_button(CX - 150, nav_y, 120, 44, "Back", C_WHITE)) current_state = STATE_SYS_CHECK;
+
+    int can = (selected_drive_idx >= 0 && ide_devices[selected_drive_idx].present
+               && ide_devices[selected_drive_idx].sectors >= 204800ULL);
+    if (can) {
+        if (ui_button(CX + 20, nav_y, 130, 44, "Install", C_ACCENT)) {
+            install_step = 0; install_sub_step = 0; install_file_idx = 0;
+            install_error = 0; install_error_msg[0] = 0; kernel_write_offset = 0;
+            install_pct = 0; install_target_pct = 0; install_step_tick = 0;
+            install_idle_ticks = 0; install_step_start_tick = 0; install_total_write_failures = 0;
+            install_start_tick = get_tick_count();
+            current_state = STATE_INSTALLING;
+            add_log("Starting installation process");
         }
     } else {
-        gfx_draw_string(CX + 100, nav_y + 18, "Select a drive to continue", C_TEXT_MUTED);
+        draw_pill(CX + 20, nav_y, 130, 44, "Install", C_ACCENT, 0);
+        if (selected_drive_idx >= 0 && ide_devices[selected_drive_idx].present)
+            gfx_draw_string(CX + 20, nav_y - 16, "Drive too small (< 100 MB)", C_DANGER);
     }
 }
 
@@ -1896,143 +2062,166 @@ void render_disk_tools_window(void) {
 
 // --- Installing ---
 void render_installing(void) {
-    static uint32_t anim_counter = 0;
-    anim_counter++;
+    static uint32_t anim = 0; anim++;
 
-    // Background with thin blue header
-    for (int y = 0; y < 56; y++) {
-        uint8_t v = (uint8_t)(200 + y * 55 / 56);
-        gfx_fill_rect(0, y, WIN_W, 1, 0xFF000000 | (v << 8) | 0x007AFF);
-    }
+    render_panel_bg(HEADER_HEIGHT, WIN_H - HEADER_HEIGHT, CX, HEADER_HEIGHT + 300, 250, 0x95);
+    draw_centered_text(HEADER_HEIGHT + 64, "Installing", 3, C_TEXT_DARK);
 
-    // Phase tracker (left side panel)
-    int panel_x = 60, panel_y = 80;
-    gfx_fill_rounded_rect(panel_x, panel_y, 220, 280, C_WHITE, 10);
-    gfx_draw_rect(panel_x, panel_y, 220, 280, C_BORDER);
-    gfx_draw_string(panel_x + 14, panel_y + 14, "INSTALLATION STEPS", C_TEXT_MUTED);
+    int bar_y = HEADER_HEIGHT + 470, bar_w = 520, bar_x = (WIN_W - bar_w) / 2;
 
-    const char* phases[] = {
-        "Bootloader",
-        "Kernel Image",
-        "Format PFS32",
-        "Copy Files",
-        "Finalize"
-    };
-    for (int i = 0; i < 5; i++) {
-        int py2 = panel_y + 44 + i * 44;
-        int done   = (install_step > i);
-        int active = (install_step == i);
-        uint32_t dc = done ? C_SUCCESS : (active ? C_ACCENT : C_BORDER);
-        gfx_fill_rounded_rect(panel_x + 16, py2, 22, 22, dc, 11);
-        if (done)
-            gfx_draw_string(panel_x + 20, py2 + 5, "v", C_WHITE);
-        else {
-            char n[4]; int_to_str(i+1, n);
-            gfx_draw_string(panel_x + 20, py2 + 5, n, C_WHITE);
+    // "Installing ... on the volume "X""
+    char vol[80];
+    strcpy(vol, "Installing Camel OS on the volume \x22");
+    strcat(vol, (selected_drive_idx >= 0 && ide_devices[selected_drive_idx].present)
+                ? ide_devices[selected_drive_idx].model : "Camel OS");
+    strcat(vol, "\x22");
+    gfx_draw_string(CX - (int)strlen(vol) * 4, bar_y - 22, vol, C_TEXT_DARK);
+
+    // Thin glossy progress bar (rounded border drawn as a background pill)
+    gfx_fill_rounded_rect(bar_x + 2, bar_y + 3, bar_w, 16, C_SHADOW, 8);
+    gfx_fill_rounded_rect(bar_x,     bar_y,     bar_w, 16, 0xFF9A9A9Cu, 8);
+    gfx_fill_rounded_rect(bar_x + 1, bar_y + 1, bar_w - 2, 14, 0xFFFFFFFFu, 7);
+    if (install_pct > 0) {
+        int fill = ((bar_w - 4) * install_pct) / 100;
+        if (fill > 2) {
+            gfx_fill_rounded_rect(bar_x + 2, bar_y + 2, fill, 12, 0xFF1E6FE0u, 6);
+            gfx_fill_rounded_rect(bar_x + 2, bar_y + 2, fill, 5,  0x70FFFFFFu, 3);
         }
-        gfx_draw_string(panel_x + 46, py2 + 5, phases[i],
-                        done ? C_SUCCESS : (active ? C_TEXT_DARK : C_TEXT_MUTED));
-        // Connector
-        if (i < 4) gfx_draw_rect(panel_x + 26, py2 + 22, 2, 22, dc);
     }
 
-    // Progress area (right side)
-    int prx = 320, prw = WIN_W - prx - 60;
-    int title_y = 80;
-    const char* spinner_frames = "|/-\\";
-    char spin[2] = {spinner_frames[(anim_counter / 4) % 4], 0};
-    char title[72]; strcpy(title, "Installing Camel OS... "); strcat(title, spin);
-    gfx_draw_string_scaled(prx, title_y, title, C_TEXT_DARK, 2);
-
-    // Big progress bar
-    int bar_y = title_y + 50;
-    render_progress_bar(prx, bar_y, prw, 28, install_pct, C_ACCENT);
-    char pct_str[8]; int_to_str(install_pct, pct_str); strcat(pct_str, "%");
-    gfx_draw_string(prx + prw/2 - strlen(pct_str)*4, bar_y + 36, pct_str, C_TEXT_MUTED);
-
-    // Status text
-    gfx_draw_string(prx, bar_y + 56, "Status:", C_TEXT_MUTED);
-    gfx_draw_string(prx + 60, bar_y + 56, install_status, C_TEXT_DARK);
-
-    char step_str[24]; strcpy(step_str, "Step ");
-    char num[8]; int_to_str(install_step + 1, num); strcat(step_str, num); strcat(step_str, " of 5");
-    gfx_draw_string(prx + prw - 60, bar_y + 56, step_str, C_TEXT_MUTED);
-
-    // Animated dots
+    // 5-step tracker dots
     for (int i = 0; i < 5; i++) {
-        int dot_x = prx + prw/2 - 50 + i * 24;
-        uint32_t dc = (((anim_counter/8) % 5) == i) ? C_ACCENT : C_BORDER;
-        gfx_fill_rounded_rect(dot_x, bar_y + 80, 12, 12, dc, 6);
+        int dx = CX - 48 + i * 24;
+        uint32_t dc = (i < install_step) ? C_SUCCESS
+                    : (i == install_step ? C_ACCENT : C_BORDER);
+        gfx_fill_rounded_rect(dx, bar_y + 24, 10, 10, dc, 5);
+        if (i < 4)
+            gfx_fill_rect(dx + 10, bar_y + 28, 14, 2,
+                          (i < install_step) ? C_SUCCESS : C_BORDER);
     }
 
-    gfx_draw_string(prx, bar_y + 108, "Please wait. This may take a few minutes...", C_TEXT_MUTED);
+    // ---- Time Remaining ----------------------------------------------------
+    // Frame-based estimator. We measure ms-per-frame from get_tick_count() over
+    // a 40-frame window; if the timer never advances (no PIT/IDT in installer),
+    // we fall back to 20 ms/frame so the countdown still moves and hits 0 at 100%.
+    static uint32_t f0 = 0, cal_f = 0, cal_t = 0;
+    static uint32_t ms_per_frame_x10 = 0;     // fixed-point (*10); 0 = uncalibrated
+    static int eta_armed = 0;
+
+    if (install_pct == 0 && install_step == 0) eta_armed = 0;   // fresh install
+    if (!eta_armed) {
+        f0 = anim; cal_f = anim; cal_t = get_tick_count();
+        ms_per_frame_x10 = 0; eta_armed = 1;
+    }
+    if (ms_per_frame_x10 == 0 && (anim - cal_f) >= 40) {
+        uint32_t dt = get_tick_count() - cal_t;
+        uint32_t df = anim - cal_f;
+        if (dt > 0 && df > 0) ms_per_frame_x10 = (dt * 10u) / df;
+        if (ms_per_frame_x10 == 0) ms_per_frame_x10 = 200;       // 20 ms/frame fallback
+    }
+
+    char eta[48];
+    if (ms_per_frame_x10 == 0 || install_pct < 3) {
+        strcpy(eta, "Calculating...");
+    } else {
+        uint32_t elapsed_ms = (ms_per_frame_x10 * (anim - f0)) / 10u;
+        uint32_t remain_ms  = (elapsed_ms / (uint32_t)install_pct)
+                            * (uint32_t)(100 - install_pct);
+        uint32_t remain_s   = remain_ms / 1000u;
+        if (remain_s < 1) {
+            strcpy(eta, "a few seconds remaining");
+        } else if (remain_s < 60) {
+            int_to_str((int)remain_s, eta);
+            strcat(eta, (remain_s == 1) ? " second remaining" : " seconds remaining");
+        } else if (remain_s < 3600) {
+            uint32_t m = remain_s / 60;
+            int_to_str((int)m, eta);
+            strcat(eta, (m == 1) ? " minute remaining" : " minutes remaining");
+        } else {
+            uint32_t h = remain_s / 3600;
+            int_to_str((int)h, eta);
+            strcat(eta, (h == 1) ? " hour remaining" : " hours remaining");
+        }
+    }
+    char tr[96];
+    strcpy(tr, "Time Remaining:  "); strcat(tr, eta);
+    gfx_draw_string(bar_x, bar_y + 44, tr, C_TEXT_MUTED);
+    gfx_draw_string(bar_x + bar_w - (int)strlen(install_status) * 8,
+                    bar_y + 44, install_status, C_TEXT_MUTED);
+    // ------------------------------------------------------------------------
+
+    // Disabled bottom pills (match the reference's greyed-out pair)
+    int py = WIN_H - 64;
+    draw_pill(CX - 130, py, 120, 40, "Go Back", C_WHITE, 0);
+    draw_pill(CX +  10, py, 120, 40, "Install", C_WHITE, 0);
 
     install_tick();
 }
 
 // --- Success ---
 void render_success(void) {
-    for (int y = 0; y < WIN_H; y++) {
-        uint8_t g_ch = (uint8_t)(0xC7 + y * 0x38 / WIN_H);
-        gfx_fill_rect(0, y, WIN_W, 1, 0xFF000000 | (0x34 << 16) | (g_ch << 8) | 0x59);
+    render_panel_bg(HEADER_HEIGHT, WIN_H - HEADER_HEIGHT, CX, 360, 230, 0x70);
+    int cy0 = CY - 120;
+
+    gfx_fill_rounded_rect(CX - 46 + 2, cy0 + 3, 92, 92, C_SHADOW, 46);
+    gfx_fill_rounded_rect(CX - 46, cy0, 92, 92, C_SUCCESS, 46);
+    gfx_fill_rounded_rect(CX - 44, cy0 + 2, 88, 40, 0x55FFFFFFu, 20);
+    /* white check mark (replaces the old "OK" glyph) */
+    for (int t = -2; t <= 2; t++) {
+        gfx_draw_line(CX - 16, cy0 + 48 + t, CX - 4,  cy0 + 60 + t, 0xFFFFFFFFu);
+        gfx_draw_line(CX - 4,  cy0 + 60 + t, CX + 18, cy0 + 34 + t, 0xFFFFFFFFu);
     }
 
-    // Checkmark circle
-    gfx_fill_rounded_rect(CX - 52, CY - 140, 104, 104, 0x40FFFFFF, 52);
-    gfx_fill_rounded_rect(CX - 50, CY - 138, 100, 100, C_WHITE, 50);
-    gfx_draw_string_scaled(CX - 22, CY - 110, "OK", C_SUCCESS, 3);
+    draw_centered_text(cy0 + 112, "Installation Complete", 3, C_TEXT_DARK);
+    draw_centered_text(cy0 + 152,
+        "Camel OS is ready. Remove the install media and restart.", 1, C_TEXT_MUTED);
 
-    draw_centered_text(CY - 14, "Installation Complete!", 2, C_WHITE);
-    draw_centered_text(CY + 24, "Camel OS has been successfully installed.", 1, 0xFFFFFFFF);
-    draw_centered_text(CY + 44, "Remove installation media and restart.", 1, 0xD0FFFFFF);
+    int cw = 440, cx0 = (WIN_W - cw) / 2, cyy = cy0 + 184;
+    gfx_fill_rounded_rect(cx0 + 2, cyy + 2, cw, 84, C_SHADOW, 12);
+    gfx_fill_rounded_rect(cx0,     cyy,     cw, 84, C_BORDER, 12);          /* rounded border */
+    gfx_fill_rounded_rect(cx0 + 1, cyy + 1, cw - 2, 82, 0xFFFFFFFFu, 11);  /* panel          */
+    gfx_draw_string(cx0 + 20,  cyy + 14, "Destination",  C_TEXT_MUTED);
+    gfx_draw_string(cx0 + 130, cyy + 14,
+                    selected_drive_idx == 0 ? "ATA 0 (Primary)" : "ATA 1 (Secondary)",
+                    C_TEXT_DARK);
+    gfx_draw_string(cx0 + 20,  cyy + 36, "Filesystem",   C_TEXT_MUTED);
+    gfx_draw_string(cx0 + 130, cyy + 36, "PFS32 (Camel OS Native)", C_TEXT_DARK);
+    gfx_draw_string(cx0 + 20,  cyy + 58, "Installed",    C_TEXT_MUTED);
+    gfx_draw_string(cx0 + 130, cyy + 58, "9 system components", C_TEXT_DARK);
 
-    // Summary card
-    gfx_fill_rounded_rect(CX - 210, CY + 72, 420, 76, 0x30FFFFFF, 10);
-    gfx_draw_rect(CX - 210, CY + 72, 420, 76, 0x50FFFFFF);
-    gfx_draw_string(CX - 190, CY + 84, "Drive:",      C_WHITE);
-    gfx_draw_string(CX - 140, CY + 84, selected_drive_idx == 0 ? "ATA 0" : "ATA 1", 0xFFFFFFFF);
-    gfx_draw_string(CX - 190, CY + 104, "Filesystem:", C_WHITE);
-    gfx_draw_string(CX - 100, CY + 104, "PFS32 (Camel OS Native)", 0xFFFFFFFF);
-    gfx_draw_string(CX - 190, CY + 124, "Files:",      C_WHITE);
-    gfx_draw_string(CX - 140, CY + 124, "6 system files installed", 0xFFFFFFFF);
-
-    if (ui_button(CX - 110, CY + 166, 220, 50, "Restart Now", C_WHITE)) {
+    if (ui_button(CX - 110, cyy + 104, 220, 46, "Restart", C_ACCENT)) {
         pfs32_sync(); disk_flush_cache();
-        for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller to commit
+        for (volatile int _i = 0; _i < 100000; _i++) {}
         outb(0x64, 0xFE);
     }
 }
 
 // --- Failure ---
 void render_failure(void) {
-    for (int y = 0; y < WIN_H; y++) {
-        uint8_t g_ch = (uint8_t)(0x30 + y * 30 / WIN_H);
-        gfx_fill_rect(0, y, WIN_W, 1, 0xFF000000 | (0xFF << 16) | (g_ch << 8) | 0x40);
-    }
-
-    // X circle
-    gfx_fill_rounded_rect(CX - 52, CY - 140, 104, 104, 0x40FFFFFF, 52);
-    gfx_fill_rounded_rect(CX - 50, CY - 138, 100, 100, C_WHITE, 50);
-    gfx_draw_string_scaled(CX - 18, CY - 108, "!", C_DANGER, 4);
-
-    draw_centered_text(CY - 16, "Installation Failed", 2, C_WHITE);
+    render_panel_bg(HEADER_HEIGHT, WIN_H - HEADER_HEIGHT, CX, 360, 230, 0x70);
+    int cy0 = CY - 120;
+    gfx_fill_rounded_rect(CX - 46 + 2, cy0 + 3, 92, 92, C_SHADOW, 46);
+    gfx_fill_rounded_rect(CX - 46, cy0, 92, 92, C_DANGER, 46);
+    gfx_fill_rounded_rect(CX - 44, cy0 + 2, 88, 40, 0x55FFFFFFu, 20);
+    gfx_draw_string_scaled(CX - 11, cy0 + 22, "!", 0xFFFFFFFFu, 3);
+    draw_centered_text(cy0 + 112, "Installation Failed", 3, C_TEXT_DARK);
 
     if (install_error_msg[0]) {
-        int msg_w = strlen(install_error_msg) * 8;
-        if (msg_w > 480) msg_w = 480;
-        gfx_fill_rounded_rect(CX - msg_w/2 - 20, CY + 16, msg_w + 40, 38, 0x40FFFFFF, 8);
-        gfx_draw_rect(CX - msg_w/2 - 20, CY + 16, msg_w + 40, 38, 0x60FFFFFF);
-        gfx_draw_string(CX - msg_w/2, CY + 28, install_error_msg, C_WHITE);
+        int mw = strlen(install_error_msg) * 8; if (mw > 520) mw = 520;
+        gfx_fill_rounded_rect(CX - mw / 2 - 16, cy0 + 150, mw + 32, 34, 0xFFFFECECu, 8);
+        gfx_draw_rect(CX - mw / 2 - 16, cy0 + 150, mw + 32, 34, C_DANGER);
+        gfx_draw_string(CX - mw / 2, cy0 + 161, install_error_msg, C_DANGER);
     }
+    draw_centered_text(cy0 + 200, "Open  View ▸ Installer Logs  for the full trace.", 1, C_TEXT_MUTED);
 
-    draw_centered_text(CY + 70, "Open View > Installer Logs for details", 1, 0xD0FFFFFF);
-
-    if (ui_button(CX - 110, CY + 106, 220, 50, "Restart", C_WHITE)) {
+    if (ui_button(CX - 110, cy0 + 232, 220, 46, "Restart", C_WHITE)) {
         disk_flush_cache();
-        for(volatile int _i=0; _i<100000; _i++) {}  // Wait for disk controller to commit
+        for (volatile int _i = 0; _i < 100000; _i++) {}
         outb(0x64, 0xFE);
     }
 }
+
+
 
 // =============================================================================
 // INSTALL LOGIC (UNCHANGED)

@@ -19,26 +19,26 @@ static theme_t g_theme;
 // ══════════════════════════════════════════════════════════════════
 
 static const theme_t theme_light = {
-    .desktop_bg              = 0xFF3b80c6,   // Blue gradient base
-    .menubar_bg              = 0xFFF5F5F7,   // Light grey
+    .desktop_bg              = 0xFF4A90D9,   // Brighter sky-blue base for gradient
+    .menubar_bg              = 0xE6F5F5F7,   // Slightly translucent light grey
     .menubar_text            = 0xFF1C1C1E,   // Near-black
-    .window_titlebar         = 0xFFF0F0F0,   // Light header
-    .window_titlebar_unfocused = 0xFFE8E8E8,
-    .window_title_text       = 0xFF333333,   // Dark grey
-    .window_title_text_unfocused = 0xFF999999,
-    .window_body             = 0xFFF6F6F6,   // Off-white
-    .window_border           = 0xFFB8B8B8,   // Medium grey
-    .window_border_unfocused = 0xFFD0D0D0,   // Light grey
-    .dock_bg                 = 0x50F0F0F0,   // Translucent light
-    .dock_border             = 0x40FFFFFF,   // Subtle white
+    .window_titlebar         = 0xFFF8F8FA,   // Cleaner light header
+    .window_titlebar_unfocused = 0xFFEDEDF0,
+    .window_title_text       = 0xFF1D1D1F,   // Near-black title
+    .window_title_text_unfocused = 0xFF8E8E93,
+    .window_body             = 0xFFFAFAFC,   // Soft white body
+    .window_border           = 0xFFC8C8CC,   // Subtle grey border
+    .window_border_unfocused = 0xFFD8D8DC,
+    .dock_bg                 = 0x66FFFFFF,   // Glassier light dock
+    .dock_border             = 0x55FFFFFF,   // Soft white edge
     .dock_icon_bg            = 0xFFFFFFFF,
     .dock_text               = 0xFF1C1C1E,
     .text_primary            = 0xFF1C1C1E,   // Near-black
     .text_secondary          = 0xFF8E8E93,   // Muted grey
     .accent_color            = 0xFF007AFF,   // macOS blue
-    .separator               = 0xFFC6C6C8,   // Light separator
-    .spotlight_bg            = 0xFFE8E8ED,   // Light search bg
-    .notification_bg         = 0xFFF2F2F7,   // Light notif bg
+    .separator               = 0xFFD1D1D6,   // Light separator
+    .spotlight_bg            = 0xF0E8E8ED,   // Light search bg
+    .notification_bg         = 0xF5F2F2F7,   // Light notif bg
     .notification_text       = 0xFF1C1C1E,
     .notification_border     = 0xFFC7C7CC,
 };
@@ -49,28 +49,28 @@ static const theme_t theme_light = {
 // ══════════════════════════════════════════════════════════════════
 
 static const theme_t theme_dark = {
-    .desktop_bg              = 0xFF1C1C1E,   // Deep dark
-    .menubar_bg              = 0xFF2C2C2E,   // Dark menu bar
+    .desktop_bg              = 0xFF121428,   // Deep navy (pairs with gradient)
+    .menubar_bg              = 0xE6282830,   // Translucent dark menu bar
     .menubar_text            = 0xFFF5F5F7,   // Light text
-    .window_titlebar         = 0xFF2C2C2E,   // Dark header
-    .window_titlebar_unfocused = 0xFF242426,
-    .window_title_text       = 0xFFE5E5E7,   // Light grey text
+    .window_titlebar         = 0xFF2A2A32,   // Dark header
+    .window_titlebar_unfocused = 0xFF222228,
+    .window_title_text       = 0xFFE8E8ED,   // Light grey text
     .window_title_text_unfocused = 0xFF8E8E93,
-    .window_body             = 0xFF1C1C1E,   // Dark body
-    .window_border           = 0xFF48484A,   // Dark border
-    .window_border_unfocused = 0xFF3A3A3C,
-    .dock_bg                 = 0x502C2C2E,   // Translucent dark
-    .dock_border             = 0x4048484A,
-    .dock_icon_bg            = 0xFF3A3A3C,
+    .window_body             = 0xFF1A1A22,   // Dark body
+    .window_border           = 0xFF3E3E48,   // Dark border
+    .window_border_unfocused = 0xFF323238,
+    .dock_bg                 = 0x66202028,   // Glassier dark dock
+    .dock_border             = 0x44505058,
+    .dock_icon_bg            = 0xFF3A3A44,
     .dock_text               = 0xFFF5F5F7,
     .text_primary            = 0xFFF5F5F7,   // Light text
     .text_secondary          = 0xFF8E8E93,   // Muted grey
     .accent_color            = 0xFF0A84FF,   // macOS blue (dark mode)
-    .separator               = 0xFF38383A,   // Dark separator
-    .spotlight_bg            = 0xFF2C2C2E,   // Dark search bg
-    .notification_bg         = 0xFF2C2C2E,   // Dark notif bg
+    .separator               = 0xFF3A3A42,   // Dark separator
+    .spotlight_bg            = 0xF0282830,   // Dark search bg
+    .notification_bg         = 0xF02C2C34,   // Dark notif bg
     .notification_text       = 0xFFF5F5F7,
-    .notification_border     = 0xFF48484A,
+    .notification_border     = 0xFF484850,
 };
 
 // ══════════════════════════════════════════════════════════════════
