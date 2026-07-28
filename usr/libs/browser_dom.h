@@ -9,9 +9,9 @@
 // ============================================================================
 // CONFIGURATION LIMITS
 // ============================================================================
-#define DOM_MAX_NODES           512
-#define DOM_MAX_CSS_RULES       256
-#define DOM_MAX_ATTRS           32
+#define DOM_MAX_NODES           1024
+#define DOM_MAX_CSS_RULES       512
+#define DOM_MAX_ATTRS           16
 // Bumped from 8 * 4096 / 4 * 8192: modern bundled JS (webpack/vite output,
 // React/Vue/jQuery runtime) routinely inlines 20-200KB of JS in a single
 // <script> block and 10-50KB of CSS in a single <style>. The old 4KB cap
@@ -208,6 +208,11 @@ typedef struct {
 struct dom_node;
 typedef struct dom_node dom_node_t;
 
+// Forward-declare png_image_t so dom_node_t can hold a decoded image
+// without dragging the full png_decoder.h into every consumer of browser_dom.h.
+struct png_image_t;
+typedef struct png_image_t png_image_decoded_t;
+
 struct dom_node {
     dom_node_type_t type;
     int in_use;
@@ -227,6 +232,13 @@ struct dom_node {
     dom_node_t *prev_sibling;
     int child_count;
     dom_style_t computed_style;
+    // ── Image support (browser image loading) ──
+    // For <img> nodes: decoded PNG pixel data + natural dimensions.
+    // NULL until dom_load_images() has been called for this node.
+    void*    image;            // png_image_t* (opaque to avoid include)
+    int      image_w;          // natural width  (0 if no image / not loaded)
+    int      image_h;          // natural height (0 if no image / not loaded)
+    int      image_load_attempted;  // 1 = we tried (success or fail), don't retry
 };
 
 typedef struct {
@@ -280,6 +292,16 @@ void dom_apply_all_stylesheets(dom_document_t *doc);
 // LAYOUT
 // ============================================================================
 void dom_compute_styles(dom_document_t *doc, int viewport_w, int viewport_h);
+
+// ============================================================================
+// IMAGE LOADING (post-parse pass)
+// ============================================================================
+// Walks the DOM tree, finds every <img> node, fetches its `src` URL via
+// the kernel HTTP client, decodes the PNG (or JPEG-as-PNG fallback), and
+// stores the decoded pixels on the node. After this call, render_node()
+// will blit the image. Nodes that fail to load are silently skipped
+// (image_w/image_h stay 0, so layout treats them as zero-size).
+void dom_load_images(dom_document_t *doc);
 
 // ============================================================================
 // RENDERING

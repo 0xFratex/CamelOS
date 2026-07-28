@@ -270,7 +270,7 @@ static void draw_cursor(int mx, int my) {
             for (int col = 0; col < 13; col++) {
                 int px = mx + col;
                 int py = my + row;
-                if (px < 0 || px >= 1024 || py < 0 || py >= 768) continue;
+                if (px < 0 || px >= gfx_get_width() || py < 0 || py >= gfx_get_height()) continue;
                 uint8_t v = resize_shape[row][col];
                 if (v == 1) gfx_put_pixel(px, py, 0xFF000000);
                 else if (v == 2) gfx_put_pixel(px, py, 0xFFFFFFFF);
@@ -307,7 +307,7 @@ static void draw_cursor(int mx, int my) {
         for (int col = 0; col < 12; col++) {
             int px = mx + col;
             int py = my + row;
-            if (px < 0 || px >= 1024 || py < 0 || py >= 768) continue;
+            if (px < 0 || px >= gfx_get_width() || py < 0 || py >= gfx_get_height()) continue;
             uint8_t v = cursor_shape[row][col];
             if (v == 1) {
                 gfx_put_pixel(px, py, 0xFF000000);  // Black outline
@@ -360,10 +360,10 @@ void ctx_menu_show(int x, int y, int type, void* target) {
         strcpy(g_ctx_menu.items[5].label, "Delete");           g_ctx_menu.items[5].action_id = 4;
     }
 
-    if (g_ctx_menu.x + g_ctx_menu.w > 1024) g_ctx_menu.x = 1024 - g_ctx_menu.w;
+    if (g_ctx_menu.x + g_ctx_menu.w > gfx_get_width()) g_ctx_menu.x = gfx_get_width() - g_ctx_menu.w;
     if (g_ctx_menu.x < 0) g_ctx_menu.x = 0;
     g_ctx_menu.h = g_ctx_menu.item_count * 24 + 10;
-    if (g_ctx_menu.y + g_ctx_menu.h > 768) g_ctx_menu.y = 768 - g_ctx_menu.h;
+    if (g_ctx_menu.y + g_ctx_menu.h > gfx_get_height()) g_ctx_menu.y = gfx_get_height() - g_ctx_menu.h;
     if (g_ctx_menu.y < 0) g_ctx_menu.y = 0;
     g_ctx_menu.active = 1;
 }
@@ -403,8 +403,8 @@ void win_maximize(window_t* w) {
         // Maximize (account for Header bar and Dock)
         w->x = 0;
         w->y = HEADER_HEIGHT;
-        w->width = 1024;
-        w->height = 768 - HEADER_HEIGHT - 80; // Leave room for dock (80px)
+        w->width = gfx_get_width();
+        w->height = gfx_get_height() - HEADER_HEIGHT - 80; // Leave room for dock (80px)
         w->state = WIN_STATE_MAXIMIZED;
     }
 }
@@ -424,8 +424,8 @@ void win_maximize(window_t* w) {
 //     the edge while still holding, snap_preview_active is cleared
 //     here so the window just follows the mouse normally.
 void handle_window_snapping(window_t* w, int mx, int my) {
-    int screen_w = 1024;
-    int screen_h = 768;
+    int screen_w = gfx_get_width();
+    int screen_h = gfx_get_height();
 
     snap_preview_active = 0;
 
@@ -652,8 +652,8 @@ void draw_dropdown(int x, int y, char** items, int count, int is_app_menu, windo
                     int sh = menubar_submenu_h;
                     
                     // Clamp to screen
-                    if (sx + sw > 1024) sx = x - sw;
-                    if (sy + sh > 768) sy = 768 - sh;
+                    if (sx + sw > gfx_get_width()) sx = x - sw;
+                    if (sy + sh > gfx_get_height()) sy = gfx_get_height() - sh;
                     
                     // Shadow
                     sys_gfx_rect(sx+4, sy+4, sw, sh, 0x40000000);
@@ -723,7 +723,7 @@ static void draw_wifi_icon(int x, int y, int connected) {
 }
 
 void draw_status_indicators() {
-    int right_x = 1024 - 15;
+    int right_x = gfx_get_width() - 15;
     
     // System Clock
     int h, m, s;
@@ -752,9 +752,9 @@ void draw_status_indicators() {
 int process_global_bar(int mx, int my, int click) {
     for(int i=0; i<HEADER_HEIGHT; i++) {
         uint32_t col = (i < HEADER_HEIGHT/2) ? 0xFFF8F8F8 : 0xFFE8E8E8;
-        sys_gfx_rect(0, i, 1024, 1, col);
+        sys_gfx_rect(0, i, gfx_get_width(), 1, col);
     }
-    sys_gfx_rect(0, HEADER_HEIGHT, 1024, 1, 0xFF888888); 
+    sys_gfx_rect(0, HEADER_HEIGHT, gfx_get_width(), 1, 0xFF888888); 
 
     int cur_x = 15;
     int target_menu = -3; 
@@ -843,8 +843,8 @@ void handle_dropdown_click(int mx, int my) {
         int sw = menubar_submenu_w;
         int sh = menubar_submenu_h;
         // Clamp same as draw_dropdown
-        if (active_win && sx + sw > 1024) sx = active_win->x - sw;
-        if (sy + sh > 768) sy = 768 - sh;
+        if (active_win && sx + sw > gfx_get_width()) sx = active_win->x - sw;
+        if (sy + sh > gfx_get_height()) sy = gfx_get_height() - sh;
         
         if (mx >= sx && mx <= sx + sw && my >= sy && my <= sy + sh) {
             int sub_idx = (my - sy - 3) / 20;
@@ -1198,9 +1198,9 @@ void handle_input(int mx, int my, int lb, int rb) {
     }
 
     // 4. Dock Interactions
-    if (my > 768 - 100) {
+    if (my > gfx_get_height() - 100) {
         if (click) {
-            if (dock_handle_click(mx, my, 1024, 768)) return;
+            if (dock_handle_click(mx, my, gfx_get_width(), gfx_get_height())) return;
         }
     }
 
@@ -1569,7 +1569,7 @@ void start_bubble_view() {
             
             // Render
             buffer = gfx_get_active_buffer();
-            welcome_setup_render(buffer, 1024, 768, mx, my);
+            welcome_setup_render(buffer, gfx_get_width(), gfx_get_height(), mx, my);
             
             // Draw cursor on top
             draw_cursor(mx, my);
@@ -1618,7 +1618,7 @@ void start_bubble_view() {
                 }
                 
                 // Draw lock screen overlay
-                screenlock_render(buffer, 1024, 768, mx, my);
+                screenlock_render(buffer, gfx_get_width(), gfx_get_height(), mx, my);
                 
                 sys_vsync();
                 gfx_swap_buffers();
@@ -1817,8 +1817,8 @@ void start_bubble_view() {
         // (clock, active app name, dock icons).  Without marking them dirty,
         // gfx_swap_buffers_region() would not copy these areas to VRAM,
         // causing stale/missing updates (e.g. frozen clock).
-        gfx_mark_dirty(0, 0, 1024, HEADER_HEIGHT + 1);  // Header bar + separator
-        gfx_mark_dirty(0, 768 - 80, 1024, 80);          // Dock area (bottom 80px)
+        gfx_mark_dirty(0, 0, gfx_get_width(), HEADER_HEIGHT + 1);  // Header bar + separator
+        gfx_mark_dirty(0, gfx_get_height() - 80, gfx_get_width(), 80);          // Dock area (bottom 80px)
 
         // Detect cursor type based on mouse position
         cursor_type = 0; // default arrow
@@ -2036,14 +2036,14 @@ void start_bubble_view() {
                 }
         }
 
-        dock_render(buffer, 1024, 768, mx, my);
+        dock_render(buffer, gfx_get_width(), gfx_get_height(), mx, my);
         process_global_bar(mx, my, 0);  // Render only — clicks handled in handle_input()
 
         ctx_menu_draw();
 
         // Render Overlays
         if (app_switcher_is_active()) {
-            app_switcher_render(1024, 768);
+            app_switcher_render(gfx_get_width(), gfx_get_height());
         }
 
         // Spotlight search overlay (drawn on top of everything except cursor)

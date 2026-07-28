@@ -10,11 +10,15 @@ typedef unsigned char uint8_t;
 
 // Menu bar configuration
 #define MENU_BAR_HEIGHT     28
-#define MENU_BAR_BG_TOP     0xFFF5F5F7
-#define MENU_BAR_BG_BOTTOM  0xFFE8E8ED
-#define MENU_BAR_TEXT       0xFF1C1C1E
-#define MENU_BAR_TEXT_DIM   0xFF8E8E93
-#define MENU_BAR_ACCENT     0xFF007AFF
+// Color macros are now theme-driven via theme_get_current() so a single
+// theme_set() flips the whole UI light/dark. Defined here as inline lookups
+// so existing call sites work unchanged.
+#include "../core/theme.h"
+#define MENU_BAR_BG_TOP     (theme_get_current()->menubar_bg)
+#define MENU_BAR_BG_BOTTOM  (theme_get_current()->menubar_bg)
+#define MENU_BAR_TEXT       (theme_get_current()->menubar_text)
+#define MENU_BAR_TEXT_DIM   (theme_get_current()->text_secondary)
+#define MENU_BAR_ACCENT     (theme_get_current()->accent_color)
 
 // System tray icons
 #define TRAY_ICON_SIZE      18

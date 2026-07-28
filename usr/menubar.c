@@ -8,6 +8,7 @@
 #include "../hal/drivers/serial.h"
 #include "../core/theme.h"
 #include "../core/notification_center.h"
+#include "../sys/api.h"   // sys_get_time / sys_get_date declarations
 
 MenuBarState g_menu_bar;
 
@@ -299,7 +300,7 @@ void menubar_draw(void) {
     const theme_t* theme = theme_get_current();
     
     // Draw gradient background using theme colors
-    int sw = screen_w ? screen_w : 1024;
+    int sw = screen_w ? screen_w : gfx_get_width();
     draw_gradient_rect(0, 0, sw, MENU_BAR_HEIGHT, theme->menubar_bg, theme->menubar_bg);
     
     // Draw bottom border
@@ -478,7 +479,7 @@ int menubar_handle_mouse(int mx, int my, int click, int pressed) {
     }
     
     // Check system tray
-    int tray_x = screen_w ? screen_w : 1024;
+    int tray_x = screen_w ? screen_w : gfx_get_width();
     tray_x -= TRAY_RIGHT_MARGIN;
     
     // Clock position

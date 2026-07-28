@@ -1,22 +1,26 @@
 // usr/dock.c
+// Classic Aqua refresh: 3D glossy shelf with top sheen, drop shadow,
+// magnification, running-app indicator pill, all colors from theme.
 #include "dock.h"
 #include "lib/camel_framework.h"
 #include "../hal/video/gfx_hal.h"
 #include "../core/window_server.h"
 #include "../core/string.h"
 #include "../core/theme.h"
+#include "lib/ui_widgets.h"
 
 // Externs
 extern void execute_program(const char* path);
 extern window_t* active_win;
 
-// --- Visual Configuration (Big Sur Style) ---
-// Note: DOCK_BG_COLOR and DOCK_SHINE now come from theme->dock_bg
-#define DOCK_INDICATOR   0xFF404040 // Dark Grey Dot for active apps
+// --- Visual Configuration (Classic Aqua Style) ---
+// Note: dock bg + border + accent now come from theme->dock_bg etc.
 #define DOCK_BASE_SIZE   54
 #define DOCK_MAX_SIZE    90
 #define DOCK_RANGE       150
 #define DOCK_SPACING     12
+#define DOCK_SHELF_H     76     /* must match the value used in dock_render */
+#define DOCK_FLOAT_Y     14     /* pixels the shelf floats above the bottom */
 
 // Dock State
 DockIcon dock_icons[MAX_DOCK_APPS];
@@ -103,7 +107,8 @@ int is_app_running(const char* label_fragment) {
 // Calculate Layout (Magnification)
 void get_dock_layout(int screen_w, int mx, int my, int* x_positions, int* sizes, int* total_w) {
     *total_w = 0;
-    int dock_bottom_area = 768 - 100;
+    int screen_h = gfx_get_height();
+    int dock_bottom_area = screen_h - 100;
 
     for(int i=0; i<dock_count; i++) {
         sizes[i] = DOCK_BASE_SIZE;
@@ -136,14 +141,15 @@ void get_dock_layout(int screen_w, int mx, int my, int* x_positions, int* sizes,
 
 // Genie Effect Coordinate Helper
 void dock_get_window_rect(window_t* win, int* out_x, int* out_y, int* out_w, int* out_h) {
-    *out_x = 512; *out_y = 768; *out_w = 10; *out_h = 10; // Defaults
+    int sw = gfx_get_width();
+    int sh = gfx_get_height();
+    *out_x = sw / 2; *out_y = sh; *out_w = 10; *out_h = 10; // Defaults
 
-    int w = 1024; // Should ideally be dynamic
     int x_pos[MAX_DOCK_APPS], sizes[MAX_DOCK_APPS], total_w;
-    get_dock_layout(w, -1000, -1000, x_pos, sizes, &total_w);
+    get_dock_layout(sw, -1000, -1000, x_pos, sizes, &total_w);
 
-    int shelf_h = 74;
-    int shelf_y = 768 - shelf_h - 12;
+    int shelf_h = DOCK_SHELF_H;
+    int shelf_y = sh - shelf_h - DOCK_FLOAT_Y;
 
     for(int i=0; i<dock_count; i++) {
         const char* lbl = dock_icons[i].label;
@@ -202,8 +208,8 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     int x_pos[MAX_DOCK_APPS], sizes[MAX_DOCK_APPS], total_w;
     get_dock_layout(w, mx, my, x_pos, sizes, &total_w);
 
-    int shelf_h = 76;
-    int shelf_y = h - shelf_h - 14; // Float off bottom
+    int shelf_h = DOCK_SHELF_H;
+    int shelf_y = h - shelf_h - DOCK_FLOAT_Y; // Float off bottom
     int padding_x = 26;
     int shelf_w = total_w + (padding_x * 2);
     int shelf_x = (w - shelf_w) / 2;
@@ -211,31 +217,45 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     const theme_t* theme = theme_get_current();
     int is_dark = (theme_get_id() == THEME_DARK);
 
-    // Soft drop shadow under the dock (stacked translucent rects)
+    // ── Classic Aqua 3D shelf: stacked translucent drop shadows ──
     for (int s = 4; s >= 1; s--) {
         uint32_t shadow = is_dark ? 0x18000000 : 0x14000000;
         gfx_fill_rounded_rect(shelf_x - s, shelf_y + s + 2, shelf_w + s * 2,
-                              shelf_h, shadow, 24);
+                              shelf_h, shadow, AQUA_RADIUS_DOCK);
     }
 
-    // Glass background
-    gfx_fill_rounded_rect(shelf_x, shelf_y, shelf_w, shelf_h, theme->dock_bg, 22);
+    // ── Glass background (theme->dock_bg) ──
+    gfx_fill_rounded_rect(shelf_x, shelf_y, shelf_w, shelf_h,
+                          theme->dock_bg, AQUA_RADIUS_DOCK);
 
-    // Top edge highlight (glass sheen)
-    uint32_t sheen = is_dark ? 0x28FFFFFF : 0x55FFFFFF;
-    gfx_fill_rounded_rect(shelf_x + 3, shelf_y + 2, shelf_w - 6, 14, sheen, 10);
+    // ── Aqua top sheen — bright gloss across the top ~30% of the shelf ──
+    // (Classic Aqua dock reflected light from above)
+    int sheen_h = shelf_h / 3;
+    uint32_t sheen = is_dark ? 0x28FFFFFF : 0x66FFFFFF;
+    gfx_fill_rounded_rect(shelf_x + 3, shelf_y + 2, shelf_w - 6, sheen_h,
+                          sheen, AQUA_RADIUS_DOCK - 4 > 0 ? AQUA_RADIUS_DOCK - 4 : 1);
 
-    // Subtle border ring
+    // ── Bottom inner shadow (subtle dark line, gives the shelf 3D depth) ──
+    gfx_fill_rounded_rect(shelf_x + 2, shelf_y + shelf_h - 4, shelf_w - 4, 2,
+                          is_dark ? 0x30000000 : 0x20000000,
+                          AQUA_RADIUS_DOCK - 4 > 0 ? AQUA_RADIUS_DOCK - 4 : 1);
+
+    // ── Subtle border ring (1px) ──
     gfx_draw_rect(shelf_x, shelf_y, shelf_w, shelf_h, theme->dock_border);
 
+    // ── Icons ──
     for(int i=0; i<dock_count; i++) {
         int sz = sizes[i];
         int y = shelf_y + (shelf_h - sz)/2 - 4;
 
-        // Magnified icons lift slightly upward
+        // Magnified icons lift slightly upward (Aqua genie-style bounce)
         if (sz > DOCK_BASE_SIZE) {
             y -= (sz - DOCK_BASE_SIZE) / 3;
         }
+
+        // Drop shadow under the icon (Classic Aqua 3D look)
+        gfx_fill_rounded_rect(x_pos[i] + 2, y + sz - 2, sz - 4, 4,
+                              is_dark ? 0x30000000 : 0x28000000, 2);
 
         cm_draw_image(buffer, dock_icons[i].icon_res, x_pos[i], y, sz, sz);
 
@@ -245,11 +265,13 @@ void dock_render(uint32_t* buffer, int w, int h, int mx, int my) {
         if(strcmp(match, "Calculator") == 0) match = "Calculator";
 
         if(is_app_running(match)) {
-            // Rounded indicator pill under the icon
+            // Rounded indicator pill under the icon (Aqua black dot, not accent —
+            // classic Mac OS X used a subtle dark dot, not a blue accent)
             int dot_sz = 5;
             int dot_x = x_pos[i] + (sz - dot_sz)/2;
-            int dot_y = shelf_y + shelf_h - 10;
-            gfx_fill_rounded_rect(dot_x, dot_y, dot_sz, 4, theme->accent_color, 2);
+            int dot_y = shelf_y + shelf_h - 8;
+            gfx_fill_rounded_rect(dot_x, dot_y, dot_sz, 4,
+                                  is_dark ? 0xFFFFFFFF : 0xFF404040, 2);
         }
     }
 }

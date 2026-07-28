@@ -26,10 +26,12 @@
 #include "../fs/pfs32.h"
 #include "../fs/disk.h"
 #include "../core/memory.h"
+#include "../core/theme.h"
 #include "../hal/cpu/idt.h"
 #include "../hal/drivers/mouse.h"
 #include "../hal/drivers/vga.h"
 #include "../kernel/assets.h"
+#include "../usr/lib/ui_widgets.h"
 #include "disk_tools.h"
 #include "disk_health.h"
 #include "sys_requirements.h"
@@ -86,27 +88,32 @@ extern uint8_t app_jsengine_start[], app_jsengine_end[];
 extern uint8_t app_netdiag_start[], app_netdiag_end[];
 
 // --- Design Configuration ---
-#define WIN_W 1024
-#define WIN_H 768
+// Classic Aqua refresh: resolution is now read dynamically from gfx_ctx.
+// WIN_W / WIN_H are kept as macros that call gfx_get_width()/height() so
+// existing call sites work unchanged but now adapt to any VBE resolution.
+#define WIN_W (gfx_get_width())
+#define WIN_H (gfx_get_height())
 #define CX (WIN_W / 2)
 #define CY (WIN_H / 2)
 
-// Colors — macOS X-inspired palette (unchanged from original)
-#define C_BG            0xFFF2F2F7
-#define C_SIDEBAR       0xFFE8E8ED
-#define C_WHITE         0xFFFFFFFF
-#define C_TEXT_DARK     0xFF1C1C1E
-#define C_TEXT_MUTED    0xFF8E8E93
-#define C_ACCENT        0xFF007AFF
-#define C_ACCENT_HOVER  0xFF0051D5
-#define C_DANGER        0xFFFF375F
-#define C_BORDER        0xFFC6C6C8
-#define C_MODAL_DIM     0x80000000
-#define C_SHADOW        0x40000000
-#define C_SUCCESS       0xFF34C759
-#define C_WARNING       0xFFFF9500
+// Colors — Classic Aqua palette via theme_get_current() so a single
+// theme_set() flips the entire installer UI light/dark. The installer
+// always starts in THEME_LIGHT (no /Library/Preferences/theme.pref yet).
+#define C_BG            (theme_get_current()->page_bg)
+#define C_SIDEBAR       (theme_get_current()->sidebar_bg)
+#define C_WHITE         (theme_get_current()->card_bg)
+#define C_TEXT_DARK     (theme_get_current()->text_primary)
+#define C_TEXT_MUTED    (theme_get_current()->text_secondary)
+#define C_ACCENT        (theme_get_current()->accent_color)
+#define C_ACCENT_HOVER  (theme_get_current()->accent_hover)
+#define C_DANGER        (theme_get_current()->danger_color)
+#define C_BORDER        (theme_get_current()->card_border)
+#define C_MODAL_DIM     (theme_get_current()->modal_dim)
+#define C_SHADOW        (theme_get_current()->shadow_strong)
+#define C_SUCCESS       (theme_get_current()->success_color)
+#define C_WARNING       (theme_get_current()->warning_color)
 
-// Partition type colors
+// Partition type colors — stay as constants (these are data viz, not chrome)
 #define C_PART_FREE     0xFFE5E5EA
 #define C_PART_CAMEL    0xFF007AFF
 #define C_PART_OTHER    0xFF5856D6
@@ -196,8 +203,8 @@ char install_log[2048] = "";
 int log_line_count = 0;
 int log_window_dragging = 0;
 int log_window_drag_x = 0, log_window_drag_y = 0;
-int log_window_x = (WIN_W - 600) / 2;
-int log_window_y = (WIN_H - 300) / 2;
+int log_window_x = 0;   // computed lazily in render_logs_window (depends on gfx_get_width())
+int log_window_y = 0;   // computed lazily in render_logs_window (depends on gfx_get_height())
 
 // Disk tools state
 int disk_tools_window_open = 0;
@@ -1278,6 +1285,11 @@ void render_logs_window(void) {
     if (!logs_window_open) return;
 
     int win_w = 600, win_h = 300;
+    // Lazily center the window on first open (gfx_get_width() is non-constant)
+    if (log_window_x == 0 && log_window_y == 0) {
+        log_window_x = (WIN_W - win_w) / 2;
+        log_window_y = (WIN_H - win_h) / 2;
+    }
     if (log_window_dragging) {
         log_window_x += mx - log_window_drag_x;
         log_window_y += my - log_window_drag_y;
@@ -2652,6 +2664,11 @@ int main(uint32_t magic, void* mb_ptr) {
     init_serial();
     vga_mute_log(1);      // Suppress VGA text output — installer uses GUI only
     init_ps2_mouse();     // Full PS/2 mouse init with Intellimouse negotiation
+
+    // Initialize the theme subsystem (loads from /Library/Preferences/theme.pref
+    // if present; otherwise defaults to THEME_LIGHT — exactly what we want
+    // for the installer).
+    theme_init();
 
     // Initialize health system
     disk_health_init();

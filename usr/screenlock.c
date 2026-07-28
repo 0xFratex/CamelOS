@@ -1,14 +1,18 @@
 // usr/screenlock.c - Camel OS Screen Lock Implementation
-// Enhanced with encrypted password verification (SHA-256) and boot-time lock
+// Enhanced with encrypted password verification (SHA-256) and boot-time lock.
+// Classic Aqua refresh: theme-driven colors, glossy password field,
+// Aqua-blue gradient background, larger avatar with sheen.
 
 #include "screenlock.h"
 #include "lib/camel_framework.h"
 #include "../hal/video/gfx_hal.h"
 #include "../core/string.h"
 #include "../core/sha256.h"
+#include "../core/theme.h"
 #include "../common/time.h"
 #include "../sys/api.h"
 #include "../hal/cpu/timer.h"
+#include "lib/ui_widgets.h"
 
 extern int screen_w;
 extern int screen_h;
@@ -22,17 +26,7 @@ static uint32_t last_activity_time = 0;
 static uint32_t inactivity_timeout_seconds = 600; // 10 minutes default
 static int inactivity_enabled = 1;
 
-// Design constants - macOS X inspired
-#define C_LOCK_BG_TOP      0xFF1A1A2E
-#define C_LOCK_BG_BOTTOM   0xFF16213E
-#define C_LOCK_ACCENT      0xFF007AFF
-#define C_LOCK_TEXT        0xFFFFFFFF
-#define C_LOCK_TEXT_DIM    0xFF8E8E93
-#define C_LOCK_ERROR       0xFFFF3B30
-#define C_LOCK_INPUT_BG    0x40FFFFFF
-#define C_LOCK_AVATAR_BG   0xFF4A5568
-
-// Avatar colors palette
+// Avatar colors palette (theme-accent set)
 static uint32_t avatar_colors[] = {
     0xFF007AFF, 0xFF34C759, 0xFFFF9500, 0xFFFF3B30,
     0xFF5856D6, 0xFFFF2D55, 0xFF00C7BE, 0xFFAF52DE
@@ -318,14 +312,17 @@ void screenlock_update(float dt) {
 // --- Rendering Helpers ---
 
 static void draw_gradient_background(int w, int h) {
+    const theme_t* t = theme_get_current();
+    uint32_t top = t->lock_bg_top;
+    uint32_t bot = t->lock_bg_bottom;
     for (int y = 0; y < h; y++) {
         uint8_t blend = (y * 255) / h;
-        uint8_t r1 = (C_LOCK_BG_TOP >> 16) & 0xFF;
-        uint8_t g1 = (C_LOCK_BG_TOP >> 8) & 0xFF;
-        uint8_t b1 = C_LOCK_BG_TOP & 0xFF;
-        uint8_t r2 = (C_LOCK_BG_BOTTOM >> 16) & 0xFF;
-        uint8_t g2 = (C_LOCK_BG_BOTTOM >> 8) & 0xFF;
-        uint8_t b2 = C_LOCK_BG_BOTTOM & 0xFF;
+        uint8_t r1 = (top >> 16) & 0xFF;
+        uint8_t g1 = (top >> 8) & 0xFF;
+        uint8_t b1 = top & 0xFF;
+        uint8_t r2 = (bot >> 16) & 0xFF;
+        uint8_t g2 = (bot >> 8) & 0xFF;
+        uint8_t b2 = bot & 0xFF;
         
         uint8_t r = r1 + ((r2 - r1) * blend) / 255;
         uint8_t g = g1 + ((g2 - g1) * blend) / 255;
@@ -334,13 +331,35 @@ static void draw_gradient_background(int w, int h) {
         uint32_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
         gfx_fill_rect(0, y, w, 1, col);
     }
+
+    // Subtle Aqua radial highlight at top-center (suggests soft sphere light)
+    int cx = w / 2;
+    int cy = h / 4;
+    int r = h / 2;
+    for (int ring = r; ring > 0; ring -= 16) {
+        uint32_t a = (uint32_t)((r - ring) * 8);
+        if (a > 0x40) a = 0x40;
+        gfx_fill_rect(cx - ring, cy - ring / 2, ring * 2, ring,
+                      (a << 24) | 0x00FFFFFF);
+    }
 }
 
 static void draw_avatar(int cx, int cy, int size, int color_idx) {
+    const theme_t* t = theme_get_current();
     uint32_t color = avatar_colors[color_idx % 8];
     
+    // Drop shadow
+    gfx_fill_rounded_rect_aa(cx - size/2 + 2, cy - size/2 + 4, size, size,
+                             0x40000000, size/2);
+
     // Outer circle (avatar background)
-    gfx_fill_rounded_rect(cx - size/2, cy - size/2, size, size, color, size/2);
+    gfx_fill_rounded_rect_aa(cx - size/2, cy - size/2, size, size, color, size/2);
+
+    // Aqua gloss — top-half white sheen on the avatar
+    gfx_fill_rounded_rect(cx - size/2 + 4, cy - size/2 + 2,
+                          size - 8, size/3,
+                          t->gloss_highlight,
+                          size/3 > 0 ? size/3 : 1);
     
     // Inner silhouette (simple person icon)
     int head_size = size / 4;
@@ -364,6 +383,7 @@ static void draw_avatar(int cx, int cy, int size, int color_idx) {
 }
 
 static void draw_password_dots(int x, int y, int count, int show_error) {
+    const theme_t* t = theme_get_current();
     int dot_size = 6;
     int spacing = 10;
     // Left-aligned dots starting from center - count matches cursor_pos exactly
@@ -372,7 +392,7 @@ static void draw_password_dots(int x, int y, int count, int show_error) {
     
     for (int i = 0; i < count; i++) {
         int dot_x = start_x + i * spacing + 2;
-        uint32_t color = show_error ? C_LOCK_ERROR : C_LOCK_TEXT;
+        uint32_t color = show_error ? t->error_color : 0xFFFFFFFF;
         gfx_fill_rounded_rect(dot_x, y - dot_size/2, 
                               dot_size, dot_size, color, dot_size/2);
     }
@@ -431,7 +451,7 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     
     // Draw large time
     int time_y = cy - 120;
-    gfx_draw_string_centered(cx, time_y, time_str, C_LOCK_TEXT, 4);
+    gfx_draw_string_centered(cx, time_y, time_str, 0xFFFFFFFF, 4);
     
     // Date display (below time)
     int date_year, date_month, date_day;
@@ -449,7 +469,7 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     if (date_day >= 10) { date_str[di++] = '0' + (date_day / 10); }
     date_str[di++] = '0' + (date_day % 10);
     date_str[di] = 0;
-    gfx_draw_string_centered(cx, time_y + 80, date_str, C_LOCK_TEXT_DIM, 1);
+    gfx_draw_string_centered(cx, time_y + 80, date_str, 0xFFB8B8C8, 1);
     
     // Avatar
     int avatar_y = cy + 20;
@@ -459,17 +479,30 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
     // Username
     gfx_draw_string_centered(cx, 
                           avatar_y + avatar_size/2 + 30, 
-                          g_lock.user.username, C_LOCK_TEXT, 1);
+                          g_lock.user.username, 0xFFFFFFFF, 1);
     
     // Password input field (only show if password is set)
     if (g_lock.user.has_password) {
+        const theme_t* t = theme_get_current();
         int input_y = avatar_y + avatar_size/2 + 80;
         
-        // Input background
-        int field_w = 200;
-        int field_h = 36;
-        gfx_fill_rounded_rect(cx - field_w/2, input_y - field_h/2, 
-                              field_w, field_h, C_LOCK_INPUT_BG, 8);
+        // Input background — translucent white, Aqua glossy pill
+        int field_w = 220;
+        int field_h = 38;
+        int field_r = field_h / 2;
+        // Shadow
+        gfx_fill_rounded_rect(cx - field_w/2, input_y - field_h/2 + 2,
+                              field_w, field_h, 0x40000000, field_r);
+        // Body
+        gfx_fill_rounded_rect(cx - field_w/2, input_y - field_h/2,
+                              field_w, field_h, t->lock_input_bg, field_r);
+        // Border (subtle white)
+        gfx_stroke_rounded_rect(cx - field_w/2, input_y - field_h/2,
+                                field_w, field_h, 0x80FFFFFF, field_r, 1);
+        // Top gloss
+        gfx_fill_rounded_rect(cx - field_w/2 + 3, input_y - field_h/2 + 2,
+                              field_w - 6, field_h / 2 - 2,
+                              0x33FFFFFF, field_r - 1 > 0 ? field_r - 1 : 1);
         
         // Password dots (dynamic sizing based on actual typed count)
         draw_password_dots(cx, input_y, g_lock.cursor_pos, g_lock.show_error);
@@ -483,29 +516,29 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
             int total_w = g_lock.cursor_pos * dot_spacing;
             int start_x = cx - total_w / 2;
             int cursor_x = start_x + g_lock.cursor_pos * dot_spacing + 2;
-            gfx_fill_rect(cursor_x, input_y - 8, 2, 16, C_LOCK_TEXT);
+            gfx_fill_rect(cursor_x, input_y - 8, 2, 16, 0xFFFFFFFF);
         }
         
         // Error message
         if (g_lock.show_error) {
             char* error_msg = "Incorrect password. Try again.";
-            gfx_draw_string_centered(cx, input_y + 30, error_msg, C_LOCK_ERROR, 1);
+            gfx_draw_string_centered(cx, input_y + 30, error_msg, t->error_color, 1);
         }
         
         // Bottom hint
         char* bottom_hint = "Enter password to unlock";
-        gfx_draw_string_centered(cx, h - 50, bottom_hint, C_LOCK_TEXT_DIM, 1);
+        gfx_draw_string_centered(cx, h - 50, bottom_hint, 0xFFB8B8C8, 1);
     } else {
         // No password - show "Click to unlock"
         int input_y = avatar_y + avatar_size/2 + 80;
         char* hint = "Click or press Enter to unlock";
-        gfx_draw_string_centered(cx, input_y, hint, C_LOCK_TEXT_DIM, 1);
+        gfx_draw_string_centered(cx, input_y, hint, 0xFFB8B8C8, 1);
     }
     
     // Lock icon in corner
     int lock_x = w - 60;
     int lock_y = 30;
-    gfx_draw_string(lock_x - 10, lock_y, "LOCK", C_LOCK_TEXT_DIM);
+    gfx_draw_string(lock_x - 10, lock_y, "LOCK", 0xFFB8B8C8);
     
     // Draw mouse cursor - proper arrow shape
     if (g_lock.state == LOCK_STATE_LOCKED) {
@@ -534,7 +567,7 @@ void screenlock_render(uint32_t* buffer, int w, int h, int mx, int my) {
             for (int col = 0; col < 12; col++) {
                 int px = mx + col;
                 int py = my + row;
-                if (px < 0 || px >= 1024 || py < 0 || py >= 768) continue;
+                if (px < 0 || px >= gfx_get_width() || py < 0 || py >= gfx_get_height()) continue;
                 uint8_t v = cursor_shape[row][col];
                 if (v == 1) gfx_put_pixel(px, py, 0xFF000000);
                 else if (v == 2) gfx_put_pixel(px, py, 0xFFFFFFFF);

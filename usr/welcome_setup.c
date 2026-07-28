@@ -25,19 +25,25 @@ extern int mouse_scroll_delta;
 static WelcomeSetup g_setup;
 
 // Design constants - Warm macOS X style
-#define C_BG_TOP          0xFFF5F5F7
-#define C_BG_BOTTOM       0xFFE8E8ED
-#define C_ACCENT          0xFF007AFF
-#define C_ACCENT_HOVER    0xFF0051D5
-#define C_TEXT_DARK       0xFF1C1C1E
-#define C_TEXT_MUTED      0xFF8E8E93
-#define C_TEXT_LIGHT      0xFFFFFFFF
-#define C_CARD_BG         0xFFFFFFFF
-#define C_INPUT_BG        0xFFF2F2F7
-#define C_BORDER          0xFFC6C6C8
-#define C_SUCCESS         0xFF34C759
-#define C_ERROR           0xFFFF3B30
-#define C_LOCK_ICON       0xFF8E8E93
+// Design constants — Classic Aqua refresh.
+// All colors now come from core/theme.h via theme_get_current().
+// The C_* macros below are kept as inline theme lookups so existing
+// call sites work unchanged — a single theme_set() flips the entire UI.
+#include "lib/ui_widgets.h"
+
+#define C_BG_TOP          (theme_get_current()->page_bg)
+#define C_BG_BOTTOM       (theme_get_current()->page_bg_bottom)
+#define C_ACCENT          (theme_get_current()->accent_color)
+#define C_ACCENT_HOVER    (theme_get_current()->accent_hover)
+#define C_TEXT_DARK       (theme_get_current()->text_primary)
+#define C_TEXT_MUTED      (theme_get_current()->text_secondary)
+#define C_TEXT_LIGHT      0xFFFFFFFFu
+#define C_CARD_BG         (theme_get_current()->card_bg)
+#define C_INPUT_BG        (theme_get_current()->input_bg)
+#define C_BORDER          (theme_get_current()->card_border)
+#define C_SUCCESS         (theme_get_current()->success_color)
+#define C_ERROR           (theme_get_current()->error_color)
+#define C_LOCK_ICON       (theme_get_current()->text_secondary)
 
 // Timezone data (comprehensive worldwide coverage)
 static TimeZone timezones[] = {
@@ -227,7 +233,7 @@ void welcome_setup_set_defaults(void) {
 void welcome_setup_load_config(void) {
     // Try to load config from /Library/Preferences/system.conf (macOS-like path)
     // Fall back to /etc/system.conf for backward compatibility
-    char buffer[1024];
+    char buffer[gfx_get_width()];
     int result = sys_fs_read("/Library/Preferences/system.conf", buffer, sizeof(buffer) - 1);
     s_printf("[SETUP] load_config: read /Library/Preferences/system.conf result=%d\n", result);
     
@@ -304,7 +310,7 @@ void welcome_setup_load_config(void) {
 }
 
 int welcome_setup_save_config(void) {
-    char buffer[1024];
+    char buffer[gfx_get_width()];
     int pos = 0;
     
     pos += sprintf(buffer + pos, "# CamelOS System Configuration\n");
@@ -757,14 +763,17 @@ SystemConfig* welcome_setup_get_config(void) {
 // --- Rendering Helpers ---
 
 static void draw_gradient_bg(int w, int h) {
+    const theme_t* t = theme_get_current();
+    uint32_t top = t->page_bg;
+    uint32_t bot = t->page_bg_bottom;
     for (int y = 0; y < h; y++) {
         uint8_t blend = (y * 255) / h;
-        uint8_t r1 = (C_BG_TOP >> 16) & 0xFF;
-        uint8_t g1 = (C_BG_TOP >> 8) & 0xFF;
-        uint8_t b1 = C_BG_TOP & 0xFF;
-        uint8_t r2 = (C_BG_BOTTOM >> 16) & 0xFF;
-        uint8_t g2 = (C_BG_BOTTOM >> 8) & 0xFF;
-        uint8_t b2 = C_BG_BOTTOM & 0xFF;
+        uint8_t r1 = (top >> 16) & 0xFF;
+        uint8_t g1 = (top >> 8) & 0xFF;
+        uint8_t b1 = top & 0xFF;
+        uint8_t r2 = (bot >> 16) & 0xFF;
+        uint8_t g2 = (bot >> 8) & 0xFF;
+        uint8_t b2 = bot & 0xFF;
         
         uint8_t r = r1 + ((r2 - r1) * blend) / 255;
         uint8_t g = g1 + ((g2 - g1) * blend) / 255;
@@ -775,6 +784,7 @@ static void draw_gradient_bg(int w, int h) {
 }
 
 static void draw_progress_dots(int cx, int y, int current, int total) {
+    const theme_t* t = theme_get_current();
     int dot_size = 8;
     int spacing = 16;
     int total_w = total * spacing;
@@ -782,85 +792,78 @@ static void draw_progress_dots(int cx, int y, int current, int total) {
     
     for (int i = 0; i < total; i++) {
         int dot_x = start_x + i * spacing + spacing / 2;
-        uint32_t color = (i == current) ? C_ACCENT : C_BORDER;
+        uint32_t color = (i == current) ? t->accent_color : t->card_border;
+        // Aqua gloss on the active dot
+        if (i == current) {
+            gfx_fill_rounded_rect(dot_x - dot_size/2 + 1, y - dot_size/2 + 1,
+                                  dot_size, dot_size, t->shadow_soft, dot_size/2);
+        }
         gfx_fill_rounded_rect(dot_x - dot_size/2, y - dot_size/2, 
                               dot_size, dot_size, color, dot_size/2);
+        if (i == current) {
+            gfx_fill_rounded_rect(dot_x - dot_size/2 + 1, y - dot_size/2 + 1,
+                                  dot_size - 2, dot_size / 2 - 1,
+                                  t->gloss_highlight,
+                                  dot_size/2 - 1 > 0 ? dot_size/2 - 1 : 1);
+        }
     }
 }
 
 static void draw_card(int x, int y, int w, int h) {
-    // Shadow
-    gfx_fill_rounded_rect(x + 4, y + 6, w, h, 0x20000000, 16);
-    // Background
-    gfx_fill_rounded_rect(x, y, w, h, C_CARD_BG, 16);
-    // Border
-    gfx_draw_rect(x, y, w, h, C_BORDER);
+    widget_card(x, y, w, h);
 }
 
 static int draw_button(int x, int y, int w, int h, const char* label, int primary, int mx, int my, int click) {
-    int hover = (mx >= x && mx <= x + w && my >= y && my <= y + h);
-    
-    uint32_t bg = primary ? (hover ? C_ACCENT_HOVER : C_ACCENT) : 
-                            (hover ? C_INPUT_BG : C_CARD_BG);
-    uint32_t text = primary ? C_TEXT_LIGHT : C_TEXT_DARK;
-    
-    // Shadow for primary
-    if (primary) {
-        gfx_fill_rounded_rect(x + 2, y + 3, w, h, 0x20000000, 10);
-    }
-    
-    gfx_fill_rounded_rect(x, y, w, h, bg, 10);
-    if (!primary) {
-        gfx_draw_rect(x, y, w, h, C_BORDER);
-    }
-    
-    int text_x = x + (w - strlen(label) * 8) / 2;
-    int text_y = y + (h - 16) / 2;
-    gfx_draw_string(text_x, text_y, label, text);
-    
-    return hover && click;
+    widget_mouse_t m = { .x = mx, .y = my, .left_down = click, .clicked = click };
+    widget_button_style_t style = primary ? BTN_PRIMARY : BTN_SECONDARY;
+    return widget_button(x, y, w, h, label, style, &m);
 }
 
 static void draw_text_field(int x, int y, int w, int h, const char* value, int active, int is_password, int mx, int my, int click, int cursor_pos) {
+    const theme_t* t = theme_get_current();
     int hover = (mx >= x && mx <= x + w && my >= y && my <= y + h);
+    (void)hover; (void)click;
     
-    uint32_t bg = active ? C_TEXT_LIGHT : (hover ? C_INPUT_BG : C_CARD_BG);
-    uint32_t border = active ? C_ACCENT : (hover ? C_TEXT_MUTED : C_BORDER);
-    
-    gfx_fill_rounded_rect(x, y, w, h, bg, 8);
-    gfx_draw_rect(x, y, w, h, border);
+    // Shadow
+    gfx_fill_rounded_rect(x + 1, y + 1, w, h, t->shadow_soft, AQUA_RADIUS_BUTTON);
+    // Body
+    gfx_fill_rounded_rect(x, y, w, h, t->input_bg, AQUA_RADIUS_BUTTON);
+    // Border (accent if active/focused)
+    uint32_t border = active ? t->accent_color : t->input_border;
+    gfx_stroke_rounded_rect(x, y, w, h, border, AQUA_RADIUS_BUTTON, active ? 2 : 1);
+    // Top gloss (Aqua candy-button feel)
+    gfx_fill_rounded_rect(x + 2, y + 1, w - 4, h / 2 - 1,
+                          t->gloss_highlight,
+                          AQUA_RADIUS_BUTTON - 1 > 0 ? AQUA_RADIUS_BUTTON - 1 : 1);
     
     // Text is left-aligned with padding for cursor accuracy
-    int pad = 16;  // Left padding
+    int pad = 16;
     int text_y = y + (h - 16) / 2;
     int text_x = x + pad;
     
     if (is_password) {
         int len = cursor_pos;
-        // Use 10px spacing for password dots (more compact, matches count accurately)
         int dot_spacing = 10;
         int dot_size = 6;
         
         if (len > 0) {
             for (int i = 0; i < len; i++) {
-                gfx_fill_rounded_rect(text_x + i * dot_spacing + 2, text_y + 5, dot_size, dot_size, C_TEXT_DARK, 3);
+                gfx_fill_rounded_rect(text_x + i * dot_spacing + 2, text_y + 5, dot_size, dot_size, t->text_primary, 3);
             }
         } else {
-            // Placeholder
             const char* ph = "Enter password...";
-            gfx_draw_string(text_x, text_y, ph, C_TEXT_MUTED);
+            gfx_draw_string(text_x, text_y, ph, t->text_secondary);
         }
     } else {
         if (value && value[0]) {
-            gfx_draw_string(text_x, text_y, value, C_TEXT_DARK);
+            gfx_draw_string(text_x, text_y, value, t->text_primary);
         } else {
-            // Placeholder
             const char* ph = "Enter name...";
-            gfx_draw_string(text_x, text_y, ph, C_TEXT_MUTED);
+            gfx_draw_string(text_x, text_y, ph, t->text_secondary);
         }
     }
     
-    // Cursor - positioned at cursor_pos (character index)
+    // Cursor
     if (active) {
         static int blink = 0;
         blink++;
@@ -870,11 +873,9 @@ static void draw_text_field(int x, int y, int w, int h, const char* value, int a
                 int dot_spacing = 10;
                 cursor_x_pos = text_x + cursor_pos * dot_spacing + 2;
             } else {
-                // Use cursor_pos (character index) instead of strlen(value)
-                // to correctly position cursor within the text
                 cursor_x_pos = text_x + cursor_pos * 8;
             }
-            gfx_fill_rect(cursor_x_pos, text_y, 2, 16, C_ACCENT);
+            gfx_fill_rect(cursor_x_pos, text_y, 2, 16, t->accent_color);
         }
     }
 }
@@ -1625,8 +1626,8 @@ int welcome_setup_handle_click(int mx, int my, int click) {
         return 0;
     }
     
-    int w = screen_w ? screen_w : 1024;
-    int h = screen_h ? screen_h : 768;
+    int w = screen_w ? screen_w : gfx_get_width();
+    int h = screen_h ? screen_h : gfx_get_height();
     int cx = w / 2;
     int cy = h / 2;
     
@@ -1661,8 +1662,8 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     
     // Handle keyboard layout list scrolling and selection
     if (g_setup.state == SETUP_STATE_KEYBOARD && click) {
-        int w = screen_w ? screen_w : 1024;
-        int h = screen_h ? screen_h : 768;
+        int w = screen_w ? screen_w : gfx_get_width();
+        int h = screen_h ? screen_h : gfx_get_height();
         int cx = w / 2;
         int cy = h / 2;
         
@@ -1694,8 +1695,8 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     
     // Handle keyboard layout list scroll wheel
     if (g_setup.state == SETUP_STATE_KEYBOARD && mouse_scroll_delta != 0) {
-        int w = screen_w ? screen_w : 1024;
-        int h = screen_h ? screen_h : 768;
+        int w = screen_w ? screen_w : gfx_get_width();
+        int h = screen_h ? screen_h : gfx_get_height();
         int cx = w / 2;
         int cy = h / 2;
         
@@ -1723,8 +1724,8 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     
     // Handle timezone list scrolling and selection
     if (g_setup.state == SETUP_STATE_TIMEZONE && click) {
-        int w = screen_w ? screen_w : 1024;
-        int h = screen_h ? screen_h : 768;
+        int w = screen_w ? screen_w : gfx_get_width();
+        int h = screen_h ? screen_h : gfx_get_height();
         int cx = w / 2;
         int cy = h / 2;
         
@@ -1753,8 +1754,8 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     
     // Handle timezone list scroll wheel
     if (g_setup.state == SETUP_STATE_TIMEZONE && mouse_scroll_delta != 0) {
-        int w = screen_w ? screen_w : 1024;
-        int h = screen_h ? screen_h : 768;
+        int w = screen_w ? screen_w : gfx_get_width();
+        int h = screen_h ? screen_h : gfx_get_height();
         int cx = w / 2;
         int cy = h / 2;
         
@@ -1782,8 +1783,8 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     
     // Handle theme selection
     if (g_setup.state == SETUP_STATE_THEME && click) {
-        int w = screen_w ? screen_w : 1024;
-        int h = screen_h ? screen_h : 768;
+        int w = screen_w ? screen_w : gfx_get_width();
+        int h = screen_h ? screen_h : gfx_get_height();
         int cx = w / 2;
         int cy = h / 2;
         
@@ -1806,8 +1807,8 @@ int welcome_setup_handle_mouse(int mx, int my, int click, int pressed) {
     
     // Handle text field focus on click (click on input box activates it)
     if (click) {
-        int w = screen_w ? screen_w : 1024;
-        int h = screen_h ? screen_h : 768;
+        int w = screen_w ? screen_w : gfx_get_width();
+        int h = screen_h ? screen_h : gfx_get_height();
         int cx = w / 2;
         int cy = h / 2;
         

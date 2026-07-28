@@ -1,14 +1,27 @@
 // usr/libs/browser_dom.c - CamelOS Browser DOM Engine Implementation
 // Version 1.0 - HTML parsing, CSS styling, layout, and rendering
 // Kernel-mode code: no stdlib, no malloc, uses kmalloc/kfree and kernel string API
+//
+// Classic Aqua refresh + browser fixes:
+//   * <img> tags now fetch + decode + render (uses png_decode + http_get)
+//   * `background:` shorthand tokenizes the value so `background: url(x) #fff`
+//     correctly applies the #fff color (previously silently failed)
+//   * DOM_MAX_NODES exhaustion no longer aborts the parse — the partial tree
+//     is kept and the renderer still paints backgrounds from the parsed CSS
 
 #include "browser_dom.h"
 #include "../../core/memory.h"
 #include "../../core/string.h"
 #include "../../hal/video/gfx_hal.h"
+#include "../../core/png_decoder.h"
 
 // Debug output via serial
 extern void s_printf(const char *fmt, ...);
+
+// HTTP fetch — defined in core/http.c. We declare it here so this file
+// doesn't need to drag in core/http.h (which has its own large include set).
+extern int http_get(const char* url, char* response, int response_size,
+                    const char** headers, int header_count);
 
 // ============================================================================
 // INTERNAL HELPERS - MINI STRING UTILITIES
@@ -635,6 +648,14 @@ dom_document_t* dom_document_create(void) {
 
 void dom_document_destroy(dom_document_t *doc) {
     if (!doc) return;
+    // Free any decoded images attached to <img> nodes in the pool
+    for (int i = 0; i < DOM_MAX_NODES; i++) {
+        dom_node_t *n = &doc->node_pool[i];
+        if (n->in_use && n->image) {
+            png_image_free((png_image_t*)n->image);
+            n->image = NULL;
+        }
+    }
     // All nodes are in the static pool inside doc, no separate free needed.
     // Just free the document struct itself.
     kfree(doc);
@@ -1041,8 +1062,20 @@ int dom_parse_html(dom_document_t *doc, const char *html_body) {
             // Create the element node
             dom_node_t *elem = dom_node_alloc(doc);
             if (!elem) {
-                s_printf("[DOM] Out of nodes while parsing\n");
-                return -1;
+                // Out of nodes — DON'T bail. Real-world pages (Google's
+                // homepage, news sites, etc.) often have >1000 DOM nodes;
+                // bailing here makes dom_parse_html return -1, which causes
+                // the browser to fall back to the line-renderer that has no
+                // concept of backgrounds. Instead, skip this element and
+                // continue parsing so the rest of the tree (and the CSS)
+                // still gets captured. The partial tree is enough to render
+                // backgrounds and most layout.
+                s_printf("[DOM] Out of nodes at offset %d, skipping element\n",
+                         (int)(p - html_body));
+                // Advance past this tag's closing > so we don't loop forever
+                while (*p && *p != '>') p++;
+                if (*p == '>') p++;
+                continue;
             }
             elem->type = DOM_NODE_ELEMENT;
             safe_strcpy(elem->tag, tag_name, DOM_MAX_TAG_LEN);
@@ -1302,8 +1335,64 @@ static void apply_css_property(dom_style_t *style, const char *prop_name, const 
         dom_parse_color(prop_value, &style->background_color);
     }
     else if (strcmp(prop_name, "background") == 0) {
-        // Simplified: try to parse as color, ignore gradient/URL
-        dom_parse_color(prop_value, &style->background_color);
+        // Shorthand: `background: #fff url(x) no-repeat center;`
+        // Tokenize the value on whitespace, try each token as a color,
+        // take the first one that parses. Ignore url(...), gradients,
+        // repeat/no-repeat, position keywords, cover/contain, etc.
+        if (prop_value && *prop_value) {
+            char buf[256];
+            int n = strlen(prop_value);
+            if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+            memcpy(buf, prop_value, n);
+            buf[n] = 0;
+
+            char *tok = buf;
+            while (*tok) {
+                // Skip leading whitespace
+                while (*tok == ' ' || *tok == '\t') tok++;
+                if (!*tok) break;
+
+                // Find end of this token
+                char *end = tok;
+                while (*end && *end != ' ' && *end != '\t' && *end != ',') end++;
+                char saved = *end;
+                *end = 0;
+
+                // Skip url(...) and function-like tokens entirely
+                if (strstr(tok, "url(") == tok ||
+                    strstr(tok, "gradient(") == tok ||
+                    strstr(tok, "linear-gradient(") == tok ||
+                    strstr(tok, "radial-gradient(") == tok ||
+                    strcmp(tok, "no-repeat") == 0 ||
+                    strcmp(tok, "repeat") == 0 ||
+                    strcmp(tok, "repeat-x") == 0 ||
+                    strcmp(tok, "repeat-y") == 0 ||
+                    strcmp(tok, "center") == 0 ||
+                    strcmp(tok, "top") == 0 ||
+                    strcmp(tok, "bottom") == 0 ||
+                    strcmp(tok, "left") == 0 ||
+                    strcmp(tok, "right") == 0 ||
+                    strcmp(tok, "fixed") == 0 ||
+                    strcmp(tok, "scroll") == 0 ||
+                    strcmp(tok, "cover") == 0 ||
+                    strcmp(tok, "contain") == 0 ||
+                    strcmp(tok, "none") == 0 ||
+                    strcmp(tok, "auto") == 0) {
+                    *end = saved;
+                    tok = (saved == 0) ? end : end + 1;
+                    continue;
+                }
+
+                // Try parsing as a color
+                uint32_t tmp;
+                if (dom_parse_color(tok, &tmp) == 0) {
+                    style->background_color = tmp;
+                    break;  // take the first color token
+                }
+                *end = saved;
+                tok = (saved == 0) ? end : end + 1;
+            }
+        }
     }
     // Font properties
     else if (strcmp(prop_name, "font-size") == 0) {
@@ -2202,6 +2291,44 @@ static void layout_inline(dom_document_t *doc, dom_node_t *node, layout_ctx_t *c
     ctx->cursor_x += s->padding[3];
     ctx->cursor_y += s->padding[0];
 
+    // <img> with a loaded image: use natural dimensions if no explicit
+    // width/height was set in CSS. This makes images actually take up space
+    // on the line instead of collapsing to 0x0.
+    if (node->type == DOM_NODE_ELEMENT &&
+        str_casecmp(node->tag, "img") == 0 &&
+        node->image_w > 0 && node->image_h > 0) {
+        // If CSS didn't specify a width, use the natural image width
+        // (clamped to the available line width to avoid overflow).
+        if (s->layout_w <= 0) {
+            int w = node->image_w;
+            if (w > ctx->max_x - ctx->cursor_x) {
+                // Scale down to fit, preserving aspect ratio
+                w = ctx->max_x - ctx->cursor_x;
+                if (w < 1) w = 1;
+            }
+            s->layout_w = w;
+            s->content_w = w;
+        }
+        if (s->layout_h <= 0) {
+            // Scale height proportionally if width was clamped
+            int natural_w = node->image_w;
+            int natural_h = node->image_h;
+            int h = natural_h;
+            if (s->layout_w > 0 && s->layout_w != natural_w) {
+                h = (natural_h * s->layout_w) / natural_w;
+            }
+            s->layout_h = h;
+            s->content_h = h;
+        }
+        // Advance cursor past the image
+        ctx->cursor_x += s->layout_w;
+        if (s->layout_h > max_line_h) max_line_h = s->layout_h;
+        ctx->line_height = max_line_h;
+        s->layout_x = start_x;
+        s->layout_y = start_y;
+        return;
+    }
+
     dom_node_t *child = node->first_child;
     while (child) {
         layout_node(doc, child, ctx);
@@ -2279,6 +2406,153 @@ void dom_compute_styles(dom_document_t *doc, int viewport_w, int viewport_h) {
     if (doc->total_height < viewport_h) {
         doc->total_height = viewport_h;
     }
+}
+
+// ============================================================================
+// IMAGE LOADING — post-parse pass
+// ============================================================================
+
+// Resolve a possibly-relative URL against the document's base_url.
+// Writes the resolved URL into `out` (size out_len). Handles:
+//   * "http://..." / "https://..." → kept as-is
+//   * "//host/path"               → scheme-relative, prepend "https:"
+//   * "/path"                     → root-relative, prepend base_url's scheme+host
+//   * "path"                      → relative, append to base_url's directory
+static void resolve_url(const char* base_url, const char* src,
+                        char* out, int out_len) {
+    if (!src || !*src) { out[0] = 0; return; }
+    if (!out || out_len < 8) return;
+
+    // Absolute URL — copy as-is
+    if (strstr(src, "http://") == src || strstr(src, "https://") == src) {
+        int n = strlen(src);
+        if (n > out_len - 1) n = out_len - 1;
+        memcpy(out, src, n); out[n] = 0;
+        return;
+    }
+
+    // Scheme-relative: "//host/path" → "https://host/path"
+    if (src[0] == '/' && src[1] == '/') {
+        int n = strlen(src);
+        if (n + 6 > out_len) n = out_len - 7;
+        memcpy(out, "https:", 6);
+        memcpy(out + 6, src, n); out[6 + n] = 0;
+        return;
+    }
+
+    // Root-relative or relative — need base_url
+    if (!base_url || !*base_url) {
+        // No base — just copy
+        int n = strlen(src);
+        if (n > out_len - 1) n = out_len - 1;
+        memcpy(out, src, n); out[n] = 0;
+        return;
+    }
+
+    // Parse base_url: find scheme://host/
+    const char* scheme_end = strstr(base_url, "://");
+    if (!scheme_end) {
+        // base_url isn't absolute — just concat
+        int bn = strlen(base_url);
+        int sn = strlen(src);
+        if (bn + 1 + sn + 1 > out_len) {
+            // Truncate src
+            sn = out_len - bn - 2;
+        }
+        memcpy(out, base_url, bn);
+        // Ensure single slash between
+        if (base_url[bn-1] != '/' && src[0] != '/') {
+            out[bn] = '/'; bn++;
+        }
+        memcpy(out + bn, src, sn); out[bn + sn] = 0;
+        return;
+    }
+
+    // Find host: scheme://HOST/...
+    const char* host_start = scheme_end + 3;
+    const char* path_start = strchr(host_start, '/');
+    const char* host_end = path_start ? path_start : host_start + strlen(host_start);
+
+    if (src[0] == '/') {
+        // Root-relative: scheme://host + src
+        int scheme_host_len = (int)(host_end - base_url);
+        int sn = strlen(src);
+        if (scheme_host_len + sn + 1 > out_len) {
+            sn = out_len - scheme_host_len - 1;
+        }
+        memcpy(out, base_url, scheme_host_len);
+        memcpy(out + scheme_host_len, src, sn);
+        out[scheme_host_len + sn] = 0;
+    } else {
+        // Relative: append to base_url's directory (strip filename after last /)
+        int base_len = strlen(base_url);
+        int dir_len = base_len;
+        // Find last '/' after the host
+        const char* last_slash = strrchr(path_start ? path_start : host_start, '/');
+        if (last_slash) {
+            dir_len = (int)(last_slash - base_url + 1);
+        }
+        int sn = strlen(src);
+        if (dir_len + sn + 1 > out_len) {
+            sn = out_len - dir_len - 1;
+        }
+        memcpy(out, base_url, dir_len);
+        memcpy(out + dir_len, src, sn);
+        out[dir_len + sn] = 0;
+    }
+}
+
+// Recursive walker — loads images for every <img> node under `node`.
+static void dom_load_images_recursive(dom_node_t *node, const char* base_url) {
+    if (!node) return;
+    if (node->type == DOM_NODE_ELEMENT &&
+        str_casecmp(node->tag, "img") == 0 &&
+        !node->image_load_attempted &&
+        node->src[0]) {
+
+        node->image_load_attempted = 1;
+        char url[DOM_MAX_URL_LEN * 2];
+        resolve_url(base_url, node->src, url, sizeof(url));
+
+        // Fetch the image bytes. Use a 1MB buffer (enough for most web images).
+        // The http_get client handles redirects + gzip.
+        int buf_size = 1024 * 1024;
+        char* buf = (char*)kmalloc(buf_size);
+        if (buf) {
+            int got = http_get(url, buf, buf_size, 0, 0);
+            if (got > 0) {
+                png_image_t* img = (png_image_t*)kmalloc(sizeof(png_image_t));
+                if (img) {
+                    memset(img, 0, sizeof(png_image_t));
+                    if (png_decode((const uint8_t*)buf, (uint32_t)got, img) == 0) {
+                        node->image = img;
+                        node->image_w = (int)img->width;
+                        node->image_h = (int)img->height;
+                        s_printf("[DOM] Loaded image %s (%dx%d)\n",
+                                 url, img->width, img->height);
+                    } else {
+                        s_printf("[DOM] PNG decode failed for %s\n", url);
+                        kfree(img);
+                    }
+                }
+            } else {
+                s_printf("[DOM] Image fetch failed for %s (got=%d)\n", url, got);
+            }
+            kfree(buf);
+        }
+    }
+
+    // Recurse into children
+    dom_node_t *child = node->first_child;
+    while (child) {
+        dom_load_images_recursive(child, base_url);
+        child = child->next_sibling;
+    }
+}
+
+void dom_load_images(dom_document_t *doc) {
+    if (!doc || !doc->body) return;
+    dom_load_images_recursive(doc->body, doc->base_url);
 }
 
 // ============================================================================
@@ -2405,6 +2679,22 @@ static void render_node(dom_document_t *doc, dom_node_t *node,
         // Draw background (fills the border-box area)
         if (s->background_color != DOM_COLOR_TRANSPARENT && bb_w > 0 && bb_h > 0) {
             gfx_fill_rect(bb_x, bb_y, bb_w, bb_h, s->background_color);
+        }
+
+        // Draw image (for <img> nodes with a decoded image attached)
+        if (node->image && node->image_w > 0 && node->image_h > 0 && bb_w > 0 && bb_h > 0) {
+            png_image_t* img = (png_image_t*)node->image;
+            // Determine draw dimensions:
+            //   * If width/height CSS attributes are set, use them (already in layout)
+            //   * Otherwise use natural image dimensions, clamped to the border-box
+            int draw_w = bb_w;
+            int draw_h = bb_h;
+            // Use the existing gfx_draw_asset_scaled primitive — it does
+            // bilinear-ish scaling with alpha blending.
+            gfx_draw_asset_scaled(buffer, bb_x, bb_y,
+                                  img->pixel_data,
+                                  (int)img->width, (int)img->height,
+                                  draw_w, draw_h);
         }
 
         // Draw borders (on top of background)

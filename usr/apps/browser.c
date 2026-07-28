@@ -880,7 +880,45 @@ static void browser_load_page(const char* url) {
             k_close(sockfd);
             extern void rtl8139_flush_rx(void);
             rtl8139_flush_rx();
-            s_printf("[BROWSER] WARNING: TLS handshake failed for %s.\n", url);
+            s_printf("[BROWSER] WARNING: TLS handshake failed for %s — falling back to plain HTTP.\n", url);
+
+            // ── HTTP fallback ──
+            // CamelOS's TLS stack has limited cipher/ECDH support, so modern
+            // HTTPS sites (Google, Cloudflare-fronted pages, etc.) often fail
+            // the handshake. Rather than showing a TLS error page (which is
+            // the user-visible bug "can't even load google right"), retry the
+            // request over plain HTTP on port 80. This matches what core/http.c
+            // already does for the kernel-side HTTP client.
+            //
+            // NOTE: this sends the request in cleartext. Acceptable trade-off
+            // for an OS that's mostly used to fetch public web pages, and
+            // strictly better than "site doesn't load at all".
+            if (port == 443) {
+                s_printf("[BROWSER] Retrying %s over HTTP port 80\n", host);
+                sockfd = k_socket(AF_INET, SOCK_STREAM, 0);
+                if (sockfd >= 0) {
+                    sockaddr_in_t sin2;
+                    memset(&sin2, 0, sizeof(sin2));
+                    sin2.sin_family = AF_INET;
+                    sin2.sin_port   = htons(80);
+                    sin2.sin_addr   = ip;   // reuse the already-resolved IP
+                    for (int i = 0; i < 200; i++) {
+                        if (k_connect(sockfd, &sin2) >= 0) break;
+                        extern void rtl8139_poll(void);
+                        rtl8139_poll();
+                        extern void millisleep(int);
+                        millisleep(5);
+                    }
+                    if (sockfd >= 0) {
+                        use_tls = 0;
+                        tls_session = 0;
+                        load_progress = 30;
+                        strcpy(status_text, "Connected (insecure fallback)");
+                        goto tls_fallback_ok;
+                    }
+                }
+            }
+
             error_type = ERR_TLS;
             strncpy(error_detail, host, 127); error_detail[127] = 0;
             page_line_count = 0; strcpy(status_text, "TLS Error - Connection not secure");
@@ -890,6 +928,7 @@ static void browser_load_page(const char* url) {
         load_progress = 35;
         strcpy(status_text, "Secure connection established");
     }
+tls_fallback_ok:
 
     http_process_events();
     if (browser_window) {
@@ -1475,6 +1514,19 @@ static void browser_load_page(const char* url) {
                 s_printf("[Browser] TRACE: pre dom_compute_styles\n");
                 dom_compute_styles(dom_doc, browser_win_w - PAD*2 - 12, content_h_est);
                 s_printf("[Browser] TRACE: post dom_compute_styles\n");
+
+                // ── Load images ──
+                // Walks every <img> node, fetches its src via http_get,
+                // decodes via png_decode, stores pixels on the node.
+                // render_node() will blit them. Failed fetches are silent.
+                // We do this AFTER layout so natural dimensions can override
+                // the 0x0 default for <img> tags without explicit width/height.
+                s_printf("[Browser] TRACE: pre dom_load_images\n");
+                dom_load_images(dom_doc);
+                // Re-run layout now that image natural dimensions are known
+                // so images actually take up space on the page.
+                dom_compute_styles(dom_doc, browser_win_w - PAD*2 - 12, content_h_est);
+                s_printf("[Browser] TRACE: post dom_load_images + re-layout\n");
 
                 #if BROWSER_RUN_JS
                 /* --- page JavaScript (DISABLED: overflows 16 KB stack) --- */
