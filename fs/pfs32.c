@@ -267,7 +267,15 @@ void flush_fat() {
     PFS_LOCK();
     for(int i=0; i<FAT_CACHE_SIZE; i++) {
         if(fat_cache_block[i] != PFS32_END_BLOCK && fat_cache_dirty[i]) {
-            if (disk_rw(1, 1 + fat_cache_block[i], fat_cache_data[i]) == PFS_OK) {
+            /* FAT lives right after the block bitmap (superblock at rel-blk 0,
+             * bitmap at rel-blks 1..block_bitmap_blocks, FAT starts at
+             * rel-blk 1 + block_bitmap_blocks). Using sb.block_bitmap_blocks
+             * (read from the on-disk superblock in pfs32_init) is critical —
+             * the static global is only set during pfs32_format[_fast], not
+             * during a normal mount, so it is 0 on every reboot and would
+             * silently defeat this fix. */
+            uint32_t fat_disk_blk = 1 + sb.block_bitmap_blocks + fat_cache_block[i];
+            if (disk_rw(1, fat_disk_blk, fat_cache_data[i]) == PFS_OK) {
                 fat_cache_dirty[i] = 0;
             }
         }
@@ -309,7 +317,8 @@ uint32_t get_fat(uint32_t cluster) {
 
     // Flush victim
     if(fat_cache_block[victim] != PFS32_END_BLOCK && fat_cache_dirty[victim]) {
-        disk_rw(1, 1 + fat_cache_block[victim], fat_cache_data[victim]);
+        uint32_t fat_disk_blk = 1 + sb.block_bitmap_blocks + fat_cache_block[victim];
+        disk_rw(1, fat_disk_blk, fat_cache_data[victim]);
     }
 
     // Load new
@@ -317,7 +326,8 @@ uint32_t get_fat(uint32_t cluster) {
     fat_cache_dirty[victim] = 0;
     fat_cache_lru[victim] = fat_access_counter;
     
-    if (disk_rw(0, 1 + fat_blk_idx, fat_cache_data[victim]) != PFS_OK) {
+    uint32_t fat_disk_blk = 1 + sb.block_bitmap_blocks + fat_blk_idx;
+    if (disk_rw(0, fat_disk_blk, fat_cache_data[victim]) != PFS_OK) {
         fat_cache_block[victim] = PFS32_END_BLOCK; // Invalidate
         PFS_UNLOCK();
         return PFS32_END_BLOCK;
@@ -479,6 +489,14 @@ int pfs32_init(uint32_t start, uint32_t total) {
 
     // Load block bitmap into memory for fast allocation tracking
     if (sb.block_bitmap_start && sb.block_bitmap_blocks > 0) {
+        /* Sync the static global with the on-disk value so FAT offset
+         * arithmetic (1 + block_bitmap_blocks + fat_blk_idx) is correct
+         * even on a non-formatting boot. Without this, block_bitmap_blocks
+         * stays 0 after a reboot and the FAT would be read/written from
+         * the wrong disk location (the block bitmap region), silently
+         * corrupting the bitmap and losing the FAT across reboots. */
+        block_bitmap_blocks = sb.block_bitmap_blocks;
+
         // Free old bitmap if re-initializing
         if (block_bitmap) {
             kfree(block_bitmap);

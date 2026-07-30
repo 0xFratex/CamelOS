@@ -22,7 +22,9 @@
 // browser_enhanced.c — external resource loader (<link rel=stylesheet>,
 // <script src=...>). Was compiled but never called before, which is why
 // external CSS/JS were silently dropped and only inline <style>/<script>
-// were parsed. We now wire it in after dom_parse_html succeeds.
+// were parsed. Now wired in after dom_parse_html succeeds — see the call
+// to browser_set_current_url_for_resources() + browser_process_link_tags()
+// inside browser_load_page().
 #include "../libs/browser_bridge.h"
 extern void browser_set_current_url_for_resources(const char* url);
 extern void browser_process_link_tags(const char* html);
@@ -718,9 +720,16 @@ static int browser_fetch_http2(tls_session_t* tls_session, int sockfd,
         response[len++] = '\r';
         response[len++] = '\n';
     }
-    /* Blank line separating headers from body */
-    response[len++] = '\r';
-    response[len++] = '\n';
+    /* Blank line separating headers from body — guard against the case where
+     * the header loop above broke because the buffer was already full
+     * (len could be response_size - 1, and writing 2 more bytes would
+     * overflow by one byte). */
+    if (len + 2 < response_size) {
+        response[len++] = '\r';
+        response[len++] = '\n';
+    } else if (len < response_size) {
+        response[len++] = '\r';   /* at least one byte if possible */
+    }
 
     /* Append body */
     int body_copy = (int)h2_body_len;
@@ -1185,22 +1194,38 @@ tls_fallback_ok:
             s_printf("[Browser] Redirect Location: '%s'\n", redirect_url);
 
             if (redirect_url[0] == '/' && redirect_url[1] == '/') {
-                char resolved[256]; strcpy(resolved, use_tls ? "https:" : "http:");
-                strcat(resolved, redirect_url);
-                strncpy(redirect_url, resolved, 255); redirect_url[255] = 0;
+                /* Protocol-relative URL (//host/path) — prepend scheme.
+                 * Use a separate buffer because snprintf(src == dst) is UB. */
+                char resolved[512];
+                const char* scheme = use_tls ? "https:" : "http:";
+                snprintf(resolved, sizeof(resolved), "%s%s", scheme, redirect_url);
+                strncpy(redirect_url, resolved, sizeof(redirect_url) - 1);
+                redirect_url[sizeof(redirect_url) - 1] = 0;
             } else if (redirect_url[0] == '/') {
-                char resolved[256]; strcpy(resolved, use_tls ? "https://" : "http://");
-                strcat(resolved, host); strcat(resolved, redirect_url);
-                strncpy(redirect_url, resolved, 255); redirect_url[255] = 0;
+                /* Absolute path (/path) — scheme://host + path */
+                char resolved[512];
+                const char* scheme = use_tls ? "https://" : "http://";
+                snprintf(resolved, sizeof(resolved), "%s%s%s", scheme, host, redirect_url);
+                strncpy(redirect_url, resolved, sizeof(redirect_url) - 1);
+                redirect_url[sizeof(redirect_url) - 1] = 0;
             } else if (redirect_url[0] != 'h' || strncmp(redirect_url, "http", 4) != 0) {
-                char resolved[256]; strcpy(resolved, use_tls ? "https://" : "http://");
-                strcat(resolved, host);
-                char last_path[128]; strncpy(last_path, path, 127); last_path[127] = 0;
+                /* Relative path — resolve against the directory of the current path. */
+                char resolved[512];
+                const char* scheme = use_tls ? "https://" : "http://";
+                char last_path[128];
+                strncpy(last_path, path, sizeof(last_path) - 1);
+                last_path[sizeof(last_path) - 1] = 0;
                 char* last_slash = strrchr(last_path, '/');
-                if (last_slash) { *(last_slash+1) = 0; strcat(resolved, last_path); }
-                else strcat(resolved, "/");
-                strcat(resolved, redirect_url);
-                strncpy(redirect_url, resolved, 255); redirect_url[255] = 0;
+                if (last_slash) {
+                    *(last_slash + 1) = 0;
+                    snprintf(resolved, sizeof(resolved), "%s%s%s%s",
+                             scheme, host, last_path, redirect_url);
+                } else {
+                    snprintf(resolved, sizeof(resolved), "%s%s/%s",
+                             scheme, host, redirect_url);
+                }
+                strncpy(redirect_url, resolved, sizeof(redirect_url) - 1);
+                redirect_url[sizeof(redirect_url) - 1] = 0;
             }
 
             redirect_depth++;
@@ -1497,12 +1522,35 @@ tls_fallback_ok:
                      dom_doc->body ? dom_doc->body->child_count : 0);
 
             #if BROWSER_USE_DOM
-                /* External resource loader stays OFF — it recurses a full
-                 * DNS+TCP+TLS+HTTP fetch on this same tiny stack. */
-            #if 0
+                /* External resource loader — was previously disabled with
+                 * `#if 0` because of a 16 KB kernel-stack concern, but:
+                 *   - browser_set_current_url_for_resources() is just a
+                 *     strncpy() into a file-scope static — trivially safe.
+                 *     Without it, browser_current_url stays "" and any
+                 *     relative URL (e.g. /style.css or /images/foo.png)
+                 *     falls into resolve_url()'s "no :// in base" branch,
+                 *     gets returned unchanged, and is fed to dns_resolve()
+                 *     as an empty hostname — exactly the
+                 *     "[DNS] Resolving ''" failures seen in the logs.
+                 *   - browser_process_link_tags() recurses a DNS+TCP+TLS+HTTP
+                 *     fetch for each <link rel=stylesheet>, but all heavy
+                 *     buffers inside http_get() / browser_load_css() are
+                 *     kmalloc()'d, not stack-allocated — same pattern as
+                 *     the existing redirect recursion at the bottom of
+                 *     browser_load_page() which already works fine.
+                 * So both are now enabled. */
                 browser_set_current_url_for_resources(url_buf);
                 browser_process_link_tags(body);
-            #endif
+
+                /* Also propagate the current URL into the DOM document so
+                 * dom_load_images() (added on the ui-overhaul branch) can
+                 * resolve relative <img src="/foo.png"> against the page's
+                 * origin. Without this, doc->base_url stays "" and
+                 * resolve_url() inside browser_dom.c falls into its
+                 * "no base — just copy" branch, producing the same
+                 * "[DNS] Resolving ''" failures for image fetches. */
+                strncpy(dom_doc->base_url, url_buf, DOM_MAX_URL_LEN - 1);
+                dom_doc->base_url[DOM_MAX_URL_LEN - 1] = 0;
 
                 s_printf("[Browser] TRACE: pre dom_apply_all_stylesheets\n");
                 dom_apply_all_stylesheets(dom_doc);

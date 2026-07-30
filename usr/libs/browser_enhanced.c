@@ -126,7 +126,15 @@ static void resolve_url(const char* base_url, const char* relative_url, char* re
     // Find protocol:// in base URL
     const char* proto_end = strstr(base_url, "://");
     if (!proto_end) {
+        /* Base URL is missing or malformed — cannot resolve a relative URL
+         * against it. Return the relative URL unchanged but properly
+         * null-terminated, so the caller can detect the failure (e.g.
+         * http_get will fail to parse it and return <= 0) instead of
+         * silently feeding an empty hostname to dns_resolve(). The previous
+         * code forgot to write the null terminator here, which could leak
+         * stack/heap bytes into the resolved buffer. */
         strncpy(resolved, relative_url, max_len - 1);
+        resolved[max_len - 1] = 0;
         return;
     }
     proto_end += 3;
@@ -137,29 +145,30 @@ static void resolve_url(const char* base_url, const char* relative_url, char* re
     
     if (relative_url[0] == '/') {
         if (relative_url[1] == '/') {
-            // Protocol-relative URL (//host/path)
-            strncpy(resolved, base_url, proto_end - base_url);
-            resolved[proto_end - base_url] = 0;
-            strncat(resolved, relative_url + 2, max_len - strlen(resolved) - 1);
+            // Protocol-relative URL (//host/path) — keep scheme + the rest.
+            // Earlier code wrote the scheme (e.g. "https:") and then strncat'd
+            // relative_url+2 directly, producing "https:www.example.com/..."
+            // (missing the "//"). Fixed by using snprintf to build
+            // "<scheme>://<rest>" explicitly.
+            int scheme_len = (int)(proto_end - base_url) - 3;  /* "https" or "http" */
+            if (scheme_len < 0) scheme_len = 0;
+            snprintf(resolved, max_len, "%.*s://%s",
+                     scheme_len, base_url, relative_url + 2);
         } else {
-            // Absolute path (/path)
-            int proto_host_len = host_end - base_url;
-            strncpy(resolved, base_url, proto_host_len);
-            resolved[proto_host_len] = 0;
-            strncat(resolved, relative_url, max_len - proto_host_len - 1);
+            // Absolute path (/path) — scheme://host + path
+            int proto_host_len = (int)(host_end - base_url);
+            snprintf(resolved, max_len, "%.*s%s",
+                     proto_host_len, base_url, relative_url);
         }
     } else {
-        // Relative path
+        // Relative path — resolve against the directory of the base URL.
         const char* last_slash = strrchr(proto_end, '/');
         if (last_slash && last_slash > proto_end) {
-            int base_len = last_slash - base_url + 1;
-            strncpy(resolved, base_url, base_len);
-            resolved[base_len] = 0;
-            strncat(resolved, relative_url, max_len - base_len - 1);
+            int base_len = (int)(last_slash - base_url) + 1;
+            snprintf(resolved, max_len, "%.*s%s",
+                     base_len, base_url, relative_url);
         } else {
-            strncpy(resolved, base_url, max_len - 1);
-            strncat(resolved, "/", 1);
-            strncat(resolved, relative_url, max_len - strlen(resolved) - 1);
+            snprintf(resolved, max_len, "%s/%s", base_url, relative_url);
         }
     }
     
