@@ -379,13 +379,40 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
                     k_close(s);
                     return 0;
                 } else if (found_cname) {
-                    // No A record but CNAME found - follow the chain
+                    // No A record but CNAME found - follow the chain.
+                    //
+                    // CRITICAL: We must cache the ORIGINAL domain -> IP mapping
+                    // after the recursive call returns, not just the CNAME
+                    // target. Previously, only the CNAME target (e.g.
+                    // 'www.l.google.com') was cached, so every subsequent
+                    // lookup for 'www.google.com' missed the cache and did
+                    // a full DNS query again — defeating the purpose of the
+                    // cache and causing the "DNS works once then fails"
+                    // symptom (the repeated queries eventually time out
+                    // because of stale-packet congestion in the NIC RX ring).
+                    //
+                    // We pass the original domain through a new parameter so
+                    // the recursive call can cache it when it finds the A
+                    // record. This avoids re-querying for the original domain.
 #if DNS_DEBUG_ENABLED
                     s_printf("[DNS] CNAME chain: '%s' -> '%s'\n", domain, cname);
 #endif
                     k_close(s);
-                    return dns_resolve_internal(cname, ip_out, max_len,
-                                                cname_depth + 1);
+                    int ret = dns_resolve_internal(cname, ip_out, max_len,
+                                                   cname_depth + 1);
+                    if (ret == 0) {
+                        // Recursive call succeeded — cache the original
+                        // domain -> resolved IP so future lookups hit.
+                        // Parse the IP string returned by the recursive call
+                        // back into uint32_t for the cache. ip_parse() is
+                        // declared in net.h and returns host byte order.
+                        extern uint32_t ip_parse(const char* str);
+                        uint32_t resolved_ip = ip_parse(ip_out);
+                        if (resolved_ip != 0) {
+                            dns_cache_store(domain, resolved_ip, best_ttl);
+                        }
+                    }
+                    return ret;
                 }
 
                 // No useful records in this response, try next retry

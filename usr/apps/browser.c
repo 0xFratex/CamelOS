@@ -1717,15 +1717,38 @@ static void browser_navigate(const char* url) {
     }
     // Check for common domain patterns (contains a dot and no spaces)
     if (!is_url) {
-        int has_dot = 0, has_space = 0;
+        int has_dot = 0, has_space = 0, has_invalid_char = 0;
         for (int i = 0; url[i]; i++) {
             if (url[i] == '.') has_dot = 1;
             if (url[i] == ' ' || url[i] == '\t') has_space = 1;
+            // Reject URLs with characters that are invalid in hostnames:
+            // * ? # % < > " ' { } | \ ^ [ ] ` ; ( ) , @
+            // These indicate a corrupted href extraction (e.g. a CSS
+            // selector or regex fragment like ".*s" that was mistakenly
+            // parsed as a URL). Without this check, ".*s" would pass
+            // is_url (has a dot, no space) and get sent to dns_resolve,
+            // which wastes 30 seconds retrying before failing.
+            if (url[i] == '*' || url[i] == '?' || url[i] == '#' ||
+                url[i] == '%' || url[i] == '<' || url[i] == '>' ||
+                url[i] == '"' || url[i] == '\'' || url[i] == '{' ||
+                url[i] == '}' || url[i] == '|' || url[i] == '\\' ||
+                url[i] == '^' || url[i] == '[' || url[i] == ']' ||
+                url[i] == '`' || url[i] == ';' || url[i] == '(' ||
+                url[i] == ')' || url[i] == ',' || url[i] == '@') {
+                has_invalid_char = 1;
+            }
         }
-        if (has_dot && !has_space) is_url = 1;
+        if (has_dot && !has_space && !has_invalid_char) is_url = 1;
         // Also treat "localhost" as a URL
         if (strncmp(url, "localhost", 9) == 0) is_url = 1;
     }
+
+    // If the input doesn't look like a URL at all (no scheme, no valid
+    // domain pattern), treat it as a search query ONLY if it's non-empty
+    // and contains at least one alphanumeric character. This prevents
+    // garbage strings like ".*s" from being sent to DuckDuckGo as a
+    // search query (which would then try to DNS-resolve "duckduckgo.com"
+    // and trigger the 30-second DNS timeout cascade).
 
     if (!is_url) {
         // Build DuckDuckGo search URL with URL-encoded query
@@ -3369,6 +3392,38 @@ static void browser_on_mouse(window_t* win, int lx, int ly, int btn) {
         }
 
         // Link click in content
+        // For DOM-rendered pages, use proper DOM hit testing instead of the
+        // stale line-based links[] array. The links[] array positions come
+        // from the line-based renderer and don't correspond to the DOM
+        // layout at all — clicking on "Sign in" on google.com would match
+        // a garbage links[] entry and navigate to '.*s' or DuckDuckGo.
+        if (use_dom_rendering && dom_doc) {
+            // Compute the content area origin matching dom_render's call:
+            //   dom_render(dom_doc, buffer, content_x + PAD, content_y_start, ...)
+            int sidebar_w = history_sidebar_active ? 180 : 0;
+            int dom_origin_x = sidebar_w + PAD;
+            int dom_origin_y = content_y_start;
+            extern dom_node_t* dom_hit_test_link(dom_document_t *doc, int x, int y,
+                                                  int origin_x, int origin_y, int scroll_offset);
+            dom_node_t* hit = dom_hit_test_link(dom_doc, lx, ly,
+                                                dom_origin_x, dom_origin_y, scroll_offset);
+            if (hit && hit->href[0]) {
+                /* Resolve the link's href against the current page URL
+                 * before navigating. Without this, relative hrefs like
+                 * "/search?q=foo" are misclassified as search queries and
+                 * redirected to DuckDuckGo. */
+                char resolved_url[512];
+                extern void browser_resolve_url(const char* relative_url, char* resolved, int max_len);
+                browser_resolve_url(hit->href, resolved_url, sizeof(resolved_url));
+                s_printf("[Browser] DOM click hit <a> href='%s' -> '%s'\n", hit->href, resolved_url);
+                browser_navigate(resolved_url);
+                return;
+            }
+            // No link hit — fall through to the line-based handler as a fallback
+            // (for pages where DOM rendering partially failed).
+        }
+
+        // Line-based link click (fallback for non-DOM pages)
         int lh = zoom_line_h[zoom_level];
         int click_line = (ly - content_y_start) / lh + scroll_offset;
         if (click_line >= 0 && click_line < page_line_count) {

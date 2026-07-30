@@ -374,4 +374,18 @@ int         dom_collect_children(dom_node_t *n, dom_node_t **out, int max);
 // Call AFTER JavaScript has built/mutated nodes so they get styled & laid out.
 void        dom_reapply_styles(dom_document_t *doc);
 
+// ============================================================================
+// HIT TESTING - find the deepest <a> element whose rendered bounding box
+// contains the given (x, y) screen coordinates. Returns the node, or NULL
+// if no link is at that position. Used by the browser's click handler to
+// navigate to the correct href when the page is rendered with the DOM
+// engine (the old line-based links[] array has stale positions that don't
+// correspond to the DOM layout).
+//
+// origin_x / origin_y: the top-left of the content area on screen.
+// scroll_offset: vertical scroll in pixels (matches dom_render's param).
+// ============================================================================
+dom_node_t* dom_hit_test_link(dom_document_t *doc, int x, int y,
+                              int origin_x, int origin_y, int scroll_offset);
+
 #endif // BROWSER_DOM_H

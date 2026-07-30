@@ -2790,6 +2790,75 @@ void dom_render(dom_document_t *doc, uint32_t *buffer,
 }
 
 // ============================================================================
+// HIT TESTING — walk the DOM tree to find the deepest <a> element whose
+// rendered bounding box contains the click point. This replaces the old
+// line-based links[] array lookup, which used stale coordinates that didn't
+// correspond to the DOM layout — causing clicks on Google's "Sign in" to
+// match a garbage links[] entry and navigate to '.*s' or DuckDuckGo.
+//
+// The coordinate system mirrors render_node():
+//   abs_x = origin_x + node.layout_x  (accumulated through parent chain)
+//   abs_y = (origin_y - scroll_offset) + node.layout_y
+//
+// We walk the tree depth-first and return the DEEPEST matching <a> node
+// (so nested links work correctly). If no <a> is found at the click point,
+// we also check <img> nodes inside <a> elements (clicking an image inside
+// a link should navigate to the link's href).
+// ============================================================================
+static dom_node_t* hit_test_recursive(dom_node_t *node, int click_x, int click_y,
+                                      int parent_abs_x, int parent_abs_y) {
+    if (!node) return NULL;
+
+    dom_style_t *s = &node->computed_style;
+    if (s->display == DOM_DISPLAY_NONE || !s->visible) return NULL;
+
+    int abs_x = parent_abs_x + s->layout_x;
+    int abs_y = parent_abs_y + s->layout_y;
+
+    // Check if the click is within this node's bounding box.
+    // Use layout_w/h for the node's rendered size. For text nodes, layout_h
+    // is the font size line height.
+    int node_w = s->layout_w > 0 ? s->layout_w : s->content_w;
+    int node_h = s->layout_h > 0 ? s->layout_h : s->font_size;
+
+    int in_bounds = (click_x >= abs_x && click_x < abs_x + node_w &&
+                     click_y >= abs_y && click_y < abs_y + node_h);
+
+    // Check children first (deepest match wins)
+    dom_node_t *child_hit = NULL;
+    if (node->first_child) {
+        dom_node_t *child = node->first_child;
+        while (child) {
+            dom_node_t *hit = hit_test_recursive(child, click_x, click_y,
+                                                 abs_x, abs_y);
+            if (hit) { child_hit = hit; break; }
+            child = child->next_sibling;
+        }
+    }
+
+    // If a child matched, return it (deepest match takes priority)
+    if (child_hit) return child_hit;
+
+    // Otherwise, check if THIS node is an <a> with an href and the click
+    // is within its bounds.
+    if (in_bounds &&
+        node->type == DOM_NODE_ELEMENT &&
+        str_casecmp(node->tag, "a") == 0 &&
+        node->href[0] != 0) {
+        return node;
+    }
+
+    return NULL;
+}
+
+dom_node_t* dom_hit_test_link(dom_document_t *doc, int x, int y,
+                              int origin_x, int origin_y, int scroll_offset) {
+    if (!doc || !doc->body) return NULL;
+    // Mirror dom_render's coordinate transform: parent_y = origin_y - scroll_offset
+    return hit_test_recursive(doc->body, x, y, origin_x, origin_y - scroll_offset);
+}
+
+// ============================================================================
 // DOM QUERIES
 // ============================================================================
 
