@@ -906,8 +906,7 @@ static void browser_load_page(const char* url) {
                         if (k_connect(sockfd, &sin2) >= 0) break;
                         extern void rtl8139_poll(void);
                         rtl8139_poll();
-                        extern void millisleep(int);
-                        millisleep(5);
+                        timer_sleep(5);
                     }
                     if (sockfd >= 0) {
                         use_tls = 0;

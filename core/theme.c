@@ -248,9 +248,16 @@ void theme_set(int theme_id) {
     }
 
     // Invalidate the desktop wallpaper cache so it gets regenerated
-    // with the new theme colors
+    // with the new theme colors. The installer image does not link the
+    // desktop module, so this symbol may be absent; treat it as optional.
     extern int wallpaper_cache_w;
-    wallpaper_cache_w = 0;
+    (void)wallpaper_cache_w;
+    #ifdef __GNUC__
+    __attribute__((weak)) extern int wallpaper_cache_w;
+    if (&wallpaper_cache_w) {
+        wallpaper_cache_w = 0;
+    }
+    #endif
 
     theme_save();
 
