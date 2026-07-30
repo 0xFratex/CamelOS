@@ -188,7 +188,18 @@ static void tcp_ofo_drain(tcp_connection_t* conn) {
                 if (conn->on_data) {
                     conn->on_data(e->data, e->len, conn->callback_user_data);
                 } else if (!conn->user_closing) {
-                    if (conn->recv_tail + e->len <= sizeof(conn->recv_buffer)) {
+                    /* Same live-bytes + compact logic as the main data path.
+                     * Previously this used recv_tail + e->len <= sizeof(recv_buffer),
+                     * which suffered the same "false full" bug. */
+                    uint32_t live = conn->recv_tail - conn->recv_head;
+                    if (live + e->len <= sizeof(conn->recv_buffer)) {
+                        if (conn->recv_head > 0) {
+                            memmove(conn->recv_buffer,
+                                    conn->recv_buffer + conn->recv_head,
+                                    live);
+                            conn->recv_tail = live;
+                            conn->recv_head = 0;
+                        }
                         memcpy(conn->recv_buffer + conn->recv_tail, e->data, e->len);
                         conn->recv_tail += e->len;
                     }
@@ -291,7 +302,28 @@ int tcp_send(tcp_connection_t* conn, uint8_t flags, uint8_t* data, uint16_t len)
     tcp->ack_num = htonl(conn->rcv_nxt);
     tcp->data_offset = 5 << 4;  // 20 bytes header
     tcp->flags = flags;
-    tcp->window = htons(TCP_WINDOW_SIZE);
+    /* Advertise the TRUE free space in the receive buffer so the peer's
+     * send window tracks reality. Previously this was hardcoded to
+     * TCP_WINDOW_SIZE (16384), which meant:
+     *   - The peer kept transmitting up to rcv_nxt + 16384 even when the
+     *     64 KB recv_buffer was nearly full.
+     *   - Duplicate ACKs sent from the "BUFFER FULL" branch still claimed
+     *     window=16384, so the peer retransmitted into the same full buffer
+     *     instead of pausing.
+     *   - TLS records got split mid-transfer (e.g. 151/1223 bytes received)
+     *     and tls_recv_all timed out after 2000 ticks.
+     * The live byte count is recv_tail - recv_head (the buffer is a linear
+     * contiguous region; tcp_conn_recv compacts it after every partial
+     * read so recv_head is normally 0). Cap at 65535 to fit the 16-bit
+     * window field. */
+    {
+        uint32_t live = (conn->recv_tail >= conn->recv_head)
+                          ? (conn->recv_tail - conn->recv_head)
+                          : 0;
+        uint32_t free_space = sizeof(conn->recv_buffer) - live;
+        if (free_space > 65535) free_space = 65535;
+        tcp->window = htons((uint16_t)free_space);
+    }
     tcp->urgent_ptr = 0;
 
     uint16_t header_len = 20;
@@ -382,6 +414,19 @@ tcp_connection_t* tcp_connect_with_ptr(uint32_t remote_ip, uint16_t remote_port)
                      old->state,
                      (remote_ip >> 24) & 0xFF, (remote_ip >> 16) & 0xFF,
                      (remote_ip >> 8) & 0xFF, remote_ip & 0xFF, remote_port);
+            /* Send RST so the peer stops retransmitting into a socket we're
+             * about to destroy. Without this, the server keeps its side of
+             * the connection alive and continues retransmitting the data
+             * that filled our buffer (it hasn't seen our FIN-ACK yet, or
+             * the retransmit storm from the BUFFER-FULL branch is still
+             * in flight). Those retransmits flood the NIC RX ring and
+             * starve the new SYN we're about to send for the HTTP/1.1
+             * fallback — producing the "TIMEOUT after 2001 ticks" on the
+             * new connection. Sending RST tells the peer to tear down
+             * immediately. */
+            if (old->state != TCP_SYN_SENT && old->state != TCP_LISTEN) {
+                tcp_send(old, TCP_RST, NULL, 0);
+            }
             old->state = TCP_CLOSED;
             tcp_ofo_flush(old);
             old->remote_ip = 0;
@@ -602,7 +647,28 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                             tcp_send(conn, TCP_ACK, NULL, 0);
                             tcp_ofo_drain(conn);
                         } else if (!conn->user_closing) {
-                            if (conn->recv_tail + data_len <= sizeof(conn->recv_buffer)) {
+                            /* Check actual free space (live bytes, not just
+                             * recv_tail). Previously this used
+                             *   recv_tail + data_len <= sizeof(recv_buffer)
+                             * which only checked whether the new segment fit
+                             * at the tail, ignoring any free bytes at
+                             * [0 .. recv_head). When the app had partially
+                             * drained the buffer, recv_head > 0 and the
+                             * check rejected segments that would have fit
+                             * after a compaction. tcp_conn_recv now compacts
+                             * on every read so recv_head is normally 0, but
+                             * we also compact here defensively in case any
+                             * code path left recv_head > 0. */
+                            uint32_t live = conn->recv_tail - conn->recv_head;
+                            if (live + data_len <= sizeof(conn->recv_buffer)) {
+                                /* Compact if needed so the new data fits at the tail. */
+                                if (conn->recv_head > 0) {
+                                    memmove(conn->recv_buffer,
+                                            conn->recv_buffer + conn->recv_head,
+                                            live);
+                                    conn->recv_tail = live;
+                                    conn->recv_head = 0;
+                                }
                                 // Buffer has space — normal delivery
                                 memcpy(conn->recv_buffer + conn->recv_tail, data, data_len);
                                 conn->recv_tail += data_len;
@@ -619,12 +685,19 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
                                 // so the sender knows we haven't received this data.
                                 // The sender will retransmit after its RTO fires.
                                 //
+                                // With the tcp_send() fix, this dup ACK now carries
+                                // the TRUE free space (which is < MSS here), so the
+                                // peer will pause instead of retransmitting into the
+                                // same full buffer. When the app drains and
+                                // tcp_conn_recv sends a window-update ACK, the peer
+                                // resumes.
+                                //
                                 // Also try to drain the OFO queue in case there's
                                 // space after the application reads some data.
                                 // ====================================================
-                                TCP_LOG("[TCP] recv_buffer FULL (%d/%d), dropping %d bytes "
+                                TCP_LOG("[TCP] recv_buffer FULL (live=%d/%d), dropping %d bytes "
                                         "seq=%u (NOT advancing rcv_nxt=%u)\n",
-                                        (int)conn->recv_tail,
+                                        (int)live,
                                         (int)sizeof(conn->recv_buffer),
                                         (int)data_len, seq, conn->rcv_nxt);
                                 tcp_send_ack_ratelimited(conn);
@@ -764,10 +837,49 @@ int tcp_conn_recv(void* conn_ptr, void* buf, int max_len) {
     memcpy(buf, conn->recv_buffer + conn->recv_head, to_read);
     conn->recv_head += to_read;
 
+    /* Compact the buffer so the free space is always at the tail.
+     * Previously this only reset to 0 when the buffer was *fully* drained
+     * (recv_head == recv_tail), which almost never happens during a large
+     * download — the server keeps appending while the app reads in small
+     * chunks. As a result recv_tail marched toward 65536 while recv_head
+     * also grew, leaving a large unreachable hole of free bytes at the
+     * front. The next inbound segment was rejected because
+     * recv_tail + data_len > 65536, even though logically there was
+     * plenty of free space — producing the "recv_buffer FULL (64921/65536)"
+     * log line while the app had in fact been draining data.
+     *
+     * Compacting on every read keeps recv_head == 0 invariant, so the
+     * acceptance check at tcp_handle_packet ("recv_tail + data_len <=
+     * sizeof(recv_buffer)") correctly reflects real free space, and the
+     * window advertised by tcp_send (which uses live = recv_tail - recv_head)
+     * is also accurate. */
     if (conn->recv_head == conn->recv_tail) {
         conn->recv_head = 0;
         conn->recv_tail = 0;
+    } else if (conn->recv_head > 0) {
+        uint32_t live = conn->recv_tail - conn->recv_head;
+        memmove(conn->recv_buffer, conn->recv_buffer + conn->recv_head, live);
+        conn->recv_tail = live;
+        conn->recv_head = 0;
     }
+
+    /* Send a window-update ACK if we just freed a meaningful amount of
+     * space. RFC 1122 §4.2.2.17 requires the receiver to advertise window
+     * growth so a peer that previously saw window=0 (and paused) can
+     * resume. We avoid ACKing on every tiny read by only sending when
+     * the free space crossed the 1×MSS threshold. tcp_send now computes
+     * the true free space, so this ACK will carry the new window. */
+    if (conn->state == TCP_ESTABLISHED) {
+        uint32_t live_after = conn->recv_tail - conn->recv_head;
+        uint32_t free_after = sizeof(conn->recv_buffer) - live_after;
+        /* Only send a window-update ACK if the read freed at least one MSS
+         * AND the buffer was previously near-full (otherwise the regular
+         * ACK-on-receive is enough and we avoid spamming the peer). */
+        if (free_after >= 1460 && (uint32_t)to_read >= 1024) {
+            tcp_send(conn, TCP_ACK, NULL, 0);
+        }
+    }
+
     return to_read;
 }
 
