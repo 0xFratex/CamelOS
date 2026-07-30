@@ -187,11 +187,16 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
     uint32_t cached_ip;
     if (dns_cache_lookup(domain, &cached_ip)) {
 #if DNS_DEBUG_ENABLED
-        s_printf("[DNS] Cache hit for '%s'\n", domain);
+        char cached_str[16];
+        ip_to_str(cached_ip, cached_str);
+        s_printf("[DNS] Cache hit for '%s' -> %s (dns_count=%d)\n", domain, cached_str, dns_count);
 #endif
         ip_to_str(cached_ip, ip_out);
         return 0;
     }
+#if DNS_DEBUG_ENABLED
+    s_printf("[DNS] Cache miss for '%s' (dns_count=%d)\n", domain, dns_count);
+#endif
 
     // 2. Ensure ARP for gateway is resolved first
     extern int arp_resolve(uint32_t ip, uint8_t* mac_out);
@@ -206,6 +211,20 @@ static int dns_resolve_internal(const char* domain, char* ip_out, int max_len,
                  gw_mac[0], gw_mac[1], gw_mac[2], gw_mac[3], gw_mac[4], gw_mac[5]);
     }
 #endif
+
+    // Flush stale packets from the NIC RX ring before sending the DNS query.
+    // After a heavy HTTPS page load (TCP+TLS+HTTP/2 with 80KB+ of data),
+    // the RX ring is typically clogged with stale TCP ACKs, FIN retransmits,
+    // and duplicate TLS records from the just-closed connection. If we don't
+    // flush them, rtl8139_receive_packets() processes up to RX_MAX_BATCH=64
+    // packets per poll, and the DNS response (a single small UDP packet) can
+    // get stuck behind dozens of stale TCP packets — effectively starving
+    // the DNS resolver until it times out. This was the root cause of
+    // "DNS works once then fails": the first query succeeds because the RX
+    // ring is empty, but every subsequent query (for images, CSS, etc.)
+    // fails because the ring is full of stale packets from the page load.
+    extern void rtl8139_flush_rx(void);
+    rtl8139_flush_rx();
 
     // 3. Query with retry logic
     int s = k_socket(AF_INET, SOCK_DGRAM, 0);

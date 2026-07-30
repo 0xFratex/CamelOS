@@ -55,6 +55,9 @@ static int resource_count = 0;
 extern int http_get(const char* url, char* response, int response_size,
                     const char** headers, int header_count);
 
+// Forward declaration — resolve_url is defined below (line ~120).
+static void resolve_url(const char* base_url, const char* relative_url, char* resolved, int max_len);
+
 // Current URL for resolving relative URLs
 static char browser_current_url[256] = {0};
 
@@ -64,6 +67,15 @@ void browser_set_current_url_for_resources(const char* url) {
         strncpy(browser_current_url, url, 255);
         browser_current_url[255] = 0;
     }
+}
+
+// Public wrapper around resolve_url() so the browser click handler can
+// resolve relative hrefs (e.g. "/search?q=foo" or "page.html") against
+// the current page URL before calling browser_navigate(). Without this,
+// relative hrefs that don't start with "http://" and don't contain a dot
+// are misclassified as search queries and redirected to DuckDuckGo.
+void browser_resolve_url(const char* relative_url, char* resolved, int max_len) {
+    resolve_url(browser_current_url, relative_url, resolved, max_len);
 }
 
 // Normalize URL path by resolving . and .. segments

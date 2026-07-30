@@ -3377,7 +3377,17 @@ static void browser_on_mouse(window_t* win, int lx, int ly, int btn) {
                     int link_x_start = PAD + links[li].col * 8;
                     int link_x_end = link_x_start + links[li].len * 8;
                     if (lx >= link_x_start && lx <= link_x_end) {
-                        browser_navigate(links[li].url);
+                        /* Resolve the link's href against the current page URL
+                         * before navigating. Without this, relative hrefs like
+                         * "/search?q=foo" or "page.html" are misclassified by
+                         * browser_navigate() as search queries (because they
+                         * don't start with "http://" and don't contain a dot)
+                         * and redirected to DuckDuckGo. This was the root cause
+                         * of "clicking an image on Google goes to DuckDuckGo". */
+                        char resolved_url[512];
+                        extern void browser_resolve_url(const char* relative_url, char* resolved, int max_len);
+                        browser_resolve_url(links[li].url, resolved_url, sizeof(resolved_url));
+                        browser_navigate(resolved_url);
                         return;
                     }
                 }

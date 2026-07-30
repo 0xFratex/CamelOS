@@ -36,7 +36,7 @@
 
 // Performance tuning
 #define TX_TIMEOUT_CYCLES     100000
-#define RX_MAX_BATCH          64     // Increased packet throughput
+#define RX_MAX_BATCH          128    // Drain stale packets quickly (was 64, caused DNS starvation)
 #define MAX_CONSECUTIVE_ERRORS 5      // Max bad packets before RX reset
 
 rtl8139_dev_t rtl_dev;  // Global device structure
