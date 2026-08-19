@@ -17,6 +17,7 @@
 #include "../../core/process.h"
 #include "../../core/bsd_syscall.h"
 #include "../../core/user_copy.h"
+#include "window_server.h"
 #include "../../fs/vfs.h"
 #include "../../fs/disk.h"
 
@@ -404,6 +405,22 @@ void syscall_handler(syscall_regs_t* regs) {
             scheduler_yield();
             result = 0;
             break;
+
+        case SYS_USER_WIN_CREATE: {
+            /* Ring 3: create a window (no callbacks) and copy out its
+             * content-area origin so the app can draw into it. */
+            const char* title = (const char*)arg1;
+            int w = (int)arg2;
+            int h = (int)arg3;
+            int* x_out = (int*)arg4;
+            int* y_out = (int*)arg5;
+            window_t* win = ws_create_window(title, w, h, 0, 0, 0);
+            if (!win) { result = -1; break; }
+            if (x_out) *x_out = win->x;
+            if (y_out) *y_out = win->y + TITLE_BAR_HEIGHT;
+            result = win->id;
+            break;
+        }
 
         // --- Extended File/Process/Scheduler Syscalls (130-149) ---
 

@@ -53,9 +53,7 @@ void disk_flush_cache(void) {
             if(ok) {
                 disk_cache_dirty[i] = 0;
             }
-            /* If all retries failed, leave the entry dirty so it will be
-               retried on the next flush attempt.  This prevents silent
-               data loss when an ATA write fails. */
+            // If all retries fail, leave dirty (will retry later)
         }
     }
 }
@@ -64,17 +62,12 @@ void disk_set_drive(int drive_id) {
     if(drive_id < 0 || drive_id > 1) return;
     
     disk_flush_cache();
-
-    // Invalidate all cache entries after switching drives to prevent
-    // stale data from the previous drive being served for the same block numbers
     for(int i = 0; i < DISK_CACHE_SIZE; i++) {
         disk_cache_valid[i] = 0;
         disk_cache_dirty[i] = 0;
         disk_cache_lru[i] = 0;
     }
-    
     fs_drive_id = drive_id;
-    
     if(ide_devices[drive_id].present) {
         disk_total_blocks = ide_devices[drive_id].sectors;
     } else {
@@ -93,10 +86,10 @@ static int disk_cache_lookup(uint32_t block) {
     return -1;
 }
 
+// Returns 0 on success, -1 on failure (dirty write failed)
 static int disk_cache_evict(void) {
     int victim = 0;
     int min_lru = disk_cache_lru[0];
-    
     for(int i=1; i<DISK_CACHE_SIZE; i++) {
         if(disk_cache_lru[i] < min_lru) {
             min_lru = disk_cache_lru[i];
@@ -105,8 +98,6 @@ static int disk_cache_evict(void) {
     }
     
     if(disk_cache_valid[victim] && disk_cache_dirty[victim]) {
-        // Retry write up to 3 times (same strategy as disk_flush_cache)
-        // to prevent silent data loss when ATA write fails
         int retries = 3;
         int ok = 0;
         while(retries > 0) {
@@ -117,35 +108,14 @@ static int disk_cache_evict(void) {
             retries--;
         }
         if(!ok) {
-            // Write failed — keep entry dirty so it will be retried on the
-            // next flush. We must still evict this slot to make room, so
-            // copy the dirty data to a backup buffer for later flush.
-            // For simplicity, we try to find another non-dirty victim first.
-            for(int j=0; j<DISK_CACHE_SIZE; j++) {
-                if(disk_cache_valid[j] && !disk_cache_dirty[j] && disk_cache_lru[j] <= min_lru) {
-                    // Evict this clean entry instead
-                    victim = j;
-                    break;
-                }
-            }
-            // If we're still evicting a dirty entry that failed to write,
-            // we have no choice but to proceed — but keep it dirty
-            // so disk_flush_cache will retry later
-            if(disk_cache_dirty[victim]) {
-                // Last resort: force flush all other dirty entries first,
-                // then retry this one
-                disk_flush_cache();
-                if(ata_write_sector(fs_drive_id, disk_cache_block[victim], disk_cache_data[victim]) == 0) {
-                    ok = 1;
-                }
-            }
+            // Write failed – do not evict, return error
+            return -1;
         }
+        disk_cache_dirty[victim] = 0;
     }
     
     disk_cache_valid[victim] = 0;
-    disk_cache_dirty[victim] = 0;
-    
-    return victim;
+    return 0;
 }
 
 int disk_read_block(uint32_t block, void* buffer) {
@@ -157,7 +127,21 @@ int disk_read_block(uint32_t block, void* buffer) {
         return 0;
     }
     
-    cache_idx = disk_cache_evict();
+    if(disk_cache_evict() != 0) {
+        // Eviction failed – cannot get a free slot
+        return -1;
+    }
+    
+    cache_idx = -1;
+    // Find a free slot (should be available after eviction)
+    for(int i=0; i<DISK_CACHE_SIZE; i++) {
+        if(!disk_cache_valid[i]) {
+            cache_idx = i;
+            break;
+        }
+    }
+    if(cache_idx < 0) return -1; // Should not happen
+
     disk_cache_block[cache_idx] = block;
     disk_cache_valid[cache_idx] = 1;
     disk_cache_dirty[cache_idx] = 0;
@@ -178,7 +162,17 @@ int disk_write_block(uint32_t block, const void* buffer) {
     
     int cache_idx = disk_cache_lookup(block);
     if(cache_idx < 0) {
-        cache_idx = disk_cache_evict();
+        if(disk_cache_evict() != 0) {
+            return -1;
+        }
+        // Find free slot
+        for(int i=0; i<DISK_CACHE_SIZE; i++) {
+            if(!disk_cache_valid[i]) {
+                cache_idx = i;
+                break;
+            }
+        }
+        if(cache_idx < 0) return -1;
         disk_cache_block[cache_idx] = block;
         disk_cache_valid[cache_idx] = 1;
         disk_cache_lru[cache_idx] = disk_access_counter++;
@@ -186,6 +180,5 @@ int disk_write_block(uint32_t block, const void* buffer) {
     
     memcpy(disk_cache_data[cache_idx], buffer, 512);
     disk_cache_dirty[cache_idx] = 1;
-    
     return 0;
 }

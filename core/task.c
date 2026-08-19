@@ -167,35 +167,39 @@ task_t* task_create_user(const char* name, void* entry_point, void* stack_top) {
     // Layout must match irq_common_stub / the iret frame.
     // For Ring 3, we set CS and segment registers to user-mode selectors.
     uint32_t* top = (uint32_t*)(kstack + kstack_size);
-    
-    // CPU-saved state (for iret)
-    // EFLAGS: IF=1 (bit 9), IOPL=0 (bits 12-13 = 0, no I/O access from Ring 3)
+
+    // iret to Ring 3 pops EIP, CS, EFLAGS, UserESP, SS (privilege change).
+    // Build order matches registers_t in isr.h: SS/UserESP are pushed
+    // FIRST (highest address), before the EFLAGS/CS/EIP iret frame.
+    *(--top) = 0x20 | 3;           // SS = user data segment (0x20) + RPL 3
+    *(--top) = (uint32_t)stack_top; // UserESP (top of user stack)
     *(--top) = 0x202;              // EFLAGS (interrupts enabled, IOPL=0)
     *(--top) = 0x18 | 3;           // CS = user code segment (0x18) + RPL 3
     *(--top) = (uint32_t)entry_point; // EIP (entry point in user space)
-    
+
     // IRQ macro pushes
     *(--top) = 0;                  // err_code (no error code)
     *(--top) = 32;                 // int_no (timer IRQ vector)
-    
+
     // pusha layout: eax, ecx, edx, ebx, esp_placeholder, ebp, esi, edi
     *(--top) = 0;                  // eax
     *(--top) = 0;                  // ecx
     *(--top) = 0;                  // edx
     *(--top) = 0;                  // ebx
-    uint32_t esp_val = (uint32_t)stack_top;  // User stack pointer
-    *(--top) = esp_val;            // esp (will be restored to user ESP)
+    *(--top) = 0;                  // esp (pusha placeholder)
     *(--top) = 0;                  // ebp
     *(--top) = 0;                  // esi
     *(--top) = 0;                  // edi
-    
+
     // Segment registers (user data segment with RPL 3)
     *(--top) = 0x20 | 3;           // DS = user data segment (0x20) + RPL 3
     *(--top) = 0x20 | 3;           // ES
     *(--top) = 0x20 | 3;           // FS
     *(--top) = 0x20 | 3;           // GS
-    
+
     new_task->esp = (uint32_t)top;
+    new_task->kernel_stack = kstack;
+    new_task->kernel_stack_top = (uint32_t)(kstack + kstack_size);
     new_task->priority = 128;
     new_task->time_slice = 10;
     new_task->time_used = 0;

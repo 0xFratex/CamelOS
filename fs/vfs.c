@@ -10,6 +10,7 @@
 
 #include "vfs.h"
 #include "pfs32.h"
+#include "disk.h"
 #include "../core/memory.h"
 #include "../core/string.h"
 #include "../hal/drivers/serial.h"
@@ -248,6 +249,13 @@ static int pfs32_vfs_rename(const char* oldpath, const char* newpath)
     return pfs32_rename(oldpath, newpath);
 }
 
+static int pfs32_vfs_sync(int fs_handle)
+{
+    (void)fs_handle;
+    pfs32_sync();
+    return 0;
+}
+
 /* PFS32 operations table */
 static vfs_ops_t pfs32_ops = {
     .open    = pfs32_vfs_open,
@@ -260,6 +268,7 @@ static vfs_ops_t pfs32_ops = {
     .mkdir   = pfs32_vfs_mkdir,
     .unlink  = pfs32_vfs_unlink,
     .rename  = pfs32_vfs_rename,
+    .sync    = pfs32_vfs_sync,
 };
 
 /* ========================================================================
@@ -632,4 +641,21 @@ void vfs_dump_mounts(void)
             s_printf("\n");
         }
     }
+}
+
+int vfs_fsync(int fd)
+{
+    vfs_file_t* f = get_file(fd);
+    if (!f) return -1;
+
+    /* Flush the disk write-back cache first */
+    disk_flush_cache();
+
+    /* Call filesystem-specific sync if available */
+    vfs_ops_t* ops = fs_ops[f->fs_type];
+    if (ops && ops->sync) {
+        ops->sync(f->fs_handle);
+    }
+
+    return 0;
 }

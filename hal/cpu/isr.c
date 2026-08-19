@@ -49,6 +49,14 @@ void isr_handler(registers_t r) {
         extern void int_to_str(int, char*);
         int_to_str(r.int_no, buf);
         s_printf(buf);
+        s_printf(" EIP=0x");
+        extern void int_to_hex(uint32_t, char*);
+        char hexbuf[12];
+        int_to_hex(r.eip, hexbuf);
+        s_printf(hexbuf + 2);
+        s_printf(" CS=0x");
+        int_to_hex(r.cs, hexbuf);
+        s_printf(hexbuf + 2);
         s_printf("\n");
         // If critical, hang here
         // asm volatile("hlt");

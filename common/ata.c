@@ -34,41 +34,65 @@ int ata_wait_drq() {
     return 1;
 }
 
-int ata_read_sector(int drive, uint32_t lba, uint8_t* buffer) {
+int ata_read_sector(int drive, uint64_t lba, uint8_t* buffer) {
     if (drive > 1) return 1;
     if(ata_wait_bsy()) return 1;
-    
-    outb(ATA_DRIVE, 0xE0 | ((drive&1)<<4) | ((lba >> 24) & 0x0F));
-    outb(ATA_SEC_CNT, 1);
-    outb(ATA_LBA_LO, (uint8_t)lba);
-    outb(ATA_LBA_MID, (uint8_t)(lba>>8));
-    outb(ATA_LBA_HI, (uint8_t)(lba>>16));
-    outb(ATA_CMD, 0x20); 
-    
+
+    if (ide_devices[drive].lba48) {
+        outb(ATA_DRIVE, 0x40 | ((drive & 1) << 4));
+        outb(ATA_SEC_CNT, 1);
+        outb(ATA_LBA_LO, (uint8_t)(lba >> 24));
+        outb(ATA_LBA_MID, (uint8_t)(lba >> 32));
+        outb(ATA_LBA_HI, (uint8_t)(lba >> 40));
+        outb(ATA_LBA_LO, (uint8_t)lba);
+        outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
+        outb(ATA_LBA_HI, (uint8_t)(lba >> 16));
+        outb(ATA_CMD, 0x24);
+    } else {
+        outb(ATA_DRIVE, 0xE0 | ((drive&1)<<4) | ((lba >> 24) & 0x0F));
+        outb(ATA_SEC_CNT, 1);
+        outb(ATA_LBA_LO, (uint8_t)lba);
+        outb(ATA_LBA_MID, (uint8_t)(lba>>8));
+        outb(ATA_LBA_HI, (uint8_t)(lba>>16));
+        outb(ATA_CMD, 0x20);
+    }
+
     if(ata_wait_drq()) return 1;
-    
+
     uint16_t* b = (uint16_t*)buffer;
     for(int i=0; i<256; i++) b[i] = inw(ATA_DATA);
     return 0;
 }
 
-int ata_write_sector(int drive, uint32_t lba, const uint8_t* buffer) {
+int ata_write_sector(int drive, uint64_t lba, const uint8_t* buffer) {
     if (drive > 1) return 1;
     if(ata_wait_bsy()) return 1;
-    
-    outb(ATA_DRIVE, 0xE0 | ((drive&1)<<4) | ((lba >> 24) & 0x0F));
-    outb(ATA_SEC_CNT, 1);
-    outb(ATA_LBA_LO, (uint8_t)lba);
-    outb(ATA_LBA_MID, (uint8_t)(lba>>8));
-    outb(ATA_LBA_HI, (uint8_t)(lba>>16));
-    outb(ATA_CMD, 0x30); 
-    
+
+    if (ide_devices[drive].lba48) {
+        outb(ATA_DRIVE, 0x40 | ((drive & 1) << 4));
+        outb(ATA_SEC_CNT, 1);
+        outb(ATA_LBA_LO, (uint8_t)(lba >> 24));
+        outb(ATA_LBA_MID, (uint8_t)(lba >> 32));
+        outb(ATA_LBA_HI, (uint8_t)(lba >> 40));
+        outb(ATA_LBA_LO, (uint8_t)lba);
+        outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
+        outb(ATA_LBA_HI, (uint8_t)(lba >> 16));
+        outb(ATA_CMD, 0x34);
+    } else {
+        outb(ATA_DRIVE, 0xE0 | ((drive&1)<<4) | ((lba >> 24) & 0x0F));
+        outb(ATA_SEC_CNT, 1);
+        outb(ATA_LBA_LO, (uint8_t)lba);
+        outb(ATA_LBA_MID, (uint8_t)(lba>>8));
+        outb(ATA_LBA_HI, (uint8_t)(lba>>16));
+        outb(ATA_CMD, 0x30);
+    }
+
     if(ata_wait_drq()) return 1;
-    
+
     uint16_t* b = (uint16_t*)buffer;
     for(int i=0; i<256; i++) outw(ATA_DATA, b[i]);
-    
-    outb(ATA_CMD, 0xE7); 
+
+    outb(ATA_CMD, 0xE7);
     ata_wait_bsy();
     return 0;
 }
@@ -115,9 +139,23 @@ void ata_identify_device(int drive) {
     for(int i=0; i<256; i++) data[i] = inw(ATA_DATA);
     
     ide_devices[drive].present = 1;
-    
-    // 4. Calculate Sectors (Words 60 & 61)
-    ide_devices[drive].sectors = (uint32_t)data[60] | ((uint32_t)data[61] << 16);
+
+    // Check if LBA48 is supported (Word 83, Bit 10)
+    int lba48_supported = ((data[83] & 0xC000) == 0x4000) && ((data[83] & (1 << 10)) != 0);
+    ide_devices[drive].lba48 = lba48_supported;
+
+    if (lba48_supported) {
+        uint64_t lba48_sectors = (uint64_t)data[100] | ((uint64_t)data[101] << 16) |
+                                      ((uint64_t)data[102] << 32) | ((uint64_t)data[103] << 48);
+        if (lba48_sectors > 0 && lba48_sectors < 0x1000000000ULL) {
+            ide_devices[drive].sectors = (uint32_t)lba48_sectors;
+        } else {
+            ide_devices[drive].sectors = (uint32_t)data[60] | ((uint32_t)data[61] << 16);
+            ide_devices[drive].lba48 = 0;
+        }
+    } else {
+        ide_devices[drive].sectors = (uint32_t)data[60] | ((uint32_t)data[61] << 16);
+    }
     
     // 5. Get Model
     char* model_dest = ide_devices[drive].model;

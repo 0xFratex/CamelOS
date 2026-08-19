@@ -1788,6 +1788,23 @@ static void browser_navigate(const char* url) {
     browser_load_page(nav_url);
 }
 
+/* Navigate to a URL that is already known to be a URL (e.g. a resolved link
+ * href). Skips browser_navigate()'s "is this a search query?" heuristic so a
+ * relative href that failed to resolve can never be re-routed to DuckDuckGo. */
+static void browser_navigate_direct(const char* url) {
+    if (!url || !url[0]) return;
+    redirect_depth = 0;
+    find_active = 0; find_match_count = 0; find_current_match = -1;
+    if (history_pos < HISTORY_MAX - 1) {
+        history_pos++;
+        strncpy(history[history_pos], url, 255); history[history_pos][255] = 0;
+        history_count = history_pos + 1;
+    }
+    strncpy(url_buf, url, 255); url_buf[255] = 0;
+    url_cursor = strlen(url_buf);
+    browser_load_page(url);
+}
+
 static void browser_go_back(void) {
     if (history_pos > 0) {
         history_pos--;
@@ -3416,7 +3433,7 @@ static void browser_on_mouse(window_t* win, int lx, int ly, int btn) {
                 extern void browser_resolve_url(const char* relative_url, char* resolved, int max_len);
                 browser_resolve_url(hit->href, resolved_url, sizeof(resolved_url));
                 s_printf("[Browser] DOM click hit <a> href='%s' -> '%s'\n", hit->href, resolved_url);
-                browser_navigate(resolved_url);
+                browser_navigate_direct(resolved_url);
                 return;
             }
             // No link hit — fall through to the line-based handler as a fallback
@@ -3442,7 +3459,7 @@ static void browser_on_mouse(window_t* win, int lx, int ly, int btn) {
                         char resolved_url[512];
                         extern void browser_resolve_url(const char* relative_url, char* resolved, int max_len);
                         browser_resolve_url(links[li].url, resolved_url, sizeof(resolved_url));
-                        browser_navigate(resolved_url);
+                        browser_navigate_direct(resolved_url);
                         return;
                     }
                 }

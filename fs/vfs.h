@@ -144,6 +144,9 @@ typedef struct vfs_ops {
     int  (*mkdir)(const char* path);
     int  (*unlink)(const char* path);
     int  (*rename)(const char* oldpath, const char* newpath);
+
+    /* Sync */
+    int  (*sync)(int fs_handle);
 } vfs_ops_t;
 
 /* ========================================================================
@@ -184,6 +187,9 @@ vfs_filesystem_type_t vfs_get_fs_type(const char* path);
 
 /* Utility: get mount info */
 vfs_mount_t* vfs_get_mount_info(int index);
+
+/* Sync a file's in-memory state with disk */
+int   vfs_fsync(int fd);
 
 /* Debug: dump mount table */
 void vfs_dump_mounts(void);

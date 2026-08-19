@@ -27,3 +27,7 @@ task_progress
 write_disk
 *.d
 *.o
+tests/test_string
+build.log
+serial.log
+write_disk

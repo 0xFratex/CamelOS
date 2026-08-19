@@ -7,6 +7,7 @@
 #
 # All tool names are prefixed with $(CROSS) so a single `make CROSS=...`
 # invocation switches the entire toolchain without further edits.
+.DEFAULT_GOAL := all
 CROSS   ?=
 CC      =       $(CROSS)gcc
 AS      =       nasm
@@ -19,8 +20,8 @@ OBJCOPY =       $(CROSS)objcopy
 GCC_LIB32      :=      $(shell dirname $(shell $(CC) $(if $(CROSS),,-m32) -print-libgcc-file-name 2>/dev/null || echo /usr/lib/gcc/x86_64-linux-gnu/14/32))
 
 #       Kernel  Flags
-CFLAGS  =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -Ilib   -Imujs-1.3.9    -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -msoft-float    -mno-80387      -g      -Wall   -Wno-unused-parameter   -MMD    -MP     -DKERNEL_MODE
-CFLAGS_INSTALLER        =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -mno-80387      -msoft-float    -g      -Wall   -Wno-unused-parameter   -MMD    -MP
+CFLAGS  =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -Ilib   -Imujs-1.3.9    -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -msoft-float    -mno-80387      -g      -Wall -Wextra   -Wno-unused-parameter   -MMD    -MP     -DKERNEL_MODE
+CFLAGS_INSTALLER        =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -mno-80387      -msoft-float    -g      -Wall -Wextra   -Wno-unused-parameter   -MMD    -MP
 LDFLAGS =       -m      elf_i386        -no-pie
 KERNEL_LDFLAGS  =       $(LDFLAGS) -L$(GCC_LIB32)
 INSTALLER_LDFLAGS       =       $(LDFLAGS) -L$(GCC_LIB32)
@@ -29,7 +30,7 @@ INSTALLER_LDFLAGS       =       $(LDFLAGS) -L$(GCC_LIB32)
 #       FIX:    Added   -mno-sse        -mno-mmx        -msoft-float    to      prevent #UD     (Int    6)      exceptions
 #       caused  by      the     compiler        generating      SSE     instructions    when    the     kernel  hasn't  enabled them.
 CDL_CFLAGS      =       -m32    -fno-stack-protector    -fno-builtin    -O2     \
-	    -Iinclude       -Icore  -Isys   -Iusr   -Ikernel        -I/usr/include  -fPIC   -g      -Wall   -Wno-unused-parameter   \
+	    -Iinclude       -Icore  -Isys   -Iusr   -Ikernel          -fPIC   -g      -Wall -Wextra   -Wno-unused-parameter   \
 	    -ffunction-sections     -fdata-sections \
 	    -march=i386     -mtune=i386     \
 	    -mno-sse        -mno-sse2       -mno-sse3       -mno-ssse3      -mno-sse4       -mno-sse4.1     -mno-sse4.2     \
@@ -67,6 +68,12 @@ builtin_stub.cdl: usr/stubs/builtin_stub.c
 kernel/builtin_stub_blob.c: builtin_stub.cdl tools/bin2c.py
 	    python3 tools/bin2c.py builtin_stub.cdl builtin_stub_blob kernel/builtin_stub_blob.c
 
+user_calc.bin: usr/test/user_calc.c
+	$(CC)	-m32	-O2	-nostdlib	-ffreestanding	-fno-pic	-fno-pie	-fno-stack-protector	-Wl,-Ttext=0x08000000	-Wl,--oformat=binary	-Wl,-e,_start	$<	-o	$@
+
+kernel/user_calc_blob.c: user_calc.bin tools/bin2c.py
+	python3 tools/bin2c.py user_calc.bin user_calc_blob kernel/user_calc_blob.c
+
 #       ---     SOURCES ---
 HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/serial.c    \
 	    hal/drivers/keyboard.c  hal/drivers/mouse.c     hal/drivers/sound.c     \
@@ -77,8 +84,8 @@ HAL_SRC =       hal/drivers/vga.c       hal/drivers/ata.c       hal/drivers/seri
 	    hal/cpu/apic.c  hal/cpu/idt.c   hal/cpu/isr.c   hal/cpu/gdt.c   hal/cpu/timer.c hal/cpu/paging.c        hal/cpu/syscall.c       hal/cpu/cpu_info.c       \
 	    hal/video/gfx_hal.c     hal/video/compositor.c  hal/video/animation.c   hal/video/loading_animation.c  hal/video/compositor_v2.c       hal/video/cgcontext.c    hal/video/boot_animation.c
 	    
-CORE_SRC        =       core/kernel.c   core/panic.c    sys/api.c       core/string.c   core/memory.c   core/task.c     core/cdl_loader.c       core/window_server.c    core/net.c      core/net_if.c   core/net_dhcp.c core/socket.c   core/tcp.c      core/http.c     core/tls.c      core/tls13.c    core/crypto_selftests.c core/http2.c    core/tls_ca_store.c     core/app_switcher.c     core/dns.c      core/debug.c    core/arp.c      core/scheduler.c        core/firewall.c  core/sha256.c   core/objc_runtime.c    core/macho_loader.c    core/foundation_stub.c    core/app_bundle.c    core/dmg_mount.c      core/zlib_inflate.c    core/app_installer.c     core/dyld.c     core/foundation_extra.c        core/appkit_compat.c   core/appkit_extra.c    core/bsd_syscall.c      core/framework_stubs.c     core/tls_client.c       core/vmm.c      core/klog.c     core/signal.c   core/pipe.c     core/notification.c     core/process.c  core/crash.c       core/ipc.c       core/disk_tools_stub.c   core/select.c   core/png_decoder.c     core/core_animation.c  core/launchd.c  core/software_update.c  core/user_copy.c        core/spinlock.c core/sys_dirs.c core/package_manager.c  core/app_registry.c  core/app_bootstrap.c  core/theme.c  core/audio_mixer.c  core/notification_center.c
-ASSETS_SRC              =       kernel/assets.c kernel/assets/wallpaper_img.c
+CORE_SRC        =       core/kernel.c   core/panic.c    sys/api.c       core/string.c   core/memory.c   core/task.c     core/cdl_loader.c       core/window_server.c    core/net.c      core/net_if.c   core/net_dhcp.c core/socket.c   core/tcp.c      core/http.c     core/tls.c      core/tls13.c    core/crypto_selftests.c core/http2.c    core/tls_ca_store.c     core/app_switcher.c     core/dns.c      core/debug.c    core/arp.c      core/scheduler.c        core/firewall.c  core/sha256.c   core/objc_runtime.c    core/macho_loader.c    core/foundation_stub.c    core/app_bundle.c    core/dmg_mount.c      core/zlib_inflate.c    core/app_installer.c     core/dyld.c     core/foundation_extra.c        core/appkit_compat.c   core/appkit_extra.c    core/bsd_syscall.c      core/framework_stubs.c     core/tls_client.c       core/vmm.c      core/klog.c     core/signal.c   core/pipe.c     core/notification.c     core/process.c  core/crash.c       core/ipc.c       core/disk_tools_stub.c   core/select.c   core/png_decoder.c     core/core_animation.c  core/launchd.c  core/software_update.c  core/user_copy.c        core/spinlock.c core/sys_dirs.c core/package_manager.c  core/app_registry.c  core/app_bootstrap.c  core/theme.c  core/audio_mixer.c  core/notification_center.c core/user_exec.c
+ASSETS_SRC              =       kernel/assets.c kernel/assets/wallpaper_img.c kernel/user_calc_blob.c
 FS_SRC  =       fs/pfs32.c      fs/disk.c       fs/vfs.c        fs/fat32.c      fs/fat32_vfs.c
 USR_SRC =       usr/shell.c     usr/bubbleview.c        usr/desktop.c   usr/framework.c usr/dock.c      usr/clipboard.c usr/screenlock.c        usr/welcome_setup.c     usr/spotlight.c usr/lib/camel_framework.c       usr/lib/camel_ui.c      usr/lib/ui_widgets.c    usr/lib/file_picker.c   usr/apps/files.c        usr/apps/terminal.c     usr/apps/textedit.c     usr/apps/settings.c    usr/apps/browser.c     usr/apps/mujs_min.c     usr/apps/mactest.c     usr/apps/calculator.c  usr/apps/about.c      usr/apps/console.c     usr/apps/disk_utility.c        usr/apps/process_monitor.c     usr/apps/image_viewer.c      usr/libs/browser_dom.c        lib/libc_compat.c usr/lib/selection_box.c usr/libs/js_engine_v2.c       usr/libs/css_parser_v2.c        usr/libs/browser_enhanced.c     usr/libs/browser_js_bridge.c     usr/libs/c_compiler.c
 
@@ -276,3 +283,8 @@ check-nasm:
 #       ---     AUTO-DEPENDENCIES       ---
 
 -include $(KERNEL_OBJ:.o=.d) $(INSTALLER_OBJ:.o=.d)
+
+.PHONY: test
+test:
+	gcc -m32 -Wall tests/test_string.c -o tests/test_string
+	./tests/test_string

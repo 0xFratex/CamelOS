@@ -388,9 +388,13 @@ uint32_t scheduler_schedule(registers_t* regs) {
         return regs->esp;  /* No switch needed */
     }
     
-    /* Save current task's ESP */
+    /* Save current task's ESP.
+     * regs points at the register frame base (the gs slot pushed by the stub);
+     * regs->esp is the pusha ESP (frame base + 48), which the assembly restore
+     * does NOT expect. The IRQ stub does `mov esp, sched_new_esp` then pops
+     * gs/fs/es/ds + pusha + add esp,8 + iret, so we must store the frame base. */
     if (current_running) {
-        current_running->esp = regs->esp;
+        current_running->esp = (uint32_t)regs;
         
         /* If current was running and not blocked, mark ready */
         if (current_running->state == TASK_STATE_RUNNING) {
@@ -453,9 +457,14 @@ uint32_t scheduler_schedule(registers_t* regs) {
         vmm_switch_address_space(NULL);
     }
     
-    /* Update TSS kernel stack pointer for Ring 3 transitions */
+    /* Update TSS kernel stack pointer for Ring 3 transitions.
+     * ESP0 must point to the TOP of the task's own kernel stack (a free
+     * location for the CPU to push onto), NOT its saved register frame.
+     * Kernel (Ring 0) tasks have kernel_stack_top == 0, in which case ESP0
+     * is never used, so fall back to the saved ESP. */
     extern void tss_set_kernel_stack(uint32_t);
-    tss_set_kernel_stack(next->esp);
+    tss_set_kernel_stack(next->kernel_stack_top ? next->kernel_stack_top
+                                                : (uint32_t)next->esp);
 
     /* Task 7: Also update the sysenter MSR kernel stack.
      * When a Ring 3 task does sysenter, the CPU loads ESP from

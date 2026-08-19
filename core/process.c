@@ -287,6 +287,7 @@ int process_fork(void)
 
         /* Store the kernel stack base for cleanup in process_reap */
         child->kernel_stack = stack_buf;
+        child->kernel_stack_top = (uint32_t)stack_buf + stack_size;
 
         /* The parent's ESP points to a registers_t on its kernel stack.
          * Copy the entire register frame to the child's new stack. */

@@ -43,6 +43,7 @@ typedef struct task_control_block {
     int exit_code;         /* Exit code for zombie processes */
     int parent_pid;        /* Parent process ID for waitpid */
     void* kernel_stack;    /* Kernel stack base allocated in process_fork (for cleanup) */
+    uint32_t kernel_stack_top; /* Top of the task's own kernel stack (TSS ESP0 for Ring 3) */
     char cwd[256];         /* Per-process current working directory (default "/") */
 } task_t;
 

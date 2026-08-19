@@ -776,6 +776,10 @@ void kernel_main(void* mboot_ptr) {
 
     play_startup_chime();
 
+    // Ring 3 user-process infrastructure is available (core/user_exec.c) but
+    // the smoke-test app is disabled by default so it does not auto-open at boot.
+    // To run it manually: user_exec_raw("ring3-calc", user_calc_blob, user_calc_blob_len);
+
     // Brief shell access window: 3 seconds (reduced from 100 units).
     // The user can press Ctrl+Shift during this window to drop to shell.
     // After this window, the GUI starts immediately regardless of
