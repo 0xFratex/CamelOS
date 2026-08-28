@@ -38,6 +38,11 @@ void init_syscall(void);
 // Initialize fast syscall (sysenter/sysexit) via MSRs
 void syscall_init_fast(void);
 
+// Rewrite IA32_SYSENTER_ESP to the given kernel stack top.
+// Called by the scheduler on EVERY context switch so the sysenter fast
+// path is per-task (a static MSR stack corrupts preempted tasks' contexts).
+void syscall_set_enter_stack(uint32_t kernel_stack_top);
+
 // Global kernel stack for sysenter (updated by scheduler)
 extern uint32_t tss_esp0_for_sysenter;
 

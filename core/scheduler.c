@@ -379,8 +379,11 @@ uint32_t scheduler_schedule(registers_t* regs) {
         /* Time slice expired */
         need_reschedule = 1;
     } else if (current_running->state == TASK_STATE_BLOCKED ||
-               current_running->state == TASK_STATE_SLEEPING) {
-        /* Task is blocked */
+               current_running->state == TASK_STATE_SLEEPING ||
+               current_running->state == TASK_STATE_ZOMBIE) {
+        /* Task is blocked, sleeping, or exited (zombie) — reschedule.
+         * Without the ZOMBIE case, an exited Ring 3 task keeps spinning
+         * in user space until its time slice expires. */
         need_reschedule = 1;
     }
     
@@ -462,16 +465,29 @@ uint32_t scheduler_schedule(registers_t* regs) {
      * location for the CPU to push onto), NOT its saved register frame.
      * Kernel (Ring 0) tasks have kernel_stack_top == 0, in which case ESP0
      * is never used, so fall back to the saved ESP. */
+    uint32_t enter_stack = next->kernel_stack_top ? next->kernel_stack_top
+                                                  : (uint32_t)next->esp;
     extern void tss_set_kernel_stack(uint32_t);
-    tss_set_kernel_stack(next->kernel_stack_top ? next->kernel_stack_top
-                                                : (uint32_t)next->esp);
+    tss_set_kernel_stack(enter_stack);
 
     /* Task 7: Also update the sysenter MSR kernel stack.
-     * When a Ring 3 task does sysenter, the CPU loads ESP from
-     * IA32_SYSENTER_ESP MSR. We update it here so the next
-     * sysenter from the new task uses the correct kernel stack. */
-    extern uint32_t tss_esp0_for_sysenter;
-    tss_esp0_for_sysenter = next->esp;
+     * When a Ring 3 task does sysenter, the CPU loads ESP from the
+     * IA32_SYSENTER_ESP *MSR* — writing only the tss_esp0_for_sysenter
+     * shadow variable has no effect on the CPU.
+     *
+     * SECURITY FIX: syscall_init_fast() programs a single static stack into
+     * the MSR once at boot. If task A is preempted inside a sysenter syscall
+     * (its context saved on that static stack) and task B then enters via
+     * sysenter, the CPU resets ESP to the stack top and destroys A's saved
+     * context. Rewriting the MSR to the incoming task's own kernel stack on
+     * every switch makes the fast path per-task, matching the TSS ESP0
+     * behavior of the int 0x80 path. */
+    extern void syscall_set_enter_stack(uint32_t kernel_stack_top);
+    syscall_set_enter_stack(enter_stack);
+    { /* keep the shadow variable in sync (declared in syscall.h) */
+        extern uint32_t tss_esp0_for_sysenter;
+        tss_esp0_for_sysenter = enter_stack;
+    }
     
     /* Signal to the assembly IRQ stub that a context switch is needed.
      * The stub will set ESP = sched_new_esp before doing popa+iret,

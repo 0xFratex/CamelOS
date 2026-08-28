@@ -609,6 +609,7 @@ void shell_main() {
             sys_print("  mkdir <dir>       - Create directory\n");
             sys_print("  rm <path>         - Delete file or directory\n");
             sys_print("  cp <src> <dst>    - Copy file\n");
+            sys_print("  ring3             - Launch ring3-calc test (true Ring 3 process)\n");
             sys_print("  mv <old> <new>    - Move/rename file\n");
             sys_print("  pwd               - Print working directory\n");
             sys_print("  touch <file>      - Create empty file or update timestamp\n");
@@ -751,6 +752,19 @@ void shell_main() {
                 cmd_curl(curl_args);
             } else {
                 cmd_curl("");
+            }
+        }
+        else if (strcmp(cmd, "ring3") == 0) {
+            // Phase 1 Ring 3 migration test: launch the user_calc blob as a
+            // REAL Ring 3 process (own address space, syscalls only).
+            extern int user_exec_raw(const char* name, const void* code, uint32_t size);
+            extern unsigned char user_calc_blob[];
+            extern unsigned int user_calc_blob_len;
+            sys_print("Launching ring3-calc as a Ring 3 process...\n");
+            if (user_exec_raw("ring3-calc", user_calc_blob, user_calc_blob_len) == 0) {
+                sys_print("[RING3] ring3-calc scheduled (watch serial log)\n");
+            } else {
+                sys_print("[RING3] launch failed (address space or memory?)\n");
             }
         }
         else if (strcmp(cmd, "open") == 0) {

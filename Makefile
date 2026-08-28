@@ -14,13 +14,17 @@ AS      =       nasm
 LD      =       $(CROSS)ld
 OBJCOPY =       $(CROSS)objcopy
 
+# Optional Ring 3 boot smoke test: `make RING3_BOOT_TEST=1` auto-launches
+# the ring3-calc user process during boot (serial log shows [RING3]/[calc]).
+RING3_TEST_FLAG := $(if $(filter 1,$(RING3_BOOT_TEST)),-DRING3_BOOT_TEST,)
+
 # Auto-detect GCC 32-bit lib path.
 # Note: when CROSS is set (e.g. i686-elf-), we drop the -m32 flag because the
 # cross-compiler is already 32-bit and rejects -m32.
 GCC_LIB32      :=      $(shell dirname $(shell $(CC) $(if $(CROSS),,-m32) -print-libgcc-file-name 2>/dev/null || echo /usr/lib/gcc/x86_64-linux-gnu/14/32))
 
 #       Kernel  Flags
-CFLAGS  =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -Ilib   -Imujs-1.3.9    -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -msoft-float    -mno-80387      -g      -Wall -Wextra   -Wno-unused-parameter   -MMD    -MP     -DKERNEL_MODE
+CFLAGS  =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -Ilib   -Imujs-1.3.9    -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -msoft-float    -mno-80387      -g      -Wall -Wextra   -Wno-unused-parameter   -MMD    -MP     -DKERNEL_MODE $(RING3_TEST_FLAG)
 CFLAGS_INSTALLER        =       -m32    -fno-stack-protector    -fno-builtin    -nostdinc       -O2     -Iinclude       -Icore  -Ihal/drivers   -Ihal/cpu       -Icommon        -Isys   -Ifs    -Iusr   -Ikernel        -fno-pic        -fno-pie        -mno-sse        -mno-mmx        -mno-80387      -msoft-float    -g      -Wall -Wextra   -Wno-unused-parameter   -MMD    -MP
 LDFLAGS =       -m      elf_i386        -no-pie
 KERNEL_LDFLAGS  =       $(LDFLAGS) -L$(GCC_LIB32)

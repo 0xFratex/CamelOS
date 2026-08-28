@@ -776,9 +776,21 @@ void kernel_main(void* mboot_ptr) {
 
     play_startup_chime();
 
-    // Ring 3 user-process infrastructure is available (core/user_exec.c) but
-    // the smoke-test app is disabled by default so it does not auto-open at boot.
-    // To run it manually: user_exec_raw("ring3-calc", user_calc_blob, user_calc_blob_len);
+    // Ring 3 user-process infrastructure is available (core/user_exec.c).
+    // The smoke-test app is disabled by default so it does not auto-open at
+    // boot. Two ways to run it:
+    //   1. Shell: type `ring3` (usr/shell.c wires this to user_exec_raw).
+    //   2. Build with RING3_BOOT_TEST=1 to auto-launch during boot:
+    //        make RING3_BOOT_TEST=1
+#ifdef RING3_BOOT_TEST
+    {
+        extern int user_exec_raw(const char* name, const void* code, uint32_t size);
+        extern unsigned char user_calc_blob[];
+        extern unsigned int user_calc_blob_len;
+        s_printf("[RING3] Boot test: launching ring3-calc at CPL3...\n");
+        user_exec_raw("ring3-calc", user_calc_blob, user_calc_blob_len);
+    }
+#endif
 
     // Brief shell access window: 3 seconds (reduced from 100 units).
     // The user can press Ctrl+Shift during this window to drop to shell.

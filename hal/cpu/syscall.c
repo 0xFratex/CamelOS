@@ -30,7 +30,6 @@ extern kernel_api_t g_kernel_api;
 
 void syscall_handler(syscall_regs_t* regs) {
     int syscall_num = (int)regs->eax;
-    
     // Arguments from registers
     uint32_t arg1 = regs->ebx;
     uint32_t arg2 = regs->ecx;
@@ -39,6 +38,28 @@ void syscall_handler(syscall_regs_t* regs) {
     uint32_t arg5 = regs->edi;
     
     int32_t result = 0;
+    
+    // ------------------------------------------------------------------
+    // User-pointer safety helper: copy a NUL-terminated string from a
+    // (possibly Ring 3) user pointer into a bounded kernel buffer.
+    // The numeric range [src, src+cap) is validated BEFORE any access so
+    // a malicious caller can never point the kernel at kernel memory.
+    // Returns 0 on success, -1 if the pointer is invalid.
+    // ------------------------------------------------------------------
+    #define KCOPY_USER_STR(kdst, cap, usersrc)                          \
+        do {                                                            \
+            const char* _src = (const char*)(usersrc);                  \
+            size_t _i = 0;                                              \
+            if (!_src || validate_user_string(_src, (cap)) != 0) {      \
+                result = -1;                                            \
+                goto syscall_done;                                      \
+            }                                                           \
+            for (_i = 0; _i + 1 < (size_t)(cap); _i++) {                \
+                (kdst)[_i] = _src[_i];                                  \
+                if ((kdst)[_i] == '\0') break;                          \
+            }                                                           \
+            (kdst)[(cap) - 1] = '\0';                                   \
+        } while (0)
     
     switch (syscall_num) {
         // --- Process Control ---
@@ -55,16 +76,26 @@ void syscall_handler(syscall_regs_t* regs) {
             result = g_kernel_api.exec_with_args((const char*)arg1, (const char*)arg2);
             break;
             
-        case SYS_GET_ARGS:
+        case SYS_GET_ARGS: {
+            /* Kernel WRITES into the user buffer */
+            if (arg1 && (arg2 == 0 || validate_user_ptr((const void*)arg1, (size_t)arg2, 1) != 0)) {
+                result = -1; break;
+            }
             g_kernel_api.get_launch_args((char*)arg1, (int)arg2);
             result = 0;
             break;
+        }
             
         // --- I/O ---
-        case SYS_PRINT:
-            g_kernel_api.print((const char*)arg1);
+        case SYS_PRINT: {
+            /* SECURITY: arg1 may be a Ring 3 pointer — validate + copy.
+             * (Old code passed it straight to s_printf.) */
+            char k_msg[128];
+            KCOPY_USER_STR(k_msg, sizeof(k_msg), (const char*)arg1);
+            g_kernel_api.print(k_msg);
             result = 0;
             break;
+        }
             
         // --- Memory ---
         case SYS_MALLOC:
@@ -124,6 +155,7 @@ void syscall_handler(syscall_regs_t* regs) {
             break;
             
         case SYS_DRAW_TEXT:
+            if (validate_user_string((const char*)arg3, 256) != 0) { result = -1; break; }
             g_kernel_api.draw_text((int)arg1, (int)arg2, (const char*)arg3, (int)arg4);
             result = 0;
             break;
@@ -227,7 +259,10 @@ void syscall_handler(syscall_regs_t* regs) {
             } else if (pe->is_zombie) {
                 // Child is a zombie — reap it
                 if (status_ptr) {
-                    *status_ptr = pe->exit_code;
+                    if (validate_user_ptr(status_ptr, sizeof(int), 1) == 0) {
+                        int k_code = pe->exit_code;
+                        copy_to_user(status_ptr, &k_code, sizeof(k_code));
+                    }
                 }
                 process_reap(pid);
                 result = pid;
@@ -408,16 +443,29 @@ void syscall_handler(syscall_regs_t* regs) {
 
         case SYS_USER_WIN_CREATE: {
             /* Ring 3: create a window (no callbacks) and copy out its
-             * content-area origin so the app can draw into it. */
-            const char* title = (const char*)arg1;
+             * content-area origin so the app can draw into it.
+             *
+             * SECURITY: all three pointers come from Ring 3 registers.
+             * - title is COPIED into a kernel buffer (ws_create_window_ex
+             *   both prints it and strncpy's it — a bad pointer would fault
+             *   or leak kernel memory into win->title)
+             * - x_out/y_out are validated, then written via copy_to_user.
+             *   (Old code wrote *x_out directly — a forged pointer could
+             *   write arbitrary kernel memory.) */
+            char k_title[64];
+            KCOPY_USER_STR(k_title, sizeof(k_title), (const char*)arg1);
             int w = (int)arg2;
             int h = (int)arg3;
             int* x_out = (int*)arg4;
             int* y_out = (int*)arg5;
-            window_t* win = ws_create_window(title, w, h, 0, 0, 0);
+            if (x_out && validate_user_ptr(x_out, sizeof(int), 1) != 0) { result = -1; break; }
+            if (y_out && validate_user_ptr(y_out, sizeof(int), 1) != 0) { result = -1; break; }
+            window_t* win = ws_create_window(k_title, w, h, 0, 0, 0);
             if (!win) { result = -1; break; }
-            if (x_out) *x_out = win->x;
-            if (y_out) *y_out = win->y + TITLE_BAR_HEIGHT;
+            int cx = win->x;
+            int cy = win->y + TITLE_BAR_HEIGHT;
+            if (x_out) copy_to_user(x_out, &cx, sizeof(int));
+            if (y_out) copy_to_user(y_out, &cy, sizeof(int));
             result = win->id;
             break;
         }
@@ -429,21 +477,26 @@ void syscall_handler(syscall_regs_t* regs) {
             const char* stat_path = (const char*)arg1;
             vfs_stat_t* stat_buf = (vfs_stat_t*)arg2;
             if (!stat_path || !stat_buf) { result = -1; break; }
-            memset(stat_buf, 0, sizeof(vfs_stat_t));
+            char k_path[256];
+            KCOPY_USER_STR(k_path, sizeof(k_path), stat_path);
+            if (validate_user_ptr(stat_buf, sizeof(vfs_stat_t), 1) != 0) { result = -1; break; }
+            vfs_stat_t k_stat;
+            memset(&k_stat, 0, sizeof(k_stat));
             // Use pfs32_stat to get file info
             pfs32_direntry_t entry;
             extern int pfs32_stat(const char*, pfs32_direntry_t*);
-            if (pfs32_stat(stat_path, &entry) == 0) {
-                strncpy(stat_buf->name, entry.filename, VFS_MAX_NAME - 1);
-                stat_buf->size = entry.file_size;
-                stat_buf->permissions = entry.permissions;
-                stat_buf->uid = entry.uid;
-                stat_buf->gid = entry.gid;
-                stat_buf->modify_time = entry.modify_time;
-                stat_buf->create_time = entry.create_time;
-                stat_buf->access_time = entry.access_time;
-                stat_buf->type = (entry.attributes & PFS32_ATTR_DIRECTORY) ? VFS_TYPE_DIRECTORY : VFS_TYPE_REGULAR;
-                stat_buf->blocks = (entry.file_size + 511) / 512;
+            if (pfs32_stat(k_path, &entry) == 0) {
+                strncpy(k_stat.name, entry.filename, VFS_MAX_NAME - 1);
+                k_stat.size = entry.file_size;
+                k_stat.permissions = entry.permissions;
+                k_stat.uid = entry.uid;
+                k_stat.gid = entry.gid;
+                k_stat.modify_time = entry.modify_time;
+                k_stat.create_time = entry.create_time;
+                k_stat.access_time = entry.access_time;
+                k_stat.type = (entry.attributes & PFS32_ATTR_DIRECTORY) ? VFS_TYPE_DIRECTORY : VFS_TYPE_REGULAR;
+                k_stat.blocks = (entry.file_size + 511) / 512;
+                copy_to_user(stat_buf, &k_stat, sizeof(k_stat));
                 result = 0;
             } else {
                 result = -1;
@@ -501,10 +554,14 @@ void syscall_handler(syscall_regs_t* regs) {
             uint32_t* tv_usec_ptr = (uint32_t*)arg2;
             extern uint32_t timer_ticks;
             if (tv_sec_ptr) {
-                *tv_sec_ptr = timer_ticks / 100;  // 100 Hz timer
+                if (validate_user_ptr(tv_sec_ptr, sizeof(uint32_t), 1) != 0) { result = -1; break; }
+                uint32_t v = timer_ticks / 100;  // 100 Hz timer
+                copy_to_user(tv_sec_ptr, &v, sizeof(v));
             }
             if (tv_usec_ptr) {
-                *tv_usec_ptr = (timer_ticks % 100) * 10000;
+                if (validate_user_ptr(tv_usec_ptr, sizeof(uint32_t), 1) != 0) { result = -1; break; }
+                uint32_t v = (timer_ticks % 100) * 10000;
+                copy_to_user(tv_usec_ptr, &v, sizeof(v));
             }
             result = 0;
             break;
@@ -676,7 +733,8 @@ void syscall_handler(syscall_regs_t* regs) {
             result = -1; // ENOSYS
             break;
     }
-    
+
+syscall_done:
     // Store the result in EAX so it's returned to the caller
     regs->eax = (uint32_t)result;
 }
@@ -739,11 +797,12 @@ void syscall_init_fast(void) {
     //   SS  = value from this MSR + 8 (so 0x10 = kernel data)
     wrmsr(IA32_SYSENTER_CS, 0x08, 0);
     
-    // IA32_SYSENTER_ESP: kernel stack pointer
-    // We use the current kernel stack top. The scheduler will update
-    // the TSS ESP0 on task switch; for sysenter we also need a
-    // dedicated kernel stack. For now, use a static kernel stack.
-    extern uint32_t tss_esp0_for_sysenter;  // Defined below
+    // IA32_SYSENTER_ESP: kernel stack pointer.
+    // Boot default = a static stack so the very first sysenter works before
+    // any task switch. The scheduler REWRITES this MSR on every switch to
+    // the incoming task's own kernel stack via syscall_set_enter_stack(),
+    // which makes the fast path per-task and preemption-safe.
+    extern uint32_t tss_esp0_for_sysenter;  // Defined in gdt.c
     static uint8_t sysenter_stack[8192] __attribute__((aligned(16)));
     uint32_t stack_top = (uint32_t)sysenter_stack + sizeof(sysenter_stack);
     tss_esp0_for_sysenter = stack_top;
@@ -758,3 +817,15 @@ void syscall_init_fast(void) {
 // tss_esp0_for_sysenter is defined in hal/cpu/gdt.c
 // It holds the current kernel stack for sysenter, updated by the
 // scheduler when switching to a Ring 3 task.
+
+// ---------------------------------------------------------------------------
+// Per-task sysenter kernel stack.
+// The scheduler calls this on EVERY context switch with the incoming task's
+// own kernel stack top. The CPU reads IA32_SYSENTER_ESP (the MSR) on every
+// sysenter — not the C variable — so this MSR write is what actually makes
+// the fast syscall path per-task and preemption-safe.
+// ---------------------------------------------------------------------------
+void syscall_set_enter_stack(uint32_t kernel_stack_top) {
+    tss_esp0_for_sysenter = kernel_stack_top;
+    wrmsr(IA32_SYSENTER_ESP, kernel_stack_top, 0);
+}

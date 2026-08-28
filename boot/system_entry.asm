@@ -76,6 +76,8 @@ isr_common_stub:
     mov es, ax
     mov fs, ax
     mov gs, ax
+    cld             ; SECURITY: clear DF (Ring 3 can set it; string ops
+                    ; in the kernel would otherwise run backwards)
     
     extern isr_handler
     call isr_handler
@@ -111,6 +113,7 @@ irq_common_stub:
     mov es, ax
     mov fs, ax
     mov gs, ax
+    cld             ; SECURITY: clear DF before C code runs
     
     extern isr_handler
     call isr_handler
@@ -268,6 +271,7 @@ syscall_entry:
     mov es, ax
     mov fs, ax
     mov gs, ax
+    cld             ; SECURITY: clear DF (syscall args can come from Ring 3)
     
     ; Push pointer to saved register state (first arg to C handler)
     push esp
@@ -325,6 +329,7 @@ sysenter_entry:
     mov es, ax
     mov fs, ax
     mov gs, ax
+    cld             ; SECURITY: clear DF before C code runs
     
     ; Push pointer to saved register state
     push esp

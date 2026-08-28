@@ -47,7 +47,9 @@ void switch_page_directory(page_directory_t* dir) {
     asm volatile("mov %0, %%cr3" :: "r"(dir->physicalAddr));
     uint32_t cr0;
     asm volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= 0x80000000; // Enable paging!
+    cr0 |= 0x80010000; // Enable paging (PG) + Write Protect (WP)!
+    // WP: Ring 0 must honor read-only user PTEs (required for COW and for
+    // copy-on-write fork to ever fault correctly).
     asm volatile("mov %0, %%cr0" :: "r"(cr0));
 }
 
@@ -102,11 +104,14 @@ void init_paging() {
             }
             memset(new_table, 0, sizeof(page_table_t));
             kernel_directory->tables[table_idx] = new_table;
-            kernel_directory->tablesPhysical[table_idx] = t_phys | 0x7;
+            // SECURITY: kernel pages must be supervisor-only (0x3 = P|RW).
+            // The old 0x7 set the User bit, which let any Ring 3 process
+            // read/write ALL kernel memory through the shared identity map.
+            kernel_directory->tablesPhysical[table_idx] = t_phys | 0x3;
         }
 
         page_table_t* table = kernel_directory->tables[table_idx];
-        table->entries[page_idx] = phys_addr | 0x7; 
+        table->entries[page_idx] = phys_addr | 0x3; // P|RW, supervisor-only
     }
 
     // Register Page Fault Handler (ISR 14)
@@ -188,7 +193,10 @@ void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, ui
             }
             memset(new_table, 0, sizeof(page_table_t));
             kernel_directory->tables[table_idx] = new_table;
-            kernel_directory->tablesPhysical[table_idx] = t_phys | 0x7; // Present, RW, User
+            // PDE must carry at least the flags the PTEs use: Ring 3 access
+            // requires the User bit at BOTH directory and table level.
+            kernel_directory->tablesPhysical[table_idx] =
+                t_phys | PAGING_FLAG_PRESENT | (flags & (PAGING_FLAG_RW | PAGING_FLAG_USER));
         }
 
         // Map the page: virtual address -> physical address with flags
@@ -210,7 +218,13 @@ void paging_map_region(uint32_t phys_addr, uint32_t virt_addr, uint32_t size, ui
             }
         }
     } 
-    
-    // Reload CR3 to flush TLB.
-    switch_page_directory(kernel_directory);
+
+    // Flush TLB WITHOUT clobbering a user process's active CR3.
+    // The old code force-switched to kernel_directory here, which would
+    // desync CR3 from the running user task (scheduler.c switches CR3 per
+    // task). Reloading the CURRENT CR3 value flushes all TLB entries and
+    // keeps the active address space unchanged.
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
 }
